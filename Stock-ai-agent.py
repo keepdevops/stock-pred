@@ -11,7 +11,44 @@ from mplfinance.original_flavor import candlestick_ohlc
 import matplotlib
 import traceback
 import os
+import sys
+import threading
+import contextlib
+from concurrent.futures import ThreadPoolExecutor
+import functools
+import glob
+
 matplotlib.use('TkAgg')
+
+def find_databases():
+    """Find all DuckDB database files in the current directory"""
+    return glob.glob('*.db')
+
+def create_connection(db_name):
+    """Create a database connection"""
+    try:
+        return duckdb.connect(db_name)
+    except Exception as e:
+        print(f"Error connecting to database {db_name}: {e}")
+        return None
+
+class ThreadSafeManager:
+    def __init__(self):
+        self._lock = threading.Lock()
+    
+    def __enter__(self):
+        self._lock.acquire()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._lock.release()
+
+def process_data_safely(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with ThreadSafeManager():
+            return func(*args, **kwargs)
+    return wrapper
 
 class StockAnalyzerGUI:
     def __init__(self, analyzer):
@@ -20,9 +57,42 @@ class StockAnalyzerGUI:
         self.root.title("Stock Market Analyzer")
         self.root.geometry("1600x1000")
         
+        # Initialize descriptions dictionary first
+        self.ticker_descriptions = {
+            # Futures
+            'ES=F': 'E-mini S&P 500 Futures - Tracks the S&P 500 index with 1/5th the size',
+            'NQ=F': 'E-mini NASDAQ-100 Futures - Tracks the NASDAQ-100 technology index',
+            'YM=F': 'E-mini Dow Futures - Tracks the Dow Jones Industrial Average',
+            'RTY=F': 'E-mini Russell 2000 Futures - Tracks small-cap U.S. stocks',
+            'ZB=F': 'U.S. Treasury Bond Futures - Long-term 30-year Treasury bonds',
+            'ZN=F': '10-Year T-Note Futures - Medium-term Treasury notes',
+            'CL=F': 'Crude Oil Futures - West Texas Intermediate (WTI) crude oil',
+            'NG=F': 'Natural Gas Futures - Henry Hub natural gas benchmark',
+            'GC=F': 'Gold Futures - Physical gold bullion contracts',
+            'SI=F': 'Silver Futures - Physical silver bullion contracts',
+            'ZC=F': 'Corn Futures - U.S. corn agricultural commodity',
+            'ZS=F': 'Soybean Futures - U.S. soybean agricultural commodity',
+            'ZW=F': 'Wheat Futures - U.S. wheat agricultural commodity',
+            
+            # ETFs
+            'SPY': 'SPDR S&P 500 ETF - Tracks S&P 500 index, most liquid ETF',
+            'QQQ': 'Invesco QQQ - Tracks NASDAQ-100, focus on tech companies',
+            'IWM': 'iShares Russell 2000 ETF - Small-cap U.S. companies',
+            'GLD': 'SPDR Gold Trust - Physical gold-backed ETF',
+            'USO': 'United States Oil Fund - Tracks crude oil prices',
+            'TLT': 'iShares 20+ Year Treasury Bond ETF - Long-term Treasury bonds',
+            
+            # Add descriptions for stocks
+            'MSFT': 'Microsoft Corporation - Technology, software, and cloud computing',
+            'GOOGL': 'Alphabet Inc. - Technology, search engine, and digital advertising',
+            'AAPL': 'Apple Inc. - Technology, consumer electronics, and services',
+            'AMZN': 'Amazon.com Inc. - E-commerce, cloud computing, and digital services',
+            'NVDA': 'NVIDIA Corporation - Technology, graphics processors, and AI computing'
+        }
+        
         try:
             # Find all DuckDB databases in current directory
-            self.available_dbs = self.find_duckdb_databases()
+            self.available_dbs = find_databases()
             print(f"Found databases: {self.available_dbs}")
             
             # Start with first available database
@@ -106,14 +176,64 @@ class StockAnalyzerGUI:
             self.table_combo['values'] = ['No tables available']
             self.table_combo.set('No tables available')
         
-        # Ticker selection
+        # Ticker selection with help
         ticker_frame = ttk.LabelFrame(self.control_panel, text="Stock Selection", padding="5")
         ticker_frame.pack(fill="x", padx=5, pady=5)
         
-        ttk.Label(ticker_frame, text="Ticker:").pack(side="left", padx=5)
+        # Add help button
+        help_frame = ttk.Frame(ticker_frame)
+        help_frame.pack(fill="x", padx=5, pady=2)
+        
+        ttk.Label(help_frame, text="Ticker:").pack(side="left", padx=5)
+        help_button = ttk.Button(help_frame, text="?", width=2)
+        help_button.pack(side="right", padx=5)
+        
+        # Create tooltip text based on table
+        def show_ticker_help():
+            help_text = """
+            Futures Symbols:
+            ES=F : E-mini S&P 500 Futures
+            NQ=F : E-mini NASDAQ-100 Futures
+            YM=F : E-mini Dow Futures
+            RTY=F: E-mini Russell 2000 Futures
+            ZB=F : U.S. Treasury Bond Futures
+            ZN=F : 10-Year T-Note Futures
+            CL=F : Crude Oil Futures
+            NG=F : Natural Gas Futures
+            GC=F : Gold Futures
+            SI=F : Silver Futures
+            ZC=F : Corn Futures
+            ZS=F : Soybean Futures
+            ZW=F : Wheat Futures
+            
+            Options Symbols:
+            SPY : SPDR S&P 500 ETF
+            QQQ : Invesco QQQ (NASDAQ-100)
+            IWM : iShares Russell 2000 ETF
+            GLD : SPDR Gold Trust
+            USO : United States Oil Fund
+            TLT : iShares 20+ Year Treasury Bond ETF
+            """
+            messagebox.showinfo("Ticker Symbol Guide", help_text)
+        
+        help_button.config(command=show_ticker_help)
+        
+        # Ticker combobox with description
         self.ticker_var = tk.StringVar()
         self.ticker_combo = ttk.Combobox(ticker_frame, textvariable=self.ticker_var)
-        self.ticker_combo.pack(side="left", fill="x", expand=True, padx=5)
+        self.ticker_combo.pack(fill="x", padx=5, pady=2)
+        
+        # Description label
+        self.ticker_desc = ttk.Label(ticker_frame, text="", wraplength=250)
+        self.ticker_desc.pack(fill="x", padx=5, pady=2)
+        
+        # Update description when ticker changes
+        def on_ticker_change(event=None):
+            ticker = self.ticker_var.get()
+            description = self.ticker_descriptions.get(ticker, 'No description available')
+            self.ticker_desc.config(text=description)
+        
+        self.ticker_combo.bind('<<ComboboxSelected>>', on_ticker_change)
         
         # Initialize tickers for selected table
         self.update_tickers()
@@ -135,89 +255,102 @@ class StockAnalyzerGUI:
 
     def on_database_change(self, event=None):
         """Handle database selection change"""
+        new_db = self.db_var.get()
         try:
-            new_db = self.db_var.get()
-            if new_db != self.current_db:
-                # Close current connection
+            # Close existing connection if any
+            if hasattr(self, 'db_conn') and self.db_conn:
                 self.db_conn.close()
-                
-                # Connect to new database
-                self.current_db = new_db
-                self.db_conn = duckdb.connect(self.current_db)
-                print(f"Connected to database: {self.current_db}")
-                
-                # Update tables
-                self.tables = self.get_tables()
-                self.table_combo['values'] = self.tables
-                if self.tables:
-                    self.table_combo.set(self.tables[0])
-                    self.update_tickers()
-                    # Clear previous plots
-                    self.figure.clear()
-                    self.canvas.draw()
-                else:
-                    self.table_combo.set('No tables available')
-                    self.ticker_combo['values'] = ['No tickers available']
-                    self.ticker_combo.set('No tickers available')
-                
+            
+            # Connect to new database
+            self.db_conn = duckdb.connect(new_db)
+            print(f"Connected to database: {new_db}")
+            
+            # Get available tables
+            self.tables = self.get_tables()
+            print(f"Found tables: {self.tables}")
+            
+            # Update table combobox
+            self.table_combo['values'] = self.tables if self.tables else ['No tables available']
+            if self.tables:
+                self.table_combo.set(self.tables[0])
+                # Trigger table change to update tickers
+                self.on_table_change()
+            else:
+                self.table_combo.set('No tables available')
+                self.clear_ticker_selection()
+            
         except Exception as e:
-            print(f"Error changing database: {str(e)}")
-            messagebox.showerror("Database Error", f"Error connecting to {new_db}: {str(e)}")
-
-    def refresh_databases(self):
-        """Refresh the list of available databases"""
-        try:
-            self.available_dbs = self.find_duckdb_databases()
-            self.db_combo['values'] = self.available_dbs
-            print(f"Refreshed database list: {self.available_dbs}")
-        except Exception as e:
-            print(f"Error refreshing databases: {str(e)}")
+            print(f"Error switching database: {e}")
+            messagebox.showerror("Database Error", str(e))
 
     def on_table_change(self, event=None):
         """Handle table selection change"""
-        self.update_tickers()
-
-    def update_tickers(self):
-        """Update ticker list based on selected table"""
-        table = self.table_var.get()
-        tickers = self.get_tickers(table)
+        if not hasattr(self, 'db_conn') or not self.db_conn:
+            return
         
-        if tickers:
-            self.ticker_combo['values'] = tickers
-            self.ticker_combo.set(tickers[0])
-        else:
-            self.ticker_combo['values'] = ['No tickers available']
-            self.ticker_combo.set('No tickers available')
+        table = self.table_var.get()
+        if not table or table == 'No tables available':
+            self.clear_ticker_selection()
+            return
+        
+        try:
+            # Get column information
+            columns = self.db_conn.execute(f"SELECT * FROM {table} LIMIT 0").description
+            column_names = [col[0] for col in columns]
+            print(f"Available columns in {table}: {column_names}")
+            
+            # Check if table has ticker column
+            if 'ticker' in column_names:
+                # Get unique tickers from the table
+                tickers = self.db_conn.execute(f"SELECT DISTINCT ticker FROM {table}").fetchall()
+                tickers = [t[0] for t in tickers]
+                print(f"Found tickers using column 'ticker': {tickers[:5]}...")
+                
+                # Update ticker combobox
+                self.ticker_combo['values'] = tickers
+                if tickers:
+                    self.ticker_combo.set(tickers[0])
+                    # Update description
+                    self.update_ticker_description()
+            else:
+                self.clear_ticker_selection()
+            
+        except Exception as e:
+            print(f"Error updating table selection: {e}")
+            messagebox.showerror("Table Error", str(e))
+
+    def clear_ticker_selection(self):
+        """Clear ticker selection when no valid table/database is selected"""
+        self.ticker_combo['values'] = ['No tickers available']
+        self.ticker_combo.set('No tickers available')
+        self.ticker_desc.config(text="")
+
+    def update_ticker_description(self):
+        """Update the description for the currently selected ticker"""
+        ticker = self.ticker_var.get()
+        description = self.ticker_descriptions.get(ticker, "No description available")
+        self.ticker_desc.config(text=description)
 
     def get_tables(self):
-        """Get list of tables in the current database"""
+        """Get list of non-empty tables from current database"""
         try:
-            query = """
-                SELECT DISTINCT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'main'
-                AND (
-                    SELECT COUNT(*) 
-                    FROM information_schema.columns 
-                    WHERE table_name = tables.table_name
-                ) > 0
-                ORDER BY table_name
-            """
-            result = self.db_conn.execute(query).fetchall()
-            tables = [row[0] for row in result]
+            tables = self.db_conn.execute(
+                """SELECT name FROM sqlite_master 
+                   WHERE type='table' AND name != 'sqlite_sequence'"""
+            ).fetchall()
+            tables = [t[0] for t in tables]
             
             # Filter out empty tables
             non_empty_tables = []
             for table in tables:
-                count_query = f"SELECT COUNT(*) FROM {table}"
-                count = self.db_conn.execute(count_query).fetchone()[0]
+                count = self.db_conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 if count > 0:
                     non_empty_tables.append(table)
             
             print(f"Found non-empty tables: {non_empty_tables}")
             return non_empty_tables
         except Exception as e:
-            print(f"Error getting tables: {str(e)}")
+            print(f"Error getting tables: {e}")
             return []
 
     def get_tickers(self, table_name):
@@ -377,6 +510,7 @@ class StockAnalyzerGUI:
             print(f"Error in analysis: {str(e)}")
             self.loading_label.config(text=f"Error analyzing {ticker}: {str(e)}")
 
+    @process_data_safely
     def update_plots(self, df, ticker):
         """Update all plots with current data"""
         try:
@@ -462,10 +596,129 @@ class StockAnalyzerGUI:
             print(f"Error finding databases: {str(e)}")
             return ['stocks.db']
 
+    def refresh_databases(self):
+        """Refresh the list of available databases"""
+        try:
+            self.available_dbs = find_databases()
+            print(f"Refreshed database list: {self.available_dbs}")
+            
+            self.db_combo['values'] = self.available_dbs
+            if self.available_dbs:
+                if self.db_var.get() not in self.available_dbs:
+                    self.db_var.set(self.available_dbs[0])
+                    self.on_database_change()
+        except Exception as e:
+            print(f"Error refreshing databases: {e}")
+            messagebox.showerror("Refresh Error", str(e))
+
     def run(self):
         self.root.mainloop()
 
+    def update_tickers(self):
+        """Update available tickers based on current table selection"""
+        if not hasattr(self, 'db_conn') or not self.db_conn:
+            self.clear_ticker_selection()
+            return
+            
+        table = self.table_var.get()
+        if not table or table == 'No tables available':
+            self.clear_ticker_selection()
+            return
+            
+        try:
+            # Get column information
+            columns = self.db_conn.execute(f"SELECT * FROM {table} LIMIT 0").description
+            column_names = [col[0] for col in columns]
+            
+            # Check if table has ticker column
+            if 'ticker' in column_names:
+                # Get unique tickers from the table
+                tickers = self.db_conn.execute(f"SELECT DISTINCT ticker FROM {table}").fetchall()
+                tickers = [t[0] for t in tickers]
+                
+                # Update ticker combobox
+                self.ticker_combo['values'] = tickers
+                if tickers:
+                    self.ticker_combo.set(tickers[0])
+                    self.update_ticker_description()
+                else:
+                    self.clear_ticker_selection()
+            else:
+                self.clear_ticker_selection()
+                
+        except Exception as e:
+            print(f"Error updating tickers: {e}")
+            self.clear_ticker_selection()
+
+def process_database(db_name):
+    with contextlib.closing(create_connection(db_name)) as conn:
+        if conn:
+            print(f"Processing database: {db_name}")
+            try:
+                # Get list of tables
+                tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                tables = [t[0] for t in tables]
+                
+                if not tables:
+                    print(f"No tables found in {db_name}")
+                    return
+                
+                print(f"Found tables: {tables}")
+                
+                for table in tables:
+                    # Get column information
+                    columns = conn.execute(f"SELECT * FROM {table} LIMIT 0").description
+                    column_names = [col[0] for col in columns]
+                    print(f"Columns in {table}: {column_names}")
+                    
+                    # Get sample data
+                    sample = conn.execute(f"""
+                        SELECT COUNT(*) as count, 
+                               MIN(date) as earliest_date,
+                               MAX(date) as latest_date 
+                        FROM {table}
+                    """).fetchone()
+                    
+                    print(f"Table {table} statistics:")
+                    print(f"  Total records: {sample[0]}")
+                    print(f"  Date range: {sample[1]} to {sample[2]}")
+                    
+                    # If table has ticker column, show unique tickers
+                    if 'ticker' in column_names:
+                        tickers = conn.execute(f"SELECT DISTINCT ticker FROM {table}").fetchall()
+                        tickers = [t[0] for t in tickers]
+                        print(f"  Available tickers: {tickers[:5]}...")
+                    
+                    print()
+                    
+            except Exception as e:
+                print(f"Error processing {db_name}: {e}")
+
+@process_data_safely
+def initialize_gui(databases):
+    app = StockAnalyzerGUI(databases)
+    return app
+
+def main():
+    try:
+        databases = find_databases()
+        print(f"Found databases: {databases}")
+        
+        # Process databases in parallel
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            executor.map(process_database, databases)
+        
+        # Initialize GUI
+        app = initialize_gui(databases)
+        app.root.mainloop()
+        
+    except KeyboardInterrupt:
+        print("\nGracefully shutting down...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Error: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
 if __name__ == "__main__":
-    analyzer = None
-    gui = StockAnalyzerGUI(analyzer)
-    gui.run()
+    main()
