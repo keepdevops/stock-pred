@@ -92,6 +92,10 @@ def download_stock_data(ticker, start_date, end_date):
         # Add ticker column
         df = df.with_columns(pl.lit(ticker).alias('Symbol'))
         
+        # Handle missing volume data
+        if 'volume' not in df.columns or df['volume'].isna().any():
+            df['volume'] = 0
+        
         return df
         
     except Exception as e:
@@ -212,6 +216,10 @@ def process_ticker(ticker, max_retries=3, retry_delay=5, timeout=30):
             # Rename columns
             df = df.rename(columns=column_mapping)
             
+            # Handle missing volume data
+            if 'volume' not in df.columns or df['volume'].isna().any():
+                df['volume'] = 0
+            
             # Convert to polars with explicit schema
             schema = {
                 'date': pl.Date,
@@ -221,13 +229,16 @@ def process_ticker(ticker, max_retries=3, retry_delay=5, timeout=30):
                 'low': pl.Float64,
                 'close': pl.Float64,
                 'adj_close': pl.Float64,
-                'volume': pl.Int64
+                'volume': pl.Float64
             }
             
             df = pl.from_pandas(
                 df[list(schema.keys())],  # Only keep needed columns
                 schema_overrides=schema
             )
+            
+            # Add type column
+            df = df.with_columns(pl.lit('stock').alias('type'))
             
             print(f" Successfully processed {ticker} with {len(df)} trading days")
             return df
@@ -261,10 +272,11 @@ def store_in_duckdb(dfs, batch_size=1000):
         print(combined.schema)
         
         # Insert data
-        conn.execute("INSERT INTO forex_prices SELECT * FROM combined")
+        table_name = 'market_data'
+        conn.execute(f"INSERT INTO {table_name} SELECT * FROM combined")
         
-        # Create index if it doesn't exist
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_date_pair ON forex_prices(date, pair)")
+        # Create index using correct column name (ticker instead of pair)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_date_ticker ON market_data(date, ticker)")
         
         print(f"Successfully stored {len(combined)} records in DuckDB")
         
@@ -376,13 +388,13 @@ def show_duckdb_status():
                     MIN(date) as start_date,
                     MAX(date) as end_date,
                     COUNT(DISTINCT date) as trading_days
-                FROM forex_prices
+                FROM market_data
             ),
             complete_tickers AS (
                 SELECT COUNT(*) as complete_count
                 FROM (
                     SELECT ticker
-                    FROM forex_prices 
+                    FROM market_data 
                     GROUP BY ticker 
                     HAVING COUNT(*) = 252
                 ) t
@@ -397,7 +409,7 @@ def show_duckdb_status():
                 COUNT(DISTINCT ticker) as ticker_count,
                 COUNT(*) as record_count,
                 CAST(COUNT(*) AS FLOAT) / COUNT(DISTINCT ticker) as avg_days_per_ticker
-            FROM forex_prices
+            FROM market_data
             GROUP BY letter
             ORDER BY letter
         """).fetchall()
@@ -433,7 +445,7 @@ def get_current_progress(db_path="forex-duckdb.db"):
         # Get letters already in database
         result = conn.execute("""
             SELECT DISTINCT LEFT(ticker, 1) as letter
-            FROM forex_prices
+            FROM market_data
             ORDER BY letter
         """).fetchall()
         
@@ -499,7 +511,7 @@ def process_forex_pair(pair, max_retries=3, retry_delay=5, timeout=30):
             df = df.reset_index()
             
             # Add pair column and remove =X suffix
-            df['pair'] = pair.replace('=X', '')
+            df['ticker'] = pair.replace('=X', '')
             
             # For forex, we need to ensure consistent column names
             # First, standardize the column names from yfinance
@@ -523,14 +535,14 @@ def process_forex_pair(pair, max_retries=3, retry_delay=5, timeout=30):
             if 'adj_close' not in df.columns:
                 df['adj_close'] = df['close']
             
-            # Ensure volume exists (some forex pairs don't have volume)
-            if 'volume' not in df.columns:
+            # Handle missing volume data
+            if 'volume' not in df.columns or df['volume'].isna().any():
                 df['volume'] = 0
             
             # Convert to polars with explicit schema
             schema = {
                 'date': pl.Date,
-                'pair': pl.Utf8,
+                'ticker': pl.Utf8,
                 'open': pl.Float64,
                 'high': pl.Float64,
                 'low': pl.Float64,
@@ -543,6 +555,9 @@ def process_forex_pair(pair, max_retries=3, retry_delay=5, timeout=30):
                 df[list(schema.keys())],  # Only keep needed columns in correct order
                 schema_overrides=schema
             )
+            
+            # Add type column
+            df = df.with_columns(pl.lit('forex').alias('type'))
             
             print(f" Successfully processed {pair} with {len(df)} trading days")
             return df
