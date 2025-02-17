@@ -31,7 +31,7 @@ class StockAnalyzerGUI:
             print(f"Connected to database: {self.current_db}")
             
             # Get available tables
-            self.tables = self.get_available_tables()
+            self.tables = self.get_tables()
             print(f"Found tables: {self.tables}")
             
             self.setup_gui()
@@ -147,15 +147,19 @@ class StockAnalyzerGUI:
                 print(f"Connected to database: {self.current_db}")
                 
                 # Update tables
-                self.tables = self.get_available_tables()
+                self.tables = self.get_tables()
                 self.table_combo['values'] = self.tables
                 if self.tables:
                     self.table_combo.set(self.tables[0])
                     self.update_tickers()
+                    # Clear previous plots
+                    self.figure.clear()
+                    self.canvas.draw()
                 else:
                     self.table_combo.set('No tables available')
                     self.ticker_combo['values'] = ['No tickers available']
                     self.ticker_combo.set('No tickers available')
+                
         except Exception as e:
             print(f"Error changing database: {str(e)}")
             messagebox.showerror("Database Error", f"Error connecting to {new_db}: {str(e)}")
@@ -185,95 +189,140 @@ class StockAnalyzerGUI:
             self.ticker_combo['values'] = ['No tickers available']
             self.ticker_combo.set('No tickers available')
 
-    def get_tickers(self, table=None):
-        """Get list of available tickers from specified table"""
+    def get_tables(self):
+        """Get list of tables in the current database"""
         try:
-            if not table:
-                table = self.table_var.get()
+            query = """
+                SELECT DISTINCT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'main'
+                AND (
+                    SELECT COUNT(*) 
+                    FROM information_schema.columns 
+                    WHERE table_name = tables.table_name
+                ) > 0
+                ORDER BY table_name
+            """
+            result = self.db_conn.execute(query).fetchall()
+            tables = [row[0] for row in result]
             
-            print(f"Attempting to get tickers from {table}...")
+            # Filter out empty tables
+            non_empty_tables = []
+            for table in tables:
+                count_query = f"SELECT COUNT(*) FROM {table}"
+                count = self.db_conn.execute(count_query).fetchone()[0]
+                if count > 0:
+                    non_empty_tables.append(table)
             
-            # First check if ticker column exists
-            columns = self.db_conn.execute(f"""
+            print(f"Found non-empty tables: {non_empty_tables}")
+            return non_empty_tables
+        except Exception as e:
+            print(f"Error getting tables: {str(e)}")
+            return []
+
+    def get_tickers(self, table_name):
+        """Get list of unique tickers/symbols from the specified table"""
+        try:
+            # First get all column names for the table
+            columns_query = """
                 SELECT column_name 
                 FROM information_schema.columns 
-                WHERE table_name = '{table}'
-            """).fetchall()
-            columns = [col[0].lower() for col in columns]
+                WHERE table_name = ?
+            """
+            columns = [row[0].lower() for row in self.db_conn.execute(columns_query, [table_name]).fetchall()]
+            print(f"Available columns in {table_name}: {columns}")
             
-            # Use 'ticker' or 'symbol' column if available
-            ticker_col = 'ticker' if 'ticker' in columns else 'symbol'
+            # Try different common column names for tickers
+            ticker_columns = ['ticker', 'symbol', 'pair']
             
-            if ticker_col not in columns:
-                print(f"No ticker/symbol column found in {table}")
-                return []
+            for col in ticker_columns:
+                if col in columns:
+                    query = f"""
+                        SELECT DISTINCT {col}
+                        FROM {table_name}
+                        WHERE {col} IS NOT NULL
+                        ORDER BY {col}
+                    """
+                    result = self.db_conn.execute(query).fetchall()
+                    if result:
+                        tickers = [row[0] for row in result]
+                        print(f"Found tickers using column '{col}': {tickers[:5]}...")
+                        return tickers
             
-            query = f"SELECT DISTINCT {ticker_col} FROM {table} ORDER BY {ticker_col}"
-            result = self.db_conn.execute(query).fetchall()
-            tickers = [ticker[0] for ticker in result] if result else []
+            # Special handling for market_data table
+            if 'type' in columns and table_name == 'market_data':
+                query = """
+                    SELECT DISTINCT ticker 
+                    FROM market_data 
+                    WHERE type = 'forex'
+                    ORDER BY ticker
+                """
+                result = self.db_conn.execute(query).fetchall()
+                if result:
+                    tickers = [row[0] for row in result]
+                    print(f"Found forex pairs: {tickers[:5]}...")
+                    return tickers
             
-            print(f"Found {len(tickers)} tickers: {tickers[:5]}...")
-            return tickers
+            print(f"No suitable ticker column found in {table_name}")
+            return []
             
         except Exception as e:
             print(f"Error getting tickers: {str(e)}")
+            traceback.print_exc()
             return []
 
-    def get_historical_data(self, ticker, duration):
-        """Get historical data from selected table"""
+    def get_historical_data(self, ticker, table_name, timeframe):
+        """Get historical price data for a ticker"""
         try:
-            table = self.table_var.get()
-            print(f"Retrieving data for {ticker} from {table} over {duration}")
-            
-            # Check table columns
-            columns = self.db_conn.execute(f"""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = '{table}'
-            """).fetchall()
-            columns = [col[0].lower() for col in columns]
-            
-            # Map column names
-            ticker_col = 'ticker' if 'ticker' in columns else 'symbol'
-            date_col = 'date' if 'date' in columns else 'timestamp'
-            
-            duration_map = {
-                '1d': 'INTERVAL 1 day',
-                '1mo': 'INTERVAL 1 month',
-                '3mo': 'INTERVAL 3 months',
-                '6mo': 'INTERVAL 6 months',
-                '1y': 'INTERVAL 1 year'
+            interval_map = {
+                '1d': '1 day',
+                '1mo': '1 month',
+                '3mo': '3 months',
+                '6mo': '6 months',
+                '1y': '1 year'
             }
+            interval = interval_map.get(timeframe, '1 month')
             
-            interval = duration_map.get(duration, 'INTERVAL 1 month')
+            # Get column information
+            columns_query = """
+                SELECT column_name, data_type 
+                FROM information_schema.columns 
+                WHERE table_name = ?
+            """
+            columns = {row[0].lower(): row[1] for row in self.db_conn.execute(columns_query, [table_name]).fetchall()}
+            
+            # Determine ticker and date columns
+            ticker_col = next((col for col in ['ticker', 'symbol', 'pair'] if col in columns), None)
+            date_col = next((col for col in ['date', 'timestamp', 'created_at'] if col in columns), None)
+            
+            if not ticker_col or not date_col:
+                raise Exception(f"Required columns not found in {table_name}")
+            
+            # Build query with available columns
+            select_cols = [
+                f"{date_col} as date",
+                "open as Open",
+                "high as High",
+                "low as Low",
+                "close as Close",
+                "volume as Volume",
+                "COALESCE(adj_close, close) as Adj_Close"
+            ]
             
             query = f"""
-            SELECT 
-                {date_col} as date,
-                open as Open,
-                high as High,
-                low as Low,
-                close as Close,
-                volume as Volume,
-                adj_close as Adj_Close
-            FROM {table}
-            WHERE {ticker_col} = ?
-            AND {date_col} >= CURRENT_DATE - {interval}
-            ORDER BY {date_col}
+                SELECT {', '.join(select_cols)}
+                FROM {table_name}
+                WHERE {ticker_col} = ?
+                AND {date_col} >= CURRENT_DATE - INTERVAL '{interval}'
+                ORDER BY {date_col}
             """
             
             print(f"Executing query: {query}")
+            print(f"Parameters: {[ticker]}")
+            
             df = self.db_conn.execute(query, [ticker]).df()
-            
-            if df.empty:
-                print(f"No data found for {ticker}")
-                return None
-            
-            # Ensure date is datetime
-            df['date'] = pd.to_datetime(df['date'])
-            df.set_index('date', inplace=True)
-            
-            print(f"Retrieved {len(df)} records for {ticker}")
+            if df is not None and not df.empty:
+                print(f"Retrieved {len(df)} rows of data")
             return df
             
         except Exception as e:
@@ -281,12 +330,29 @@ class StockAnalyzerGUI:
             traceback.print_exc()
             return None
 
-    def calculate_rsi(self, prices, period=14):
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
+    def calculate_rsi(self, prices, periods=14):
+        """Calculate RSI for a price series"""
+        try:
+            # Calculate price changes
+            delta = prices.diff()
+            
+            # Separate gains and losses
+            gains = delta.where(delta > 0, 0)
+            losses = -delta.where(delta < 0, 0)
+            
+            # Calculate average gains and losses
+            avg_gains = gains.rolling(window=periods).mean()
+            avg_losses = losses.rolling(window=periods).mean()
+            
+            # Calculate RS and RSI
+            rs = avg_gains / avg_losses
+            rsi = 100 - (100 / (1 + rs))
+            
+            return rsi
+            
+        except Exception as e:
+            print(f"Error calculating RSI: {str(e)}")
+            return pd.Series([50] * len(prices))  # Return neutral RSI on error
 
     def start_analysis(self):
         try:
@@ -295,7 +361,7 @@ class StockAnalyzerGUI:
             
             self.loading_label.config(text=f"Loading data for {ticker}...")
             
-            df = self.get_historical_data(ticker, duration)
+            df = self.get_historical_data(ticker, self.table_var.get(), duration)
             
             if df is not None and not df.empty:
                 df['SMA_20'] = df['Close'].rolling(window=20).mean()
@@ -312,102 +378,71 @@ class StockAnalyzerGUI:
             self.loading_label.config(text=f"Error analyzing {ticker}: {str(e)}")
 
     def update_plots(self, df, ticker):
+        """Update all plots with current data"""
         try:
+            if ticker == 'No tickers available' or self.table_var.get() == 'No tables available':
+                return
+            
+            print(f"Updating plots for {ticker} from {self.table_var.get()}")
+            
+            # Clear previous plots
             self.figure.clear()
             
-            # Create subplots with gridspec
-            gs = gridspec.GridSpec(4, 1, height_ratios=[3, 1, 1, 1])
-            ax_candle = self.figure.add_subplot(gs[0])
-            ax_volume = self.figure.add_subplot(gs[1])
-            ax_ma = self.figure.add_subplot(gs[2])
-            ax_rsi = self.figure.add_subplot(gs[3])
+            # Create subplots
+            ax_price = self.figure.add_subplot(211)  # Price plot
+            ax_rsi = self.figure.add_subplot(212)    # RSI plot
             
-            # Prepare data for candlestick
-            ohlc = []
-            for date, row in df.iterrows():
-                date_num = mdates.date2num(date)
-                ohlc.append([date_num, row['Open'], row['High'], row['Low'], row['Close']])
+            # Get data for different timeframes
+            timeframes = ['1mo', '3mo', '6mo', '1y']
+            colors = ['blue', 'green', 'red', 'purple']
             
-            # Plot candlestick
-            candlestick_ohlc(ax_candle, ohlc, width=0.6, colorup='green', colordown='red', alpha=0.8)
+            for timeframe, color in zip(timeframes, colors):
+                df_timeframe = self.get_historical_data(ticker, self.table_var.get(), timeframe)
+                if df_timeframe is not None and not df_timeframe.empty:
+                    # Convert date column to datetime if it's not already
+                    df_timeframe['date'] = pd.to_datetime(df_timeframe['date'])
+                    
+                    # Plot price data
+                    ax_price.plot(df_timeframe['date'], df_timeframe['Close'], label=f'{timeframe} Close', color=color, alpha=0.7)
+                    
+                    # Calculate and plot RSI
+                    rsi = self.calculate_rsi(df_timeframe['Close'])
+                    ax_rsi.plot(df_timeframe['date'], rsi, label=f'{timeframe} RSI', color=color, alpha=0.7)
             
-            # Plot volume
-            ax_volume.bar(df.index, df['Volume'], color='gray', alpha=0.5)
+            # Customize price plot
+            ax_price.set_title(f'{ticker} Price History')
+            ax_price.set_xlabel('Date')
+            ax_price.set_ylabel('Price')
+            ax_price.grid(True)
+            ax_price.legend()
             
-            # Plot moving averages
-            ax_ma.plot(df.index, df['SMA_20'], label='SMA 20', color='blue')
-            ax_ma.plot(df.index, df['SMA_50'], label='SMA 50', color='red')
+            # Format x-axis dates
+            ax_price.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax_price.xaxis.set_major_locator(mdates.AutoDateLocator())
             
-            # Plot RSI
-            ax_rsi.plot(df.index, df['RSI'], label='RSI', color='purple')
-            ax_rsi.axhline(y=70, color='red', linestyle='--')
-            ax_rsi.axhline(y=30, color='green', linestyle='--')
-            
-            # Set titles and labels
-            ax_candle.set_title(f'{ticker} Technical Analysis')
-            ax_volume.set_ylabel('Volume')
-            ax_ma.set_ylabel('Price')
+            # Customize RSI plot
+            ax_rsi.set_title('RSI Indicator')
+            ax_rsi.set_xlabel('Date')
             ax_rsi.set_ylabel('RSI')
-            
-            # Format dates for all subplots
-            for ax in [ax_candle, ax_volume, ax_ma, ax_rsi]:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-                ax.tick_params(rotation=45)
-                plt.setp(ax.get_xticklabels(), ha='right')
-            
-            # Add legends
-            ax_ma.legend(['SMA 20', 'SMA 50'])
-            ax_rsi.legend(['RSI'])
-            
-            # Set RSI range
+            ax_rsi.grid(True)
             ax_rsi.set_ylim([0, 100])
             
-            # Adjust layout
-            self.figure.tight_layout()
+            # Add RSI reference lines
+            ax_rsi.axhline(y=70, color='r', linestyle='--', alpha=0.5)
+            ax_rsi.axhline(y=30, color='g', linestyle='--', alpha=0.5)
+            ax_rsi.legend()
             
-            # Update canvas
+            # Format x-axis dates for RSI
+            ax_rsi.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax_rsi.xaxis.set_major_locator(mdates.AutoDateLocator())
+            
+            # Adjust layout and display
+            self.figure.tight_layout()
             self.canvas.draw()
             
         except Exception as e:
             print(f"Error updating plots: {str(e)}")
-            traceback.print_exc()  # Print full traceback for debugging
-            raise e
-
-    def get_available_tables(self):
-        """Get list of available tables in the current database"""
-        try:
-            # Get all tables
-            tables = self.db_conn.execute("""
-                SELECT table_name, column_count
-                FROM information_schema.tables 
-                WHERE table_schema = 'main'
-            """).fetchall()
-            
-            # Filter for tables with required columns
-            valid_tables = []
-            for table, col_count in tables:
-                # Check if table has necessary columns
-                columns = self.db_conn.execute(f"""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = '{table}'
-                """).fetchall()
-                columns = [col[0].lower() for col in columns]
-                
-                # Check for required columns (ticker/symbol and price data)
-                has_ticker = 'ticker' in columns or 'symbol' in columns
-                has_date = 'date' in columns or 'timestamp' in columns
-                has_price = all(col in columns for col in ['open', 'high', 'low', 'close', 'adj_close'])
-                has_volume = 'volume' in columns
-                
-                if has_ticker and has_date and has_price and has_volume:
-                    valid_tables.append(table)
-            
-            print(f"Found {len(valid_tables)} valid tables: {valid_tables}")
-            return valid_tables
-        except Exception as e:
-            print(f"Error getting tables: {str(e)}")
-            return []
+            traceback.print_exc()
 
     def find_duckdb_databases(self):
         """Find all DuckDB database files in current directory"""

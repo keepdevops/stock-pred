@@ -11,6 +11,7 @@ import sys
 import os
 import tkinter as tk
 from tkinter import messagebox
+import matplotlib.dates as mdates
 
 class DataManager:
     def __init__(self, db_path='stocks.db'):

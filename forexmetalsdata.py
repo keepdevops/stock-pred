@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import time
 import traceback
+import os
 
 def get_metals_tickers():
     """Get list of major metals tickers"""
@@ -21,9 +22,9 @@ def get_metals_tickers():
 def download_metals_data(tickers, start_date=None, end_date=None):
     """Download historical metals data from Yahoo Finance"""
     if start_date is None:
-        start_date = datetime.now() - timedelta(days=365*2)  # 2 years of data
+        start_date = datetime(2024, 1, 1)  # Start from January 1, 2024
     if end_date is None:
-        end_date = datetime.now()
+        end_date = datetime(2025, 12, 31)  # End at December 31, 2025
         
     all_data = []
     for ticker in tickers:
@@ -67,7 +68,7 @@ def download_metals_data(tickers, start_date=None, end_date=None):
             
         except Exception as e:
             print(f"Error downloading {ticker}: {str(e)}")
-            traceback.print_exc()  # Add traceback for more detailed error info
+            traceback.print_exc()
             continue
             
     if all_data:
@@ -138,5 +139,69 @@ def create_metals_database():
         traceback.print_exc()
         return False
 
+def get_database_size(db_path):
+    """Get the size of the database file in MB"""
+    size_bytes = os.path.getsize(db_path)
+    size_mb = size_bytes / (1024 * 1024)
+    return round(size_mb, 2)
+
+def get_table_info(db_path):
+    """Get information about tables in the database"""
+    try:
+        conn = duckdb.connect(db_path)
+        
+        # Get list of tables
+        tables = conn.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'main'
+        """).fetchall()
+        
+        table_info = []
+        for table in tables:
+            table_name = table[0]
+            
+            # Get row count
+            row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+            
+            # Get column info
+            columns = conn.execute(f"""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = '{table_name}'
+            """).fetchall()
+            
+            table_info.append({
+                'table_name': table_name,
+                'rows': row_count,
+                'columns': len(columns),
+                'column_details': columns
+            })
+            
+        conn.close()
+        return table_info
+        
+    except Exception as e:
+        print(f"Error analyzing database: {str(e)}")
+        return []
+
+def main():
+    # List all .db files in current directory
+    db_files = [f for f in os.listdir('.') if f.endswith('.db')]
+    
+    for db_file in db_files:
+        print(f"\nAnalyzing {db_file}:")
+        print(f"File size: {get_database_size(db_file)} MB")
+        
+        table_info = get_table_info(db_file)
+        for table in table_info:
+            print(f"\nTable: {table['table_name']}")
+            print(f"Rows: {table['rows']:,}")
+            print(f"Columns: {table['columns']}")
+            print("\nColumn Details:")
+            for col in table['column_details']:
+                print(f"- {col[0]}: {col[1]}")
+
 if __name__ == "__main__":
     create_metals_database()
+    main()
