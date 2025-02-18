@@ -17,6 +17,11 @@ class DataManager:
     def __init__(self, db_path='stocks.db'):
         self.db_path = db_path
         self.failed_downloads = []
+        
+        # Delete existing database file if it exists
+        if os.path.exists(db_path):
+            os.remove(db_path)
+            print(f"Deleted existing database: {db_path}")
 
     def get_nyse_tickers(self):
         """Get list of NYSE tickers from NYSE website"""
@@ -228,9 +233,12 @@ class DataManager:
             # Connect to DuckDB
             con = duckdb.connect(self.db_path)
             
-            # Create table if it doesn't exist
+            # Drop existing table if it exists
+            con.execute("DROP TABLE IF EXISTS nyse_table")
+            
+            # Create new table
             con.execute("""
-                CREATE TABLE IF NOT EXISTS stock_prices (
+                CREATE TABLE nyse_table (
                     date DATE,
                     ticker VARCHAR,
                     open DOUBLE,
@@ -247,21 +255,16 @@ class DataManager:
             print(combined.schema)
             
             # Insert data
-            con.execute("INSERT INTO stock_prices SELECT * FROM combined")
+            con.execute("INSERT INTO nyse_table SELECT * FROM combined")
             
-            # Create index if it doesn't exist
-            con.execute("CREATE INDEX IF NOT EXISTS idx_date_ticker ON stock_prices(date, ticker)")
-            
-            # Add this after table creation
-            con.execute("""
-                CREATE INDEX IF NOT EXISTS idx_ticker_date ON stock_prices(ticker, date);
-            """)
+            # Create indices
+            con.execute("CREATE INDEX idx_date_ticker ON nyse_table(date, ticker)")
+            con.execute("CREATE INDEX idx_ticker_date ON nyse_table(ticker, date)")
             
             print(f"Successfully stored {len(combined)} records in DuckDB")
             
         except Exception as e:
             print(f"Error storing data in DuckDB: {str(e)}")
-            # Print detailed error info
             print("\nDebug information:")
             if len(dfs) > 0:
                 print("First dataframe schema:")
@@ -360,7 +363,7 @@ class DataManager:
                     MIN(date) as start_date,
                     MAX(date) as end_date,
                     COUNT(DISTINCT date) as trading_days
-                FROM stock_prices
+                FROM nyse_table
             """).fetchone()
             
             # Get count by letter
@@ -369,7 +372,7 @@ class DataManager:
                     LEFT(ticker, 1) as letter,
                     COUNT(DISTINCT ticker) as ticker_count,
                     COUNT(*) as record_count
-                FROM stock_prices
+                FROM nyse_table
                 GROUP BY letter
                 ORDER BY letter
             """).fetchall()
@@ -404,7 +407,7 @@ class DataManager:
             # Get letters already in database
             result = con.execute("""
                 SELECT DISTINCT LEFT(ticker, 1) as letter
-                FROM stock_prices
+                FROM nyse_table
                 ORDER BY letter
             """).fetchall()
             
@@ -456,7 +459,7 @@ class DataManager:
                     MIN(date) as earliest_date,
                     MAX(date) as latest_date,
                     COUNT(DISTINCT date) as trading_days
-                FROM stock_prices
+                FROM nyse_table
                 GROUP BY letter
                 ORDER BY letter
             """).fetchall()
@@ -476,7 +479,7 @@ class DataManager:
                     MIN(date) as earliest_date,
                     MAX(date) as latest_date,
                     COUNT(DISTINCT date) as total_trading_days
-                FROM stock_prices
+                FROM nyse_table
             """).fetchone()
             
             print("\nOverall Statistics:")

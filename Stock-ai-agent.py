@@ -1,22 +1,38 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
+import os
+# Set environment variable to silence Tk deprecation warning
+os.environ['TK_SILENCE_DEPRECATION'] = '1'
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization, Bidirectional
+from tensorflow.keras.regularizers import L2
 import duckdb
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import (
+    FigureCanvasTkAgg,
+    NavigationToolbar2Tk
+)
 import matplotlib.dates as mdates
-import matplotlib.gridspec as gridspec
-from mplfinance.original_flavor import candlestick_ohlc
-import matplotlib
+import mplfinance as mpf
+import tkinter as tk
+from tkinter import ttk, messagebox
 import traceback
-import os
+import contextlib
+from datetime import datetime, timedelta
+import matplotlib.gridspec as gridspec
+import matplotlib
 import sys
 import threading
-import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import functools
 import glob
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
 
 matplotlib.use('TkAgg')
 
@@ -44,218 +60,722 @@ class ThreadSafeManager:
         self._lock.release()
 
 def process_data_safely(func):
+    """Decorator to handle data processing errors"""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        with ThreadSafeManager():
-            return func(*args, **kwargs)
+        try:
+            print(f"\nStarting {func.__name__}...")
+            result = func(*args, **kwargs)
+            print(f"Successfully completed {func.__name__}")
+            return result
+        except Exception as e:
+            print(f"Error in {func.__name__}: {str(e)}")
+            print("Traceback:")
+            traceback.print_exc()
+            # Show error in GUI if self is first argument (instance method)
+            if len(args) > 0 and hasattr(args[0], 'loading_label'):
+                args[0].loading_label.config(text=f"Error in {func.__name__}: {str(e)}")
+            return None
     return wrapper
 
-class StockAnalyzerGUI:
-    def __init__(self, analyzer):
-        self.analyzer = analyzer
-        self.root = tk.Tk()
-        self.root.title("Stock Market Analyzer")
-        self.root.geometry("1600x1000")
+class AIAgent:
+    def __init__(self):
+        """Initialize the AI agent"""
+        self.model = None
         
-        # Initialize descriptions dictionary first
-        self.ticker_descriptions = {
-            # Futures
-            'ES=F': 'E-mini S&P 500 Futures - Tracks the S&P 500 index with 1/5th the size',
-            'NQ=F': 'E-mini NASDAQ-100 Futures - Tracks the NASDAQ-100 technology index',
-            'YM=F': 'E-mini Dow Futures - Tracks the Dow Jones Industrial Average',
-            'RTY=F': 'E-mini Russell 2000 Futures - Tracks small-cap U.S. stocks',
-            'ZB=F': 'U.S. Treasury Bond Futures - Long-term 30-year Treasury bonds',
-            'ZN=F': '10-Year T-Note Futures - Medium-term Treasury notes',
-            'CL=F': 'Crude Oil Futures - West Texas Intermediate (WTI) crude oil',
-            'NG=F': 'Natural Gas Futures - Henry Hub natural gas benchmark',
-            'GC=F': 'Gold Futures - Physical gold bullion contracts',
-            'SI=F': 'Silver Futures - Physical silver bullion contracts',
-            'ZC=F': 'Corn Futures - U.S. corn agricultural commodity',
-            'ZS=F': 'Soybean Futures - U.S. soybean agricultural commodity',
-            'ZW=F': 'Wheat Futures - U.S. wheat agricultural commodity',
-            
-            # ETFs
-            'SPY': 'SPDR S&P 500 ETF - Tracks S&P 500 index, most liquid ETF',
-            'QQQ': 'Invesco QQQ - Tracks NASDAQ-100, focus on tech companies',
-            'IWM': 'iShares Russell 2000 ETF - Small-cap U.S. companies',
-            'GLD': 'SPDR Gold Trust - Physical gold-backed ETF',
-            'USO': 'United States Oil Fund - Tracks crude oil prices',
-            'TLT': 'iShares 20+ Year Treasury Bond ETF - Long-term Treasury bonds',
-            
-            # Add descriptions for stocks
-            'MSFT': 'Microsoft Corporation - Technology, software, and cloud computing',
-            'GOOGL': 'Alphabet Inc. - Technology, search engine, and digital advertising',
-            'AAPL': 'Apple Inc. - Technology, consumer electronics, and services',
-            'AMZN': 'Amazon.com Inc. - E-commerce, cloud computing, and digital services',
-            'NVDA': 'NVIDIA Corporation - Technology, graphics processors, and AI computing'
-        }
-        
+    def build_model(self, input_shape):
+        """Build the LSTM model"""
         try:
-            # Find all DuckDB databases in current directory
-            self.available_dbs = find_databases()
-            print(f"Found databases: {self.available_dbs}")
+            print(f"Building model with input shape: {input_shape}")
+            model = Sequential([
+                LSTM(50, return_sequences=True, input_shape=input_shape),
+                Dropout(0.2),
+                LSTM(50, return_sequences=False),
+                Dropout(0.2),
+                Dense(25),
+                Dense(1)
+            ])
             
-            # Start with first available database
-            self.current_db = self.available_dbs[0] if self.available_dbs else 'stocks.db'
-            self.db_conn = duckdb.connect(self.current_db)
-            print(f"Connected to database: {self.current_db}")
-            
-            # Get available tables
-            self.tables = self.get_tables()
-            print(f"Found tables: {self.tables}")
-            
-            self.setup_gui()
+            model.compile(optimizer='adam', loss='mse')
+            self.model = model
+            print("Model built successfully")
+            return True
             
         except Exception as e:
-            print(f"Error in setup: {str(e)}")
-            messagebox.showerror("Setup Error", str(e))
-            raise e
+            print(f"Error building model: {str(e)}")
+            traceback.print_exc()
+            return False
 
-    def setup_gui(self):
-        self.control_panel = ttk.Frame(self.root, padding="5")
-        self.control_panel.grid(row=0, column=0, sticky="nsew")
-        
-        self.graph_panel = ttk.Frame(self.root, padding="5")
-        self.graph_panel.grid(row=0, column=1, sticky="nsew")
-        
-        self.root.grid_columnconfigure(1, weight=1)
-        self.root.grid_rowconfigure(0, weight=1)
-        
-        self.ticker_var = tk.StringVar()
-        self.duration_var = tk.StringVar(value="1mo")
-        
-        self.create_controls()
-        
-        self.figure = plt.figure(figsize=(10, 6))
-        self.canvas = FigureCanvasTkAgg(self.figure, master=self.graph_panel)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        self.toolbar = NavigationToolbar2Tk(self.canvas, self.graph_panel)
-        self.toolbar.update()
-        
-        self.loading_label = ttk.Label(self.root, text="")
-        self.loading_label.grid(row=1, column=0, columnspan=2, sticky="ew")
-
-    def create_controls(self):
-        """Create control panel widgets"""
-        # Database selection
-        db_frame = ttk.LabelFrame(self.control_panel, text="Database Selection", padding="5")
-        db_frame.pack(fill="x", padx=5, pady=5)
-        
-        ttk.Label(db_frame, text="Database:").pack(side="left", padx=5)
-        self.db_var = tk.StringVar(value=self.current_db)
-        self.db_combo = ttk.Combobox(db_frame, textvariable=self.db_var)
-        self.db_combo.pack(side="left", fill="x", expand=True, padx=5)
-        
-        if self.available_dbs:
-            self.db_combo['values'] = self.available_dbs
-            self.db_combo.set(self.current_db)
-            self.db_combo.bind('<<ComboboxSelected>>', self.on_database_change)
-        else:
-            self.db_combo['values'] = ['No databases found']
-            self.db_combo.set('No databases found')
-        
-        # Refresh button for databases
-        ttk.Button(db_frame, text="🔄", width=3,
-                   command=self.refresh_databases).pack(side="left", padx=5)
-        
-        # Table selection
-        table_frame = ttk.LabelFrame(self.control_panel, text="Table Selection", padding="5")
-        table_frame.pack(fill="x", padx=5, pady=5)
-        
-        ttk.Label(table_frame, text="Table:").pack(side="left", padx=5)
-        self.table_var = tk.StringVar()
-        self.table_combo = ttk.Combobox(table_frame, textvariable=self.table_var)
-        self.table_combo.pack(side="left", fill="x", expand=True, padx=5)
-        
-        if self.tables:
-            self.table_combo['values'] = self.tables
-            self.table_combo.set(self.tables[0])
-            self.table_combo.bind('<<ComboboxSelected>>', self.on_table_change)
-        else:
-            self.table_combo['values'] = ['No tables available']
-            self.table_combo.set('No tables available')
-        
-        # Ticker selection with help
-        ticker_frame = ttk.LabelFrame(self.control_panel, text="Stock Selection", padding="5")
-        ticker_frame.pack(fill="x", padx=5, pady=5)
-        
-        # Add help button
-        help_frame = ttk.Frame(ticker_frame)
-        help_frame.pack(fill="x", padx=5, pady=2)
-        
-        ttk.Label(help_frame, text="Ticker:").pack(side="left", padx=5)
-        help_button = ttk.Button(help_frame, text="?", width=2)
-        help_button.pack(side="right", padx=5)
-        
-        # Create tooltip text based on table
-        def show_ticker_help():
-            help_text = """
-            Futures Symbols:
-            ES=F : E-mini S&P 500 Futures
-            NQ=F : E-mini NASDAQ-100 Futures
-            YM=F : E-mini Dow Futures
-            RTY=F: E-mini Russell 2000 Futures
-            ZB=F : U.S. Treasury Bond Futures
-            ZN=F : 10-Year T-Note Futures
-            CL=F : Crude Oil Futures
-            NG=F : Natural Gas Futures
-            GC=F : Gold Futures
-            SI=F : Silver Futures
-            ZC=F : Corn Futures
-            ZS=F : Soybean Futures
-            ZW=F : Wheat Futures
+class StockAIAgent:
+    def __init__(self):
+        """Initialize the AI agent with model architecture"""
+        try:
+            print("\nInitializing AI Agent...")
+            self.model = None
+            self.scaler = MinMaxScaler(feature_range=(0, 1))
+            self.sequence_length = 60  # Number of time steps to look back
+            self.features = ['Open', 'High', 'Low', 'Close', 'Volume', 'RSI']
+            print("AI Agent initialized successfully")
             
-            Options Symbols:
-            SPY : SPDR S&P 500 ETF
-            QQQ : Invesco QQQ (NASDAQ-100)
-            IWM : iShares Russell 2000 ETF
-            GLD : SPDR Gold Trust
-            USO : United States Oil Fund
-            TLT : iShares 20+ Year Treasury Bond ETF
-            """
-            messagebox.showinfo("Ticker Symbol Guide", help_text)
-        
-        help_button.config(command=show_ticker_help)
-        
-        # Ticker combobox with description
-        self.ticker_var = tk.StringVar()
-        self.ticker_combo = ttk.Combobox(ticker_frame, textvariable=self.ticker_var)
-        self.ticker_combo.pack(fill="x", padx=5, pady=2)
-        
-        # Description label
-        self.ticker_desc = ttk.Label(ticker_frame, text="", wraplength=250)
-        self.ticker_desc.pack(fill="x", padx=5, pady=2)
-        
-        # Update description when ticker changes
-        def on_ticker_change(event=None):
-            ticker = self.ticker_var.get()
-            description = self.ticker_descriptions.get(ticker, 'No description available')
-            self.ticker_desc.config(text=description)
-        
-        self.ticker_combo.bind('<<ComboboxSelected>>', on_ticker_change)
-        
-        # Initialize tickers for selected table
-        self.update_tickers()
-        
-        # Duration selection
-        duration_frame = ttk.LabelFrame(self.control_panel, text="Duration", padding="5")
-        duration_frame.pack(fill="x", padx=5, pady=5)
-        
-        durations = [("1 Day", "1d"), ("1 Month", "1mo"), ("3 Months", "3mo"),
-                    ("6 Months", "6mo"), ("1 Year", "1y")]
-        
-        self.duration_var = tk.StringVar(value="1mo")
-        for text, value in durations:
-            ttk.Radiobutton(duration_frame, text=text, value=value,
-                           variable=self.duration_var).pack(side="left", padx=5)
-        
-        ttk.Button(self.control_panel, text="Analyze",
-                   command=self.start_analysis).pack(pady=10)
+        except Exception as e:
+            print(f"Error initializing AI Agent: {str(e)}")
+            traceback.print_exc()
+
+    def build_model(self, input_shape):
+        """Build LSTM model architecture"""
+        try:
+            print("\nBuilding LSTM model...")
+            model = Sequential([
+                LSTM(units=50, return_sequences=True, input_shape=input_shape),
+                Dropout(0.2),
+                LSTM(units=50, return_sequences=True),
+                Dropout(0.2),
+                LSTM(units=50),
+                Dropout(0.2),
+                Dense(units=1)
+            ])
+            
+            model.compile(optimizer=Adam(learning_rate=0.001),
+                         loss='mean_squared_error')
+            
+            print("Model architecture:")
+            model.summary()
+            print("Model built successfully")
+            return model
+            
+        except Exception as e:
+            print(f"Error building model: {str(e)}")
+            traceback.print_exc()
+            return None
+
+    def prepare_data(self, df):
+        """Prepare data for LSTM model"""
+        try:
+            print("\nPreparing data for LSTM...")
+            
+            # Ensure all required features are present
+            missing_features = [f for f in self.features if f not in df.columns]
+            if missing_features:
+                raise ValueError(f"Missing required features: {missing_features}")
+            
+            # Scale features
+            print("Scaling features...")
+            data = self.scaler.fit_transform(df[self.features])
+            
+            # Create sequences
+            print("Creating sequences...")
+            X, y = [], []
+            for i in range(len(data) - self.sequence_length):
+                X.append(data[i:(i + self.sequence_length)])
+                y.append(data[i + self.sequence_length, 3])  # 3 is Close price index
+            
+            X = np.array(X)
+            y = np.array(y)
+            
+            # Split into train and validation sets
+            print("Splitting data...")
+            split = int(len(X) * 0.8)
+            X_train, X_val = X[:split], X[split:]
+            y_train, y_val = y[:split], y[split:]
+            
+            print(f"Training samples: {len(X_train)}")
+            print(f"Validation samples: {len(X_val)}")
+            
+            return (X_train, y_train), (X_val, y_val)
+            
+        except Exception as e:
+            print(f"Error preparing data: {str(e)}")
+            traceback.print_exc()
+            return None
+
+    def train(self, df, epochs=50, batch_size=32):
+        """Train the LSTM model"""
+        try:
+            print("\nStarting model training...")
+            
+            # Prepare data
+            data = self.prepare_data(df)
+            if data is None:
+                raise ValueError("Data preparation failed")
+                
+            (X_train, y_train), (X_val, y_val) = data
+            
+            # Build model if not exists
+            if self.model is None:
+                self.model = self.build_model(input_shape=(X_train.shape[1], X_train.shape[2]))
+                if self.model is None:
+                    raise ValueError("Model building failed")
+            
+            # Early stopping callback
+            early_stopping = EarlyStopping(
+                monitor='val_loss',
+                patience=10,
+                restore_best_weights=True
+            )
+            
+            # Train model
+            print(f"\nTraining model with {epochs} epochs...")
+            history = self.model.fit(
+                X_train, y_train,
+                epochs=epochs,
+                batch_size=batch_size,
+                validation_data=(X_val, y_val),
+                callbacks=[early_stopping],
+                verbose=1
+            )
+            
+            print("Model training completed")
+            return history
+            
+        except Exception as e:
+            print(f"Error training model: {str(e)}")
+            traceback.print_exc()
+            return None
+
+    def predict(self, df):
+        """Make predictions using trained model"""
+        try:
+            print("\nMaking predictions...")
+            
+            if self.model is None:
+                raise ValueError("Model not trained")
+            
+            # Prepare prediction data
+            data = self.scaler.transform(df[self.features])
+            X = []
+            for i in range(len(data) - self.sequence_length):
+                X.append(data[i:(i + self.sequence_length)])
+            X = np.array(X)
+            
+            # Make predictions
+            predictions = self.model.predict(X)
+            
+            # Inverse transform predictions
+            pred_data = np.zeros((len(predictions), len(self.features)))
+            pred_data[:, 3] = predictions.flatten()  # 3 is Close price index
+            predictions = self.scaler.inverse_transform(pred_data)[:, 3]
+            
+            print(f"Generated {len(predictions)} predictions")
+            return predictions
+            
+        except Exception as e:
+            print(f"Error making predictions: {str(e)}")
+            traceback.print_exc()
+            return None
+
+    def calculate_rsi(self, prices, periods=14):
+        """Calculate Relative Strength Index"""
+        try:
+            deltas = np.diff(prices)
+            seed = deltas[:periods+1]
+            up = seed[seed >= 0].sum()/periods
+            down = -seed[seed < 0].sum()/periods
+            rs = up/down
+            rsi = np.zeros_like(prices)
+            rsi[:periods] = 100. - 100./(1.+rs)
+
+            for i in range(periods, len(prices)):
+                delta = deltas[i - 1]
+                if delta > 0:
+                    upval = delta
+                    downval = 0.
+                else:
+                    upval = 0.
+                    downval = -delta
+
+                up = (up*(periods-1) + upval)/periods
+                down = (down*(periods-1) + downval)/periods
+                rs = up/down
+                rsi[i] = 100. - 100./(1.+rs)
+
+            return rsi
+
+        except Exception as e:
+            print(f"Error calculating RSI: {str(e)}")
+            traceback.print_exc()
+            return np.zeros_like(prices)
+
+    def calculate_technical_indicators(self, df):
+        """Calculate technical indicators for the dataset"""
+        try:
+            print("Starting technical indicator calculations...")
+            if df is None or df.empty:
+                print("Error: Input DataFrame is None or empty")
+                return None
+                
+            # Create a copy to avoid modifying original
+            df = df.copy()
+                
+            # Calculate moving averages
+            df['MA20'] = df['Close'].rolling(window=20).mean()
+            df['MA50'] = df['Close'].rolling(window=50).mean()
+            
+            # Calculate RSI
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['RSI'] = 100 - (100 / (1 + rs))
+            
+            # Calculate MACD
+            exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+            exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+            df['MACD'] = exp1 - exp2
+            df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+            
+            # Calculate Bollinger Bands
+            df['BB_middle'] = df['Close'].rolling(window=20).mean()
+            df['BB_upper'] = df['BB_middle'] + 2 * df['Close'].rolling(window=20).std()
+            df['BB_lower'] = df['BB_middle'] - 2 * df['Close'].rolling(window=20).std()
+            
+            # Handle NaN values
+            df = df.fillna(method='ffill').fillna(method='bfill')
+            
+            print("Technical indicators calculated successfully")
+            print(f"DataFrame shape after calculations: {df.shape}")
+            return df
+            
+        except Exception as e:
+            print(f"Error calculating technical indicators: {str(e)}")
+            traceback.print_exc()
+            return None
+            
+    def validate_data(self, df):
+        """Validate the input data"""
+        try:
+            print("\nStarting validate_data...")
+            print("Validating input data...")
+            
+            if df is None or df.empty:
+                print("Error: DataFrame is None or empty")
+                return None
+                
+            required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            if not all(col in df.columns for col in required_columns):
+                print("Error: Missing required columns")
+                return None
+                
+            print("Data validation complete")
+            print(f"Final shape: {df.shape}")
+            print("Successfully completed validate_data")
+            return df
+            
+        except Exception as e:
+            print(f"Error in data validation: {str(e)}")
+            traceback.print_exc()
+            return None
+
+class StockAnalyzerGUI:
+    def __init__(self, available_dbs):
+        """Initialize the GUI"""
+        try:
+            print("\nStarting initialize_gui...")
+            print("Initializing GUI...")
+            
+            # Initialize basic attributes
+            self.available_dbs = available_dbs
+            self.root = tk.Tk()
+            self.current_db = None
+            self.tables = []
+            self.tickers = []
+            
+            # Initialize technical analysis attributes
+            self.scaler = None
+            self.sequence_length = 10
+            
+            # Initialize AI agent
+            self.ai_agent = AIAgent()
+            
+            # Create GUI elements
+            self.create_gui_elements()
+            
+            # Call initialization methods
+            self.initialize_gui()
+            
+        except Exception as e:
+            print(f"Error in initialization: {str(e)}")
+            traceback.print_exc()
+
+    def create_gui_elements(self):
+        """Create GUI elements"""
+        try:
+            # Create main container
+            self.main_container = ttk.Frame(self.root)
+            self.main_container.pack(fill=tk.BOTH, expand=True)
+
+            # Create status bar
+            self.status_frame = ttk.Frame(self.main_container)
+            self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            # Create loading label
+            self.loading_label = ttk.Label(self.status_frame, text="Ready")
+            self.loading_label.pack(side=tk.LEFT, padx=5)
+            
+            # Create ticker description
+            self.ticker_desc = ttk.Label(self.status_frame, text="")
+            self.ticker_desc.pack(side=tk.RIGHT, padx=5)
+            
+            # Create control panel
+            self.control_panel = ttk.Frame(self.main_container)
+            self.control_panel.pack(side=tk.LEFT, fill=tk.Y)
+            
+            # Create plot panel
+            self.plot_panel = ttk.Frame(self.main_container)
+            self.plot_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+            
+        except Exception as e:
+            print(f"Error creating GUI elements: {str(e)}")
+            traceback.print_exc()
+
+    def initialize_gui(self):
+        """Initialize the GUI components"""
+        try:
+            print("Setting window dimensions...")
+            self.root.title("Stock Market Analyzer")
+            self.root.geometry("1200x800")
+            
+            # Initialize components
+            self.initialize_plot_area()
+            self.initialize_control_panel()
+            self.setup_initial_database()
+            
+        except Exception as e:
+            print(f"Error in GUI initialization: {str(e)}")
+            traceback.print_exc()
+
+    def initialize_plot_area(self):
+        """Initialize the plotting area with proper configuration"""
+        try:
+            print("\nInitializing plot area...")
+            
+            # Create figure with subplots
+            print("Creating figure...")
+            self.figure = Figure(figsize=(10, 8), dpi=100)
+            self.figure.set_facecolor('#f0f0f0')
+            
+            # Create canvas
+            print("Creating canvas...")
+            self.canvas = FigureCanvasTkAgg(self.figure, master=self.plot_panel)
+            self.canvas.draw()
+            
+            # Add toolbar
+            print("Adding toolbar...")
+            toolbar_frame = ttk.Frame(self.plot_panel)
+            toolbar_frame.grid(row=0, column=0, sticky="ew")
+            self.toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
+            
+            # Grid canvas
+            print("Positioning canvas...")
+            self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+            
+            # Configure grid weights
+            self.plot_panel.grid_rowconfigure(1, weight=1)
+            self.plot_panel.grid_columnconfigure(0, weight=1)
+            
+            print("Plot area initialization complete")
+            
+        except Exception as e:
+            print(f"Error creating plot area: {str(e)}")
+            traceback.print_exc()
+
+    def initialize_control_panel(self):
+        """Initialize the control panel"""
+        try:
+            print("\nInitializing control panel...")
+            
+            # Create control panel
+            self.create_control_panel()
+            
+        except Exception as e:
+            print(f"Error initializing control panel: {str(e)}")
+            traceback.print_exc()
+
+    def create_control_panel(self):
+        """Create main control panel with proper layout"""
+        try:
+            print("\nCreating control panel...")
+            
+            # Configure control panel grid
+            self.control_panel.grid_columnconfigure(0, weight=1)
+            
+            # Create database selection
+            print("Creating database controls...")
+            self.create_database_controls()
+            
+            # Create table selection
+            print("Creating table controls...")
+            self.create_table_controls()
+            
+            # Create ticker selection
+            print("Creating ticker controls...")
+            self.create_ticker_controls()
+            
+            # Create duration selection
+            print("Creating duration controls...")
+            self.create_duration_controls()
+            
+            # Add AI controls
+            print("Adding AI controls...")
+            self.add_ai_controls()
+            
+            print("Control panel creation complete")
+            
+        except Exception as e:
+            print(f"Error creating control panel: {str(e)}")
+            traceback.print_exc()
+
+    def create_database_controls(self):
+        """Create database selection controls"""
+        try:
+            print("Creating database selection frame...")
+            # Database selection
+            db_frame = ttk.LabelFrame(self.control_panel, text="Database Selection", padding="5")
+            db_frame.pack(fill="x", padx=5, pady=5)
+            
+            ttk.Label(db_frame, text="Database:").pack(side="left", padx=5)
+            self.db_combo = ttk.Combobox(db_frame, state="readonly")
+            self.db_combo.pack(side="left", fill="x", expand=True, padx=5)
+            
+            if self.available_dbs:
+                self.db_combo['values'] = self.available_dbs
+                if not self.current_db:
+                    self.current_db = self.available_dbs[0]
+                self.db_combo.set(self.current_db)
+                self.db_combo.bind('<<ComboboxSelected>>', self.on_database_change)
+            
+            # Refresh button
+            ttk.Button(db_frame, text="🔄", width=3,
+                      command=self.refresh_databases).pack(side="left", padx=5)
+            
+        except Exception as e:
+            print(f"Error creating database controls: {str(e)}")
+            traceback.print_exc()
+
+    def create_table_controls(self):
+        """Create table selection controls"""
+        try:
+            print("Creating table selection frame...")
+            # Table selection
+            table_frame = ttk.LabelFrame(self.control_panel, text="Table Selection", padding="5")
+            table_frame.pack(fill="x", padx=5, pady=5)
+            
+            ttk.Label(table_frame, text="Table:").pack(side="left", padx=5)
+            self.table_var = tk.StringVar()
+            self.table_combo = ttk.Combobox(table_frame, textvariable=self.table_var)
+            self.table_combo.pack(side="left", fill="x", expand=True, padx=5)
+            
+            if self.tables:
+                self.table_combo['values'] = self.tables
+                self.table_combo.set(self.tables[0])
+                self.table_combo.bind('<<ComboboxSelected>>', self.on_table_change)
+            
+        except Exception as e:
+            print(f"Error creating table controls: {str(e)}")
+            traceback.print_exc()
+
+    def create_ticker_controls(self):
+        """Create ticker selection controls"""
+        try:
+            print("Creating ticker selection frame...")
+            # Ticker selection
+            ticker_frame = ttk.LabelFrame(self.control_panel, text="Stock Selection", padding="5")
+            ticker_frame.pack(fill="x", padx=5, pady=5)
+            
+            ttk.Label(ticker_frame, text="Ticker:").pack(side="left", padx=5)
+            self.ticker_var = tk.StringVar()
+            self.ticker_combo = ttk.Combobox(ticker_frame, textvariable=self.ticker_var)
+            self.ticker_combo.pack(fill="x", padx=5, pady=2)
+            
+        except Exception as e:
+            print(f"Error creating ticker controls: {str(e)}")
+            traceback.print_exc()
+
+    def create_duration_controls(self):
+        """Create duration selection controls"""
+        try:
+            duration_frame = ttk.LabelFrame(self.control_panel, text="Duration")
+            duration_frame.pack(fill="x", padx=5, pady=5)
+            
+            durations = [("1 Day", "1d"), ("1 Month", "1mo"), 
+                        ("3 Months", "3mo"), ("6 Months", "6mo"),
+                        ("1 Year", "1y")]
+            
+            self.duration_var = tk.StringVar(value="1mo")
+            for i, (text, value) in enumerate(durations):
+                ttk.Radiobutton(duration_frame, text=text, value=value,
+                              variable=self.duration_var).pack(side="left", padx=5)
+                duration_frame.grid_columnconfigure(i, weight=1)
+            
+        except Exception as e:
+            print(f"Error creating duration controls: {str(e)}")
+            traceback.print_exc()
+
+    def add_ai_controls(self):
+        """Add AI control panel with pack layout"""
+        try:
+            print("\nAdding AI controls...")
+            
+            # Create main AI frame
+            ai_frame = ttk.LabelFrame(self.control_panel, text="AI Analysis")
+            ai_frame.pack(fill="x", padx=5, pady=5)
+            
+            # Training parameters frame
+            print("Adding training parameters...")
+            param_frame = ttk.LabelFrame(ai_frame, text="Training Parameters")
+            param_frame.pack(fill="x", padx=5, pady=5)
+            
+            # Parameters container
+            params_container = ttk.Frame(param_frame)
+            params_container.pack(fill="x", padx=5, pady=2)
+            
+            # Epochs
+            epochs_frame = ttk.Frame(params_container)
+            epochs_frame.pack(fill="x", padx=5, pady=2)
+            ttk.Label(epochs_frame, text="Epochs:").pack(side="left")
+            self.epochs_var = tk.StringVar(value="50")
+            ttk.Entry(epochs_frame, textvariable=self.epochs_var, width=10).pack(side="left", padx=5)
+            
+            # Batch Size
+            batch_frame = ttk.Frame(params_container)
+            batch_frame.pack(fill="x", padx=5, pady=2)
+            ttk.Label(batch_frame, text="Batch Size:").pack(side="left")
+            self.batch_size_var = tk.StringVar(value="32")
+            ttk.Entry(batch_frame, textvariable=self.batch_size_var, width=10).pack(side="left", padx=5)
+            
+            # Learning Rate
+            lr_frame = ttk.Frame(params_container)
+            lr_frame.pack(fill="x", padx=5, pady=2)
+            ttk.Label(lr_frame, text="Learning Rate:").pack(side="left")
+            self.learning_rate_var = tk.StringVar(value="0.001")
+            ttk.Entry(lr_frame, textvariable=self.learning_rate_var, width=10).pack(side="left", padx=5)
+            
+            # Control buttons frame
+            button_frame = ttk.Frame(ai_frame)
+            button_frame.pack(fill="x", padx=5, pady=5)
+            
+            # Train button
+            ttk.Button(button_frame, text="Train Model", 
+                      command=self.train_model).pack(side="left", expand=True, padx=5)
+            
+            # Predict button
+            ttk.Button(button_frame, text="Make Prediction",
+                      command=self.make_prediction).pack(side="left", expand=True, padx=5)
+            
+            # Add AI status
+            self.ai_status = ttk.Label(ai_frame, text="AI Status: Not trained")
+            self.ai_status.pack(fill="x", padx=5, pady=5)
+            
+            print("AI controls setup complete")
+            
+        except Exception as e:
+            print(f"Error adding AI controls: {str(e)}")
+            traceback.print_exc()
+
+    def train_model(self):
+        """Train the AI model"""
+        try:
+            print("\n=== Starting Model Training ===")
+            print(f"Current Database: {self.current_db}")
+            print(f"Selected Table: {self.table_var.get()}")
+            print(f"Selected Ticker: {self.ticker_var.get()}")
+            
+            # Get training parameters
+            epochs = int(self.epochs_var.get())
+            batch_size = int(self.batch_size_var.get())
+            learning_rate = float(self.learning_rate_var.get())
+            
+            # Get historical data
+            df = self.get_historical_data()
+            if df is None or df.empty:
+                return
+            
+            # Prepare data for training
+            X_train, y_train = self.prepare_data_for_training(df)
+            
+            # Build and train model
+            self.ai_agent.build_model(input_shape=(X_train.shape[1], X_train.shape[2]))
+            history = self.ai_agent.model.fit(
+                X_train, y_train,
+                epochs=epochs,
+                batch_size=batch_size,
+                validation_split=0.2,
+                verbose=1
+            )
+            
+            # Update status
+            self.ai_status.config(text="AI Status: Trained")
+            
+            # Plot training history
+            self.plot_training_history(history)
+            
+        except Exception as e:
+            print("\n=== Error in Training ===")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            print("\nTraceback:")
+            traceback.print_exc()
+
+    def plot_training_history(self, history):
+        """Plot training history"""
+        try:
+            # Clear previous plots
+            self.figure.clear()
+            
+            # Create subplot for loss
+            ax = self.figure.add_subplot(111)
+            ax.plot(history.history['loss'], label='Training Loss')
+            ax.plot(history.history['val_loss'], label='Validation Loss')
+            ax.set_title('Model Training History')
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('Loss')
+            ax.legend()
+            ax.grid(True)
+            
+            # Update canvas
+            self.figure.tight_layout()
+            self.canvas.draw()
+            
+        except Exception as e:
+            print(f"Error plotting training history: {str(e)}")
+            traceback.print_exc()
+
+    def make_prediction(self):
+        """Make predictions using the trained model"""
+        try:
+            print("\n=== Starting Prediction ===")
+            print(f"Current Database: {self.current_db}")
+            print(f"Selected Ticker: {self.ticker_var.get()}")
+            
+            if self.ai_agent.model is None:
+                print("Model not trained. Please train the model first.")
+                messagebox.showwarning("Warning", "Please train the model first.")
+                return
+            
+            # Get the latest data
+            df = self.get_historical_data()
+            if df is None or df.empty:
+                print("No data available for prediction")
+                return
+            
+            # Prepare data for prediction
+            df = self.prepare_data_for_prediction(df)
+            
+            # Make prediction
+            prediction = self.ai_agent.model.predict(df)
+            
+            # Update plot with prediction
+            self.plot_prediction(prediction)
+            
+        except Exception as e:
+            print("\n=== Error in Prediction ===")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            print("\nTraceback:")
+            traceback.print_exc()
 
     def on_database_change(self, event=None):
         """Handle database selection change"""
-        new_db = self.db_var.get()
+        new_db = self.db_combo.get()
         try:
             # Close existing connection if any
             if hasattr(self, 'db_conn') and self.db_conn:
@@ -285,39 +805,53 @@ class StockAnalyzerGUI:
 
     def on_table_change(self, event=None):
         """Handle table selection change"""
-        if not hasattr(self, 'db_conn') or not self.db_conn:
-            return
-        
-        table = self.table_var.get()
-        if not table or table == 'No tables available':
-            self.clear_ticker_selection()
-            return
-        
         try:
+            print(f"\nTable selection changed to: {self.table_var.get()}")
+            
+            if not hasattr(self, 'db_conn') or not self.db_conn:
+                print("No database connection available")
+                self.clear_ticker_selection()
+                return
+            
+            table = self.table_var.get()
+            if not table or table == 'No tables available':
+                print("No valid table selected")
+                self.clear_ticker_selection()
+                return
+            
             # Get column information
+            print(f"Getting columns for table: {table}")
             columns = self.db_conn.execute(f"SELECT * FROM {table} LIMIT 0").description
             column_names = [col[0] for col in columns]
-            print(f"Available columns in {table}: {column_names}")
+            print(f"Available columns: {column_names}")
             
             # Check if table has ticker column
             if 'ticker' in column_names:
-                # Get unique tickers from the table
-                tickers = self.db_conn.execute(f"SELECT DISTINCT ticker FROM {table}").fetchall()
+                print("Found ticker column, retrieving unique tickers...")
+                tickers = self.db_conn.execute(
+                    f"SELECT DISTINCT ticker FROM {table} ORDER BY ticker"
+                ).fetchall()
                 tickers = [t[0] for t in tickers]
-                print(f"Found tickers using column 'ticker': {tickers[:5]}...")
+                print(f"Found {len(tickers)} tickers")
                 
                 # Update ticker combobox
                 self.ticker_combo['values'] = tickers
                 if tickers:
                     self.ticker_combo.set(tickers[0])
-                    # Update description
-                    self.update_ticker_description()
+                    print(f"Set initial ticker to: {tickers[0]}")
+                    # Start analysis automatically
+                    self.start_analysis()
+                else:
+                    print("No tickers found in table")
+                    self.clear_ticker_selection()
             else:
+                print("No ticker column found in table")
                 self.clear_ticker_selection()
             
         except Exception as e:
-            print(f"Error updating table selection: {e}")
-            messagebox.showerror("Table Error", str(e))
+            print(f"Error in table change handler: {str(e)}")
+            traceback.print_exc()
+            self.clear_ticker_selection()
 
     def clear_ticker_selection(self):
         """Clear ticker selection when no valid table/database is selected"""
@@ -328,29 +862,86 @@ class StockAnalyzerGUI:
     def update_ticker_description(self):
         """Update the description for the currently selected ticker"""
         ticker = self.ticker_var.get()
-        description = self.ticker_descriptions.get(ticker, "No description available")
+        description = self.ticker_desc.get(ticker, "No description available")
         self.ticker_desc.config(text=description)
 
     def get_tables(self):
         """Get list of non-empty tables from current database"""
         try:
+            print(f"\nQuerying tables from database: {self.current_db}")
             tables = self.db_conn.execute(
                 """SELECT name FROM sqlite_master 
                    WHERE type='table' AND name != 'sqlite_sequence'"""
             ).fetchall()
             tables = [t[0] for t in tables]
+            print(f"Found raw tables: {tables}")
             
-            # Filter out empty tables
+            # Filter out empty tables and get table statistics
             non_empty_tables = []
             for table in tables:
-                count = self.db_conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                if count > 0:
-                    non_empty_tables.append(table)
+                try:
+                    print(f"\nAnalyzing table: {table}")
+                    # Get column names first
+                    columns = self.db_conn.execute(f"SELECT * FROM {table} LIMIT 0").description
+                    column_names = [col[0] for col in columns]
+                    print(f"Columns in {table}: {column_names}")
+                    
+                    # Build dynamic query based on available columns
+                    count_query = f"SELECT COUNT(*) FROM {table}"
+                    count = self.db_conn.execute(count_query).fetchone()[0]
+                    
+                    if count > 0:
+                        non_empty_tables.append(table)
+                        print(f"Table {table} statistics:")
+                        print(f"  Total records: {count}")
+                        
+                        # Get date range if date column exists
+                        date_column = None
+                        for col in ['date', 'expiry', 'created_at']:
+                            if col in column_names:
+                                date_column = col
+                                break
+                        
+                        if date_column:
+                            date_query = f"""
+                                SELECT 
+                                    MIN({date_column}) as earliest_date,
+                                    MAX({date_column}) as latest_date 
+                                FROM {table}
+                            """
+                            date_range = self.db_conn.execute(date_query).fetchone()
+                            if date_range and date_range[0] and date_range[1]:
+                                print(f"  Date range: {date_range[0]} to {date_range[1]}")
+                        
+                        # Get sample of tickers if available
+                        ticker_column = None
+                        for col in ['ticker', 'symbol', 'pair']:
+                            if col in column_names:
+                                ticker_column = col
+                                break
+                        
+                        if ticker_column:
+                            tickers_query = f"""
+                                SELECT DISTINCT {ticker_column}
+                                FROM {table}
+                                ORDER BY {ticker_column}
+                                LIMIT 5
+                            """
+                            tickers = [row[0] for row in self.db_conn.execute(tickers_query).fetchall()]
+                            print(f"  Sample tickers: {tickers}")
+                    else:
+                        print(f"Table {table} is empty")
+                
+                except Exception as e:
+                    print(f"Error processing table {table}: {str(e)}")
+                    continue
             
-            print(f"Found non-empty tables: {non_empty_tables}")
+            print(f"\nFinal non-empty tables: {non_empty_tables}")
             return non_empty_tables
+            
         except Exception as e:
-            print(f"Error getting tables: {e}")
+            print(f"Error getting tables: {str(e)}")
+            traceback.print_exc()
             return []
 
     def get_tickers(self, table_name):
@@ -404,9 +995,24 @@ class StockAnalyzerGUI:
             traceback.print_exc()
             return []
 
-    def get_historical_data(self, ticker, table_name, timeframe):
+    def get_historical_data(self):
         """Get historical price data for a ticker"""
         try:
+            # Get column names first
+            columns = self.db_conn.execute(f"SELECT * FROM {self.table_var.get()} LIMIT 0").description
+            column_names = [col[0] for col in columns]
+            
+            # Determine date column
+            date_column = None
+            for col in ['date', 'expiry', 'created_at']:
+                if col in column_names:
+                    date_column = col
+                    break
+            
+            if not date_column:
+                raise ValueError(f"No date column found in table {self.table_var.get()}")
+            
+            # Map timeframe to interval
             interval_map = {
                 '1d': '1 day',
                 '1mo': '1 month',
@@ -414,48 +1020,47 @@ class StockAnalyzerGUI:
                 '6mo': '6 months',
                 '1y': '1 year'
             }
-            interval = interval_map.get(timeframe, '1 month')
+            interval = interval_map.get(self.duration_var.get(), '1 month')
             
-            # Get column information
-            columns_query = """
-                SELECT column_name, data_type 
-                FROM information_schema.columns 
-                WHERE table_name = ?
-            """
-            columns = {row[0].lower(): row[1] for row in self.db_conn.execute(columns_query, [table_name]).fetchall()}
+            # Build column list based on available columns
+            select_columns = []
+            column_mapping = {
+                'date': date_column,
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'volume': 'Volume',
+                'adj_close': 'Adj_Close'
+            }
             
-            # Determine ticker and date columns
-            ticker_col = next((col for col in ['ticker', 'symbol', 'pair'] if col in columns), None)
-            date_col = next((col for col in ['date', 'timestamp', 'created_at'] if col in columns), None)
+            for db_col, df_col in column_mapping.items():
+                if db_col in column_names:
+                    select_columns.append(f"{db_col} as {df_col}")
+                elif db_col == 'adj_close' and 'close' in column_names:
+                    select_columns.append(f"close as {df_col}")
             
-            if not ticker_col or not date_col:
-                raise Exception(f"Required columns not found in {table_name}")
-            
-            # Build query with available columns
-            select_cols = [
-                f"{date_col} as date",
-                "open as Open",
-                "high as High",
-                "low as Low",
-                "close as Close",
-                "volume as Volume",
-                "COALESCE(adj_close, close) as Adj_Close"
-            ]
-            
+            # Build and execute query
             query = f"""
-                SELECT {', '.join(select_cols)}
-                FROM {table_name}
-                WHERE {ticker_col} = ?
-                AND {date_col} >= CURRENT_DATE - INTERVAL '{interval}'
-                ORDER BY {date_col}
+                SELECT {', '.join(select_columns)}
+                FROM {self.table_var.get()}
+                WHERE ticker = ?
+                AND {date_column} >= CURRENT_DATE - INTERVAL '{interval}'
+                ORDER BY {date_column}
             """
             
             print(f"Executing query: {query}")
-            print(f"Parameters: {[ticker]}")
+            print(f"Parameters: {[self.ticker_var.get()]}")
             
-            df = self.db_conn.execute(query, [ticker]).df()
+            df = self.db_conn.execute(query, [self.ticker_var.get()]).df()
             if df is not None and not df.empty:
                 print(f"Retrieved {len(df)} rows of data")
+                print(f"Sample data:\n{df.head()}")
+                
+                # Ensure date column is named 'date' for consistency
+                if date_column != 'date':
+                    df = df.rename(columns={date_column: 'date'})
+                
             return df
             
         except Exception as e:
@@ -463,51 +1068,46 @@ class StockAnalyzerGUI:
             traceback.print_exc()
             return None
 
-    def calculate_rsi(self, prices, periods=14):
-        """Calculate RSI for a price series"""
-        try:
-            # Calculate price changes
-            delta = prices.diff()
-            
-            # Separate gains and losses
-            gains = delta.where(delta > 0, 0)
-            losses = -delta.where(delta < 0, 0)
-            
-            # Calculate average gains and losses
-            avg_gains = gains.rolling(window=periods).mean()
-            avg_losses = losses.rolling(window=periods).mean()
-            
-            # Calculate RS and RSI
-            rs = avg_gains / avg_losses
-            rsi = 100 - (100 / (1 + rs))
-            
-            return rsi
-            
-        except Exception as e:
-            print(f"Error calculating RSI: {str(e)}")
-            return pd.Series([50] * len(prices))  # Return neutral RSI on error
-
     def start_analysis(self):
+        """Start analysis for selected ticker"""
         try:
             ticker = self.ticker_var.get()
             duration = self.duration_var.get()
             
+            print(f"\nStarting analysis for {ticker} over {duration} period")
             self.loading_label.config(text=f"Loading data for {ticker}...")
             
-            df = self.get_historical_data(ticker, self.table_var.get(), duration)
+            # Get historical data
+            print(f"Retrieving historical data from {self.table_var.get()}")
+            df = self.get_historical_data()
             
             if df is not None and not df.empty:
-                df['SMA_20'] = df['Close'].rolling(window=20).mean()
-                df['SMA_50'] = df['Close'].rolling(window=50).mean()
-                df['RSI'] = self.calculate_rsi(df['Close'])
+                print(f"Retrieved {len(df)} records")
+                print("Calculating technical indicators...")
                 
-                self.update_plots(df, ticker)
-                self.loading_label.config(text=f"Analysis complete for {ticker}")
+                # Calculate indicators
+                try:
+                    df = self.calculate_technical_indicators(df)
+                    if df is None:
+                        raise ValueError("Invalid data after calculating indicators")
+                    
+                    # Update plots
+                    print("Updating visualization...")
+                    self.update_plots(df, ticker)
+                    self.loading_label.config(text=f"Analysis complete for {ticker}")
+                    print("Analysis complete")
+                    
+                except Exception as e:
+                    print(f"Error calculating indicators: {str(e)}")
+                    traceback.print_exc()
+                    self.loading_label.config(text=f"Error in technical analysis: {str(e)}")
             else:
+                print(f"No data available for {ticker}")
                 self.loading_label.config(text=f"No data available for {ticker}")
                 
         except Exception as e:
             print(f"Error in analysis: {str(e)}")
+            traceback.print_exc()
             self.loading_label.config(text=f"Error analyzing {ticker}: {str(e)}")
 
     @process_data_safely
@@ -515,68 +1115,98 @@ class StockAnalyzerGUI:
         """Update all plots with current data"""
         try:
             if ticker == 'No tickers available' or self.table_var.get() == 'No tables available':
+                print("Invalid ticker or table selection")
                 return
             
-            print(f"Updating plots for {ticker} from {self.table_var.get()}")
+            print(f"\nUpdating plots for {ticker} from {self.table_var.get()}")
+            print(f"Data shape: {df.shape}")
+            print("Columns available:", df.columns.tolist())
             
             # Clear previous plots
+            print("Clearing previous plots...")
             self.figure.clear()
             
-            # Create subplots
-            ax_price = self.figure.add_subplot(211)  # Price plot
-            ax_rsi = self.figure.add_subplot(212)    # RSI plot
+            # Create subplots with specific heights
+            print("Creating subplot layout...")
+            gs = self.figure.add_gridspec(2, 1, height_ratios=[3, 1])
+            ax_price = self.figure.add_subplot(gs[0])  # Price plot (larger)
+            ax_volume = self.figure.add_subplot(gs[1])  # Volume plot (smaller)
             
-            # Get data for different timeframes
-            timeframes = ['1mo', '3mo', '6mo', '1y']
-            colors = ['blue', 'green', 'red', 'purple']
+            # Convert date to datetime if it's not already
+            print("Processing date column...")
+            df['date'] = pd.to_datetime(df['date'])
             
-            for timeframe, color in zip(timeframes, colors):
-                df_timeframe = self.get_historical_data(ticker, self.table_var.get(), timeframe)
-                if df_timeframe is not None and not df_timeframe.empty:
-                    # Convert date column to datetime if it's not already
-                    df_timeframe['date'] = pd.to_datetime(df_timeframe['date'])
-                    
-                    # Plot price data
-                    ax_price.plot(df_timeframe['date'], df_timeframe['Close'], label=f'{timeframe} Close', color=color, alpha=0.7)
-                    
-                    # Calculate and plot RSI
-                    rsi = self.calculate_rsi(df_timeframe['Close'])
-                    ax_rsi.plot(df_timeframe['date'], rsi, label=f'{timeframe} RSI', color=color, alpha=0.7)
+            # Plot candlestick chart
+            print("Creating candlestick data...")
+            candlestick_data = []
+            for index, row in df.iterrows():
+                candlestick_data.append([
+                    mdates.date2num(row['date']),
+                    row['Open'],
+                    row['High'],
+                    row['Low'],
+                    row['Close']
+                ])
+            
+            # Plot candlesticks
+            print("Plotting candlesticks...")
+            mpf.candlestick_ohlc(ax_price, candlestick_data, width=0.6, 
+                                colorup='green', colordown='red', alpha=0.8)
+            
+            # Add moving averages
+            print("Adding technical indicators...")
+            if len(df) > 50:  # Only add if we have enough data
+                df['MA20'] = df['Close'].rolling(window=20).mean()
+                df['MA50'] = df['Close'].rolling(window=50).mean()
+                ax_price.plot(df['date'], df['MA20'], label='20-day MA', color='blue', alpha=0.7)
+                ax_price.plot(df['date'], df['MA50'], label='50-day MA', color='orange', alpha=0.7)
+                print("Added moving averages")
             
             # Customize price plot
+            print("Customizing price plot...")
             ax_price.set_title(f'{ticker} Price History')
-            ax_price.set_xlabel('Date')
             ax_price.set_ylabel('Price')
-            ax_price.grid(True)
+            ax_price.grid(True, alpha=0.3)
             ax_price.legend()
             
+            # Plot volume
+            print("Adding volume plot...")
+            ax_volume.bar(df['date'], df['Volume'], color='blue', alpha=0.5)
+            ax_volume.set_title('Volume')
+            ax_volume.set_ylabel('Volume')
+            
             # Format x-axis dates
-            ax_price.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-            ax_price.xaxis.set_major_locator(mdates.AutoDateLocator())
+            print("Formatting axes...")
+            for ax in [ax_price, ax_volume]:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+                plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
             
-            # Customize RSI plot
-            ax_rsi.set_title('RSI Indicator')
-            ax_rsi.set_xlabel('Date')
-            ax_rsi.set_ylabel('RSI')
-            ax_rsi.grid(True)
-            ax_rsi.set_ylim([0, 100])
-            
-            # Add RSI reference lines
-            ax_rsi.axhline(y=70, color='r', linestyle='--', alpha=0.5)
-            ax_rsi.axhline(y=30, color='g', linestyle='--', alpha=0.5)
-            ax_rsi.legend()
-            
-            # Format x-axis dates for RSI
-            ax_rsi.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-            ax_rsi.xaxis.set_major_locator(mdates.AutoDateLocator())
+            # Add RSI subplot if available
+            if 'RSI' in df.columns:
+                print("Adding RSI subplot...")
+                gs = self.figure.add_gridspec(3, 1, height_ratios=[3, 1, 1])
+                ax_rsi = self.figure.add_subplot(gs[2])
+                ax_rsi.plot(df['date'], df['RSI'], color='purple', label='RSI')
+                ax_rsi.axhline(y=70, color='r', linestyle='--', alpha=0.5)
+                ax_rsi.axhline(y=30, color='g', linestyle='--', alpha=0.5)
+                ax_rsi.set_title('RSI (14)')
+                ax_rsi.set_ylabel('RSI')
+                ax_rsi.set_ylim([0, 100])
+                ax_rsi.grid(True, alpha=0.3)
             
             # Adjust layout and display
+            print("Finalizing plot layout...")
             self.figure.tight_layout()
             self.canvas.draw()
+            
+            print("Plot update complete")
+            self.loading_label.config(text=f"Updated plot for {ticker}")
             
         except Exception as e:
             print(f"Error updating plots: {str(e)}")
             traceback.print_exc()
+            self.loading_label.config(text=f"Error updating plot: {str(e)}")
 
     def find_duckdb_databases(self):
         """Find all DuckDB database files in current directory"""
@@ -594,25 +1224,31 @@ class StockAnalyzerGUI:
             return dbs
         except Exception as e:
             print(f"Error finding databases: {str(e)}")
-            return ['stocks.db']
+            return []
 
     def refresh_databases(self):
         """Refresh the list of available databases"""
         try:
-            self.available_dbs = find_databases()
+            self.available_dbs = self.find_duckdb_databases()
             print(f"Refreshed database list: {self.available_dbs}")
             
             self.db_combo['values'] = self.available_dbs
             if self.available_dbs:
-                if self.db_var.get() not in self.available_dbs:
-                    self.db_var.set(self.available_dbs[0])
+                if self.db_combo.get() not in self.available_dbs:
+                    self.db_combo.set(self.available_dbs[0])
                     self.on_database_change()
         except Exception as e:
             print(f"Error refreshing databases: {e}")
             messagebox.showerror("Refresh Error", str(e))
 
     def run(self):
-        self.root.mainloop()
+        """Start the GUI main loop"""
+        try:
+            print("Starting main loop...")
+            self.root.mainloop()
+        except Exception as e:
+            print(f"Error in main loop: {str(e)}")
+            traceback.print_exc()
 
     def update_tickers(self):
         """Update available tickers based on current table selection"""
@@ -650,49 +1286,344 @@ class StockAnalyzerGUI:
             print(f"Error updating tickers: {e}")
             self.clear_ticker_selection()
 
+    def update_plots_with_predictions(self, df, predictions):
+        """Update plots to include AI predictions"""
+        try:
+            # Create a copy of the dataframe with predictions
+            df_pred = df.copy()
+            df_pred['Predictions'] = predictions
+            
+            # Update plots with both actual and predicted values
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            
+            # Plot actual prices
+            ax.plot(df_pred['date'], df_pred['Close'], label='Actual', color='blue')
+            
+            # Plot predictions
+            ax.plot(df_pred['date'], df_pred['Predictions'], label='Predicted', color='red', linestyle='--')
+            
+            # Customize plot
+            ax.set_title(f'Stock Price Prediction for {self.ticker_var.get()}')
+            ax.set_xlabel('Date')
+            ax.set_ylabel('Price')
+            ax.legend()
+            ax.grid(True)
+            
+            # Format dates
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+            plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+            
+            # Update display
+            self.figure.tight_layout()
+            self.canvas.draw()
+            
+        except Exception as e:
+            print(f"Error updating plots with predictions: {str(e)}")
+            traceback.print_exc()
+
+    def create_plot_area(self):
+        """Initialize the plotting area with proper configuration"""
+        try:
+            print("\nInitializing plot area...")
+            
+            # Create figure with subplots
+            print("Creating figure...")
+            self.figure = Figure(figsize=(10, 8), dpi=100)
+            self.figure.set_facecolor('#f0f0f0')
+            
+            # Create canvas
+            print("Creating canvas...")
+            self.canvas = FigureCanvasTkAgg(self.figure, master=self.plot_panel)
+            self.canvas.draw()
+            
+            # Add toolbar
+            print("Adding toolbar...")
+            toolbar_frame = ttk.Frame(self.plot_panel)
+            toolbar_frame.grid(row=0, column=0, sticky="ew")
+            self.toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
+            
+            # Grid canvas
+            print("Positioning canvas...")
+            self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+            
+            # Configure grid weights
+            self.plot_panel.grid_rowconfigure(1, weight=1)
+            self.plot_panel.grid_columnconfigure(0, weight=1)
+            
+            print("Plot area initialization complete")
+            
+        except Exception as e:
+            print(f"Error creating plot area: {str(e)}")
+            traceback.print_exc()
+
+    def create_status_bar(self):
+        """Create status bar"""
+        try:
+            print("\nCreating status bar...")
+            status_frame = ttk.Frame(self.root)
+            status_frame.pack(fill="x", side="bottom", padx=5, pady=2)
+            
+            self.status_label = ttk.Label(status_frame, text="Ready")
+            self.status_label.pack(side="left", padx=5)
+            
+            print("Status bar creation complete")
+            
+        except Exception as e:
+            print(f"Error creating status bar: {str(e)}")
+            traceback.print_exc()
+
+    def setup_initial_database(self):
+        """Setup initial database connection and populate controls"""
+        try:
+            print("\nSetting up initial database connection...")
+            
+            if not self.available_dbs:
+                print("No databases available")
+                self.loading_label.config(text="No databases found")
+                return
+            
+            # Set initial database
+            self.current_db = self.available_dbs[0]
+            print(f"Selected initial database: {self.current_db}")
+            
+            # Connect to database
+            print("Establishing connection...")
+            self.db_conn = duckdb.connect(self.current_db)
+            
+            # Update database combo
+            print("Updating database selection...")
+            self.db_combo['values'] = self.available_dbs
+            self.db_combo.set(self.current_db)
+            
+            # Get and set tables
+            print("Getting available tables...")
+            self.tables = self.get_tables()
+            if self.tables:
+                print(f"Found tables: {self.tables}")
+                self.table_combo['values'] = self.tables
+                self.table_combo.set(self.tables[0])
+                
+                # Get initial tickers
+                print("Getting initial tickers...")
+                self.refresh_tickers()
+            else:
+                print("No tables found")
+                self.loading_label.config(text="No tables found in database")
+            
+            print("Initial database setup complete")
+            
+        except Exception as e:
+            print(f"Error in initial database setup: {str(e)}")
+            traceback.print_exc()
+            self.loading_label.config(text=f"Database initialization error: {str(e)}")
+
+    def refresh_tickers(self):
+        """Refresh the list of available tickers for the current table"""
+        try:
+            if not self.current_db or not self.table_var.get():
+                return
+            
+            query = f"""
+                SELECT DISTINCT ticker 
+                FROM {self.table_var.get()}
+                ORDER BY ticker
+            """
+            
+            tickers = self.db_conn.execute(query).fetchall()
+            if tickers is not None and len(tickers) > 0:
+                tickers = [t[0] for t in tickers]
+                self.ticker_combo['values'] = tickers
+                if tickers:
+                    self.ticker_combo.set(tickers[0])
+                    
+        except Exception as e:
+            print(f"Error refreshing tickers: {str(e)}")
+            traceback.print_exc()
+
+    def prepare_data_for_training(self, df):
+        """Prepare data for LSTM training"""
+        try:
+            print("Preparing data for training...")
+            
+            # Calculate technical indicators
+            df_processed = self.calculate_technical_indicators(df)
+            if df_processed is None:
+                print("Failed to calculate technical indicators")
+                return None, None
+            
+            # Select features for training
+            features = ['Close', 'Volume', 'MA20', 'MA50', 'RSI', 'MACD', 'Signal_Line', 
+                       'BB_upper', 'BB_middle', 'BB_lower']
+            
+            # Ensure all features exist
+            if not all(feature in df_processed.columns for feature in features):
+                print(f"Missing features. Available columns: {df_processed.columns}")
+                return None, None
+            
+            # Create the feature dataset
+            data = df_processed[features].values
+            
+            # Scale the data
+            self.scaler = MinMaxScaler()
+            scaled_data = self.scaler.fit_transform(data)
+            
+            # Create sequences
+            X = []
+            y = []
+            
+            for i in range(self.sequence_length, len(scaled_data)):
+                X.append(scaled_data[i-self.sequence_length:i])
+                y.append(scaled_data[i, 0])  # Predict the Close price
+                
+            X = np.array(X)
+            y = np.array(y)
+            
+            print(f"Data preparation complete. X shape: {X.shape}, y shape: {y.shape}")
+            return X, y
+            
+        except Exception as e:
+            print(f"Error preparing training data: {str(e)}")
+            traceback.print_exc()
+            return None, None
+
+    def prepare_data_for_prediction(self, df, sequence_length=60):
+        """Prepare data for making predictions"""
+        try:
+            # Calculate technical indicators
+            df = self.calculate_technical_indicators(df)
+            
+            # Select features
+            features = ['Open', 'High', 'Low', 'Close', 'Volume', 'MA20', 'MA50', 'RSI']
+            
+            # Scale the data
+            scaled_data = self.ai_agent.scaler.transform(df[features])
+            
+            # Create sequence
+            X = scaled_data[-sequence_length:].reshape(1, sequence_length, len(features))
+            
+            return X
+            
+        except Exception as e:
+            print(f"Error preparing prediction data: {str(e)}")
+            traceback.print_exc()
+            return None
+
+    def calculate_technical_indicators(self, df):
+        """Calculate technical indicators for the dataset"""
+        try:
+            print("Calculating technical indicators...")
+            
+            # Create a copy to avoid modifying the original dataframe
+            df = df.copy()
+            
+            # Calculate Moving Averages
+            df['MA5'] = df['Close'].rolling(window=5).mean()
+            df['MA20'] = df['Close'].rolling(window=20).mean()
+            df['MA50'] = df['Close'].rolling(window=50).mean()
+            
+            # Calculate RSI
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['RSI'] = 100 - (100 / (1 + rs))
+            
+            # Calculate MACD
+            exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+            exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+            df['MACD'] = exp1 - exp2
+            df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+            
+            # Calculate Bollinger Bands
+            df['BB_middle'] = df['Close'].rolling(window=20).mean()
+            df['BB_upper'] = df['BB_middle'] + 2 * df['Close'].rolling(window=20).std()
+            df['BB_lower'] = df['BB_middle'] - 2 * df['Close'].rolling(window=20).std()
+            
+            # Calculate Average True Range (ATR)
+            high_low = df['High'] - df['Low']
+            high_close = abs(df['High'] - df['Close'].shift())
+            low_close = abs(df['Low'] - df['Close'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+            df['ATR'] = true_range.rolling(window=14).mean()
+            
+            # Calculate Volume Moving Average
+            df['Volume_MA'] = df['Volume'].rolling(window=20).mean()
+            
+            # Drop any rows with NaN values
+            df = df.dropna()
+            
+            print("Technical indicators calculated successfully")
+            return df
+            
+        except Exception as e:
+            print(f"Error calculating technical indicators: {str(e)}")
+            traceback.print_exc()
+            return None
+
 def process_database(db_name):
-    with contextlib.closing(create_connection(db_name)) as conn:
-        if conn:
-            print(f"Processing database: {db_name}")
-            try:
-                # Get list of tables
-                tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                tables = [t[0] for t in tables]
-                
-                if not tables:
-                    print(f"No tables found in {db_name}")
-                    return
-                
-                print(f"Found tables: {tables}")
-                
-                for table in tables:
+    """Process a single database and get its information"""
+    try:
+        with contextlib.closing(duckdb.connect(db_name)) as conn:
+            print(f"\nProcessing database: {db_name}")
+            
+            # Get list of tables
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+            tables = [t[0] for t in tables]
+            
+            if not tables:
+                print(f"No tables found in {db_name}")
+                return
+            
+            print(f"Found tables: {tables}")
+            
+            for table in tables:
+                try:
                     # Get column information
                     columns = conn.execute(f"SELECT * FROM {table} LIMIT 0").description
                     column_names = [col[0] for col in columns]
                     print(f"Columns in {table}: {column_names}")
                     
-                    # Get sample data
-                    sample = conn.execute(f"""
-                        SELECT COUNT(*) as count, 
-                               MIN(date) as earliest_date,
-                               MAX(date) as latest_date 
-                        FROM {table}
-                    """).fetchone()
+                    # Build dynamic query based on available columns
+                    date_column = next((col for col in ['date', 'created_at'] if col in column_names), None)
+                    if date_column:
+                        stats_query = f"""
+                            SELECT COUNT(*) as count, 
+                                   MIN({date_column}) as earliest_date,
+                                   MAX({date_column}) as latest_date 
+                            FROM {table}
+                        """
+                    else:
+                        stats_query = f"SELECT COUNT(*) as count FROM {table}"
+                    
+                    result = conn.execute(stats_query).fetchone()
                     
                     print(f"Table {table} statistics:")
-                    print(f"  Total records: {sample[0]}")
-                    print(f"  Date range: {sample[1]} to {sample[2]}")
+                    print(f"  Total records: {result[0]}")
+                    if date_column and len(result) > 1:
+                        print(f"  Date range: {result[1]} to {result[2]}")
                     
-                    # If table has ticker column, show unique tickers
-                    if 'ticker' in column_names:
-                        tickers = conn.execute(f"SELECT DISTINCT ticker FROM {table}").fetchall()
-                        tickers = [t[0] for t in tickers]
-                        print(f"  Available tickers: {tickers[:5]}...")
+                    # Get sample of tickers if available
+                    ticker_column = next((col for col in ['ticker', 'symbol', 'pair'] if col in column_names), None)
+                    if ticker_column:
+                        tickers_query = f"""
+                            SELECT DISTINCT {ticker_column}
+                            FROM {table}
+                            LIMIT 5
+                        """
+                        tickers = [row[0] for row in conn.execute(tickers_query).fetchall()]
+                        print(f"  Available tickers: {tickers}...")
                     
-                    print()
-                    
-            except Exception as e:
-                print(f"Error processing {db_name}: {e}")
+                except Exception as e:
+                    print(f"Error processing table {table}: {str(e)}")
+                    continue
+                
+    except Exception as e:
+        print(f"Error processing {db_name}: {str(e)}")
 
 @process_data_safely
 def initialize_gui(databases):
@@ -701,24 +1632,23 @@ def initialize_gui(databases):
 
 def main():
     try:
-        databases = find_databases()
-        print(f"Found databases: {databases}")
+        # Get list of database files
+        databases = [f for f in os.listdir() if f.endswith('.db')]
+        print(f"Found databases: {databases}\n")
         
-        # Process databases in parallel
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            executor.map(process_database, databases)
-        
-        # Initialize GUI
+        # Process each database
+        for db in databases:
+            print(f"Processing database: {db}")
+            process_database(db)
+            print()
+            
+        # Initialize GUI with databases
         app = initialize_gui(databases)
         app.root.mainloop()
         
-    except KeyboardInterrupt:
-        print("\nGracefully shutting down...")
-        sys.exit(0)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {str(e)}")
         traceback.print_exc()
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()
