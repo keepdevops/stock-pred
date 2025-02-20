@@ -1275,14 +1275,21 @@ class StockAnalyzerGUI:
             self.epochs_var = tk.StringVar(value='100')
             self.batch_var = tk.StringVar(value='32')
             self.seq_var = tk.StringVar(value='60')
+            self.progress_var = tk.DoubleVar(value=0)
+            
+            # Initialize data structures
+            self.available_dbs = []
+            self.available_tables = []
+            self.available_tickers = []
+            self.tables = []
+            self.current_data = None
             
             # Initialize AI components
             self.model = None
             self.scaler = None
             self.sequence_length = None
-            self.current_data = None
             
-            # Initialize methods
+            # Set up methods first
             self._setup_methods()
             
             # Validate databases
@@ -1298,11 +1305,7 @@ class StockAnalyzerGUI:
             if not self.valid_databases:
                 raise ValueError("No valid databases found")
             
-            # Initialize data structures
             self.available_dbs = self.valid_databases.copy()
-            self.available_tables = []
-            self.available_tickers = []
-            self.tables = []
             
             # Set up the main layout
             self.setup_main_layout()
@@ -1322,15 +1325,18 @@ class StockAnalyzerGUI:
 
     def _setup_methods(self):
         """Set up all required methods"""
-        # Training methods
-        self.train_model = self._train_model
-        self.make_prediction = self._make_prediction
-        
         # Database methods
+        self.validate_table_schema = self._validate_table_schema
+        self.validate_tables = self._validate_tables
+        self.get_table_schema = self._get_table_schema
         self.connect_to_database = self._connect_to_database
         self.refresh_database_connection = self._refresh_database_connection
         self.execute_query = self._execute_query
         self.fetch_data = self._fetch_data
+        
+        # Training methods
+        self.train_model = self._train_model
+        self.make_prediction = self._make_prediction
         
         # GUI update methods
         self.update_ai_status = self._update_ai_status
@@ -1339,8 +1345,24 @@ class StockAnalyzerGUI:
         
         # Event handlers
         self.on_database_change = self._on_database_change
+        self.on_table_change = self._on_table_change
         self.on_duration_change = self._on_duration_change
         self.apply_custom_duration = self._apply_custom_duration
+
+    def _validate_table_schema(self, table_name, required_columns):
+        """Internal implementation of validate_table_schema"""
+        # ... existing validate_table_schema implementation ...
+        pass
+
+    def _validate_tables(self):
+        """Internal implementation of validate_tables"""
+        # ... existing validate_tables implementation ...
+        pass
+
+    def _get_table_schema(self, table_name):
+        """Internal implementation of get_table_schema"""
+        # ... existing get_table_schema implementation ...
+        pass
 
     def _train_model(self):
         """Internal implementation of train_model"""
@@ -1392,6 +1414,11 @@ class StockAnalyzerGUI:
         # ... existing on_database_change implementation ...
         pass
 
+    def _on_table_change(self, event=None):
+        """Internal implementation of on_table_change"""
+        # ... existing on_table_change implementation ...
+        pass
+
     def _on_duration_change(self, event=None):
         """Internal implementation of on_duration_change"""
         # ... existing on_duration_change implementation ...
@@ -1411,20 +1438,105 @@ class StockAnalyzerGUI:
             self.main_frame = ttk.Frame(self.root)
             self.main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
             
-            # Create left sidebar for controls
-            self.sidebar_frame = ttk.Frame(self.main_frame, width=250)
-            self.sidebar_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
-            self.sidebar_frame.pack_propagate(False)
+            # Create left sidebar container with fixed width
+            self.sidebar_container = ttk.Frame(self.main_frame, width=250)
+            self.sidebar_container.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+            self.sidebar_container.pack_propagate(False)
+            
+            # Create scrollable frame for controls
+            self.scrollable = ttk.Frame(self.sidebar_container)
+            self.scrollable.pack(fill=tk.BOTH, expand=True)
+            
+            # Add vertical scrollbar
+            self.scrollbar = ttk.Scrollbar(self.scrollable, orient="vertical")
+            self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Create canvas for scrolling
+            self.scroll_canvas = tk.Canvas(
+                self.scrollable,
+                yscrollcommand=self.scrollbar.set,
+                highlightthickness=0
+            )
+            self.scroll_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            
+            # Configure scrollbar
+            self.scrollbar.config(command=self.scroll_canvas.yview)
+            
+            # Create frame for controls inside canvas
+            self.control_frame = ttk.Frame(self.scroll_canvas)
+            
+            # Add control frame to canvas
+            self.canvas_window = self.scroll_canvas.create_window(
+                (0, 0),
+                window=self.control_frame,
+                anchor="nw",
+                width=self.scroll_canvas.winfo_width()
+            )
             
             # Create right side for plots
             self.plot_frame = ttk.Frame(self.main_frame)
             self.plot_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            
+            # Bind events
+            self.control_frame.bind("<Configure>", self._on_frame_configure)
+            self.scroll_canvas.bind("<Configure>", self._on_canvas_configure)
+            
+            # Bind mouse wheel
+            self.scroll_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+            self.scroll_canvas.bind_all("<Button-4>", self._on_mousewheel)
+            self.scroll_canvas.bind_all("<Button-5>", self._on_mousewheel)
             
             print("GUI layout setup complete")
             
         except Exception as e:
             print(f"Error in GUI layout setup: {str(e)}")
             raise
+
+    def _on_frame_configure(self, event=None):
+        """Reset the scroll region to encompass the inner frame"""
+        try:
+            if event and event.widget == self.control_frame:
+                self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
+        except Exception as e:
+            print(f"Error configuring frame: {str(e)}")
+
+    def _on_canvas_configure(self, event=None):
+        """Update the width of the window to fill the canvas"""
+        try:
+            if event and event.widget == self.scroll_canvas:
+                # Update the width to fit the canvas
+                self.scroll_canvas.itemconfig(
+                    self.canvas_window,
+                    width=event.width
+                )
+        except Exception as e:
+            print(f"Error configuring canvas: {str(e)}")
+
+    def _on_mousewheel(self, event):
+        """Handle mousewheel scrolling"""
+        try:
+            if event:
+                # Get the widget under the mouse
+                x, y = self.root.winfo_pointerxy()
+                widget = self.root.winfo_containing(x, y)
+                
+                # Check if mouse is over the control panel
+                if widget and (widget == self.scroll_canvas or 
+                             widget.winfo_toplevel() == self.control_frame.winfo_toplevel()):
+                    
+                    # Handle different event types
+                    if event.num == 4:
+                        self.scroll_canvas.yview_scroll(-1, "units")
+                    elif event.num == 5:
+                        self.scroll_canvas.yview_scroll(1, "units")
+                    else:
+                        self.scroll_canvas.yview_scroll(
+                            int(-1 * (event.delta / 120)),
+                            "units"
+                        )
+                        
+        except Exception as e:
+            print(f"Error handling mousewheel: {str(e)}")
 
     def create_control_panel(self):
         """Create the control panel with all widgets"""
@@ -1433,19 +1545,19 @@ class StockAnalyzerGUI:
             
             # Create database controls
             self.create_database_controls()
-            ttk.Separator(self.sidebar_frame, orient='horizontal').pack(fill='x', pady=10)
+            ttk.Separator(self.sidebar_container, orient='horizontal').pack(fill='x', pady=10)
             
             # Create table controls
             self.create_table_controls()
-            ttk.Separator(self.sidebar_frame, orient='horizontal').pack(fill='x', pady=10)
+            ttk.Separator(self.sidebar_container, orient='horizontal').pack(fill='x', pady=10)
             
             # Create ticker controls
             self.create_ticker_controls()
-            ttk.Separator(self.sidebar_frame, orient='horizontal').pack(fill='x', pady=10)
+            ttk.Separator(self.sidebar_container, orient='horizontal').pack(fill='x', pady=10)
             
             # Create duration controls
             self.create_duration_controls()
-            ttk.Separator(self.sidebar_frame, orient='horizontal').pack(fill='x', pady=10)
+            ttk.Separator(self.sidebar_container, orient='horizontal').pack(fill='x', pady=10)
             
             # Create AI controls
             self.create_ai_controls()
@@ -1460,7 +1572,7 @@ class StockAnalyzerGUI:
         """Create database selection controls"""
         try:
             # Create database frame
-            db_frame = ttk.LabelFrame(self.sidebar_frame, text="Database Selection")
+            db_frame = ttk.LabelFrame(self.control_frame, text="Database Selection")
             db_frame.pack(fill=tk.X, padx=5, pady=5)
             
             # Add database list label
@@ -1583,7 +1695,7 @@ class StockAnalyzerGUI:
         """Create table selection controls"""
         try:
             # Create table frame
-            table_frame = ttk.LabelFrame(self.sidebar_frame, text="Table Selection")
+            table_frame = ttk.LabelFrame(self.control_frame, text="Table Selection")
             table_frame.pack(fill=tk.X, padx=5, pady=5)
             
             # Table dropdown
@@ -1617,7 +1729,7 @@ class StockAnalyzerGUI:
 
     def create_ticker_controls(self):
         """Create ticker selection controls"""
-        ticker_frame = ttk.LabelFrame(self.sidebar_frame, text="Ticker Selection")
+        ticker_frame = ttk.LabelFrame(self.control_frame, text="Ticker Selection")
         ticker_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # Add ticker list label
@@ -1692,29 +1804,24 @@ class StockAnalyzerGUI:
                 )
 
     def create_plot_area(self):
-        """Create the matplotlib figure and canvas"""
-        print("Creating plot area...")
+        """Create the plotting area"""
         try:
-            # Create figure frame
-            self.figure_frame = ttk.Frame(self.plot_frame)
-            self.figure_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            print("Creating plot area...")
             
-            # Create figure with larger size and better DPI
-            self.figure = Figure(figsize=(12, 8), dpi=100)
-            self.canvas = FigureCanvasTkAgg(self.figure, master=self.figure_frame)
-            self.canvas.draw()
-            
-            # Pack the canvas
-            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            # Create figure and canvas
+            self.figure = plt.Figure(figsize=(8, 6))
+            self.plot_canvas = FigureCanvasTkAgg(self.figure, self.plot_frame)
+            self.plot_canvas.draw()
             
             # Add toolbar
-            self.toolbar_frame = ttk.Frame(self.plot_frame)
-            self.toolbar_frame.pack(fill=tk.X, padx=5)
-            self.toolbar = NavigationToolbar2Tk(self.canvas, self.toolbar_frame)
-            self.toolbar.update()
+            toolbar = NavigationToolbar2Tk(self.plot_canvas, self.plot_frame)
+            toolbar.update()
             
-            # Create subplots
-            self.setup_subplots()
+            # Pack canvas
+            self.plot_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+            # Create subplot
+            self.ax = self.figure.add_subplot(111)
             
             print("Plot area created successfully")
             
@@ -1927,7 +2034,7 @@ class StockAnalyzerGUI:
         """Create time duration selection controls"""
         try:
             # Create duration frame
-            duration_frame = ttk.LabelFrame(self.sidebar_frame, text="Time Duration")
+            duration_frame = ttk.LabelFrame(self.control_frame, text="Time Duration")
             duration_frame.pack(fill=tk.X, padx=5, pady=5)
             
             # Duration options
@@ -2092,7 +2199,7 @@ class StockAnalyzerGUI:
         """Create AI model controls"""
         try:
             # Create AI control frame
-            ai_frame = ttk.LabelFrame(self.sidebar_frame, text="AI Controls")
+            ai_frame = ttk.LabelFrame(self.control_frame, text="AI Controls")
             ai_frame.pack(fill=tk.X, padx=5, pady=5)
             
             # Model configuration frame
