@@ -1,9 +1,11 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Input, GRU, Bidirectional, MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D, Conv1D, MaxPooling1D, Concatenate
+from tensorflow.keras.layers import (LSTM, Dense, Dropout, Input, GRU, 
+                                   Bidirectional, Conv1D, MaxPooling1D, 
+                                   GlobalAveragePooling1D, LayerNormalization,
+                                   MultiHeadAttention)
 import duckdb
 from datetime import datetime, timedelta
 import joblib
@@ -11,13 +13,13 @@ import tensorflow as tf
 import os
 
 class TickerAIAgent:
-    def __init__(self, table_name='stock_metrics'):
+    def __init__(self, table_name='stock_metrics', connection=None):
         self.table_name = table_name
         self.model = None
         self.scaler = MinMaxScaler()
-        self.sequence_length = 60  # Number of time steps to look back
+        self.sequence_length = 10  # Reduced from 60 to 10 for shorter sequences
         
-        # Define model architectures
+        # Define available model architectures
         self.model_architectures = {
             'lstm': self._build_lstm_model,
             'gru': self._build_gru_model,
@@ -26,168 +28,143 @@ class TickerAIAgent:
             'bidirectional': self._build_bidirectional_model,
             'transformer': self._build_transformer_model,
             'cnn_lstm': self._build_cnn_lstm_model,
-            'dual_lstm': self._build_dual_lstm_model,
-            'attention_lstm': self._build_attention_lstm_model,
-            'hybrid': self._build_hybrid_model
+            'attention': self._build_attention_model
         }
         
-        # Initialize database connection
         try:
-            self.conn = duckdb.connect('historical_market_data.db')
-            print("Successfully connected to database")
+            # Use the provided connection or create a new one
+            self.conn = connection if connection else duckdb.connect('historical_market_data.db')
+            self.owns_connection = connection is None
+            print("AI agent using database connection")
+            
+            # Get actual columns from the table
+            self.verify_table_structure()
+            
+            # Define numeric columns based on actual table structure
+            self.numeric_columns = [
+                col for col in self.available_columns 
+                if col not in ['date', 'ticker', 'symbol', 'pair', 'sector', 'updated_at']
+            ]
+            print(f"Available numeric columns: {self.numeric_columns}")
+            
         except Exception as e:
-            print(f"Error connecting to database: {e}")
+            print(f"Error initializing AI agent: {e}")
             raise
 
-    def _build_lstm_model(self, input_shape, params):
-        """Standard LSTM model"""
-        return Sequential([
-            Input(shape=input_shape),
-            LSTM(params['units'], return_sequences=True),
-            Dropout(params['dropout']),
-            LSTM(params['units'], return_sequences=False),
-            Dropout(params['dropout']),
-            Dense(25),
-            Dense(1)
-        ])
+    def verify_table_structure(self):
+        """Verify table exists and has required columns"""
+        try:
+            # Get table columns
+            columns = self.conn.execute(f"SELECT * FROM {self.table_name} LIMIT 0").df().columns
+            print(f"Found columns in table: {columns.tolist()}")
+            
+            # Special handling for forex table first
+            if self.table_name == 'historical_forex':
+                if 'pair' in columns:
+                    self.ticker_column = 'pair'
+                    print(f"Using '{self.ticker_column}' as forex pair identifier")
+                    self.available_columns = columns
+                    return
+            
+            # Check for ticker identifier column (symbol or ticker)
+            ticker_column = None
+            possible_ticker_columns = ['symbol', 'ticker']
+            
+            for col in possible_ticker_columns:
+                if col in columns:
+                    ticker_column = col
+                    break
+            
+            if not ticker_column:
+                raise ValueError(f"Missing required ticker identifier column. Need one of: {possible_ticker_columns}")
+            
+            # Check for date column
+            if 'date' not in columns:
+                raise ValueError("Missing required column 'date'")
+            
+            # Store the column names for later use
+            self.ticker_column = ticker_column
+            self.available_columns = columns
+            
+            print(f"Using '{self.ticker_column}' as ticker identifier")
+            print(f"Available columns for analysis: {columns.tolist()}")
+            
+        except Exception as e:
+            print(f"Error verifying table structure: {e}")
+            raise
 
-    def _build_gru_model(self, input_shape, params):
-        """GRU-based model"""
-        return Sequential([
-            Input(shape=input_shape),
-            GRU(params['units'], return_sequences=True),
-            Dropout(params['dropout']),
-            GRU(params['units'], return_sequences=False),
-            Dropout(params['dropout']),
-            Dense(25),
-            Dense(1)
-        ])
+    def get_available_columns(self):
+        """Get list of available numeric columns for analysis"""
+        try:
+            # Query the table to get a sample of data
+            query = f"""
+                SELECT *
+                FROM {self.table_name}
+                LIMIT 1
+            """
+            sample = self.conn.execute(query).df()
+            
+            # Identify numeric columns
+            numeric_cols = []
+            for col in sample.columns:
+                if col not in ['date', self.ticker_column, 'sector', 'updated_at']:
+                    try:
+                        # Try to convert a sample to numeric
+                        query = f"""
+                            SELECT {col}
+                            FROM {self.table_name}
+                            WHERE {col} IS NOT NULL
+                                AND CAST({col} AS VARCHAR) != ''
+                            LIMIT 1
+                        """
+                        value = self.conn.execute(query).df()[col].iloc[0]
+                        pd.to_numeric(value)
+                        numeric_cols.append(col)
+                    except:
+                        continue
+            
+            return numeric_cols
+        except Exception as e:
+            print(f"Error getting available columns: {e}")
+            return []
 
-    def _build_simple_model(self, input_shape, params):
-        """Simplified model for faster training"""
-        return Sequential([
-            Input(shape=input_shape),
-            LSTM(params['units'], return_sequences=False),
-            Dense(25),
-            Dense(1)
-        ])
-
-    def _build_deep_model(self, input_shape, params):
-        """Deeper network for complex patterns"""
-        return Sequential([
-            Input(shape=input_shape),
-            LSTM(params['units'] * 2, return_sequences=True),
-            Dropout(params['dropout']),
-            LSTM(params['units'] * 2, return_sequences=True),
-            Dropout(params['dropout']),
-            LSTM(params['units'] * 2, return_sequences=False),
-            Dropout(params['dropout']),
-            Dense(50),
-            Dense(25),
-            Dense(1)
-        ])
-
-    def _build_bidirectional_model(self, input_shape, params):
-        """Bidirectional LSTM model"""
-        return Sequential([
-            Input(shape=input_shape),
-            Bidirectional(LSTM(params['units'], return_sequences=True)),
-            Dropout(params['dropout']),
-            Bidirectional(LSTM(params['units'], return_sequences=False)),
-            Dropout(params['dropout']),
-            Dense(25),
-            Dense(1)
-        ])
-
-    def _build_transformer_model(self, input_shape, params):
-        """Transformer-based model"""
-        return Sequential([
-            Input(shape=input_shape),
-            MultiHeadAttention(num_heads=params['num_heads'], key_dim=params['key_dim']),
-            LayerNormalization(epsilon=1e-6),
-            Dropout(params['dropout']),
-            MultiHeadAttention(num_heads=params['num_heads'], key_dim=params['key_dim']),
-            LayerNormalization(epsilon=1e-6),
-            Dropout(params['dropout']),
-            GlobalAveragePooling1D(),
-            Dense(params['units'], activation=params['activation']),
-            Dropout(params['dropout']),
-            Dense(25, activation=params['activation']),
-            Dense(1)
-        ])
-
-    def _build_cnn_lstm_model(self, input_shape, params):
-        """CNN-LSTM hybrid model"""
-        return Sequential([
-            Input(shape=input_shape),
-            Conv1D(filters=params['filters'], kernel_size=params['kernel_size'], 
-                   padding='same', activation=params['activation']),
-            MaxPooling1D(pool_size=2),
-            Conv1D(filters=params['filters']//2, kernel_size=params['kernel_size'], 
-                   padding='same', activation=params['activation']),
-            LSTM(params['units'], return_sequences=True),
-            Dropout(params['dropout']),
-            LSTM(params['units'], return_sequences=False),
-            Dense(25),
-            Dense(1)
-        ])
-
-    def _build_dual_lstm_model(self, input_shape, params):
-        """Dual-path LSTM model"""
-        input_layer = Input(shape=input_shape)
-        lstm1 = LSTM(params['units'], return_sequences=True)(input_layer)
-        lstm2 = LSTM(params['units'], return_sequences=False)(lstm1)
-        
-        lstm3 = LSTM(params['units']//2, return_sequences=False)(input_layer)
-        
-        merged = Concatenate()([lstm2, lstm3])
-        dense1 = Dense(25)(merged)
-        output = Dense(1)(dense1)
-        
-        return Model(inputs=input_layer, outputs=output)
-
-    def _build_attention_lstm_model(self, input_shape, params):
-        """LSTM with attention mechanism"""
-        return Sequential([
-            Input(shape=input_shape),
-            LSTM(params['units'], return_sequences=True),
-            MultiHeadAttention(num_heads=params['num_heads'], key_dim=params['key_dim']),
-            GlobalAveragePooling1D(),
-            Dropout(params['dropout']),
-            Dense(25),
-            Dense(1)
-        ])
-
-    def _build_hybrid_model(self, input_shape, params):
-        """Hybrid model combining multiple approaches"""
-        return Sequential([
-            Input(shape=input_shape),
-            Conv1D(filters=params['filters']//2, kernel_size=params['kernel_size'], 
-                   padding='same', activation=params['activation']),
-            Bidirectional(LSTM(params['units'], return_sequences=True)),
-            MultiHeadAttention(num_heads=params['num_heads'], key_dim=params['key_dim']),
-            LayerNormalization(epsilon=1e-6),
-            GlobalAveragePooling1D(),
-            Dense(params['units'], activation=params['activation']),
-            Dropout(params['dropout']),
-            Dense(25),
-            Dense(1)
-        ])
-
-    def prepare_data(self, ticker, column='value'):
+    def prepare_data(self, ticker, column):
         """Prepare data for training/prediction"""
         try:
-            # Get data from database
+            # Verify column exists
+            if column not in self.available_columns:
+                raise ValueError(f"Column '{column}' not found in table. Available columns: {self.available_columns.tolist()}")
+            
+            # Get data from database using the correct ticker column name
             query = f"""
                 SELECT date, {column}
                 FROM {self.table_name}
-                WHERE symbol = ?
+                WHERE {self.ticker_column} = ?
+                    AND {column} IS NOT NULL
+                    AND CAST({column} AS VARCHAR) != ''
                 ORDER BY date ASC
             """
             df = self.conn.execute(query, [ticker]).df()
             
             if df.empty:
-                raise ValueError(f"No data found for ticker {ticker}")
+                raise ValueError(f"No data found for {ticker} in column {column}")
+            
+            # Convert column to numeric, handling any non-numeric values
+            try:
+                df[column] = pd.to_numeric(df[column], errors='coerce')
+                df = df.dropna()  # Remove any rows where conversion failed
+            except Exception as e:
+                raise ValueError(f"Column {column} contains non-numeric values: {str(e)}")
+            
+            if df.empty:
+                raise ValueError(f"No numeric data found for {ticker} in column {column}")
+            
+            print(f"\nPreparing data for {ticker} using {column}")
+            print(f"Date range: {df['date'].min()} to {df['date'].max()}")
+            print(f"Number of records: {len(df)}")
+            
+            if len(df) < self.sequence_length + 1:
+                raise ValueError(f"Not enough data points. Need at least {self.sequence_length + 1} points, but got {len(df)}")
             
             # Scale the data
             values = df[column].values.reshape(-1, 1)
@@ -205,28 +182,119 @@ class TickerAIAgent:
             print(f"Data preparation error: {e}")
             raise
 
-    def build_model(self, input_shape, params):
-        """Build the model architecture"""
+    def _build_lstm_model(self, input_shape, params):
+        """Build LSTM model"""
         model = Sequential([
             Input(shape=input_shape),
             LSTM(params['units'], return_sequences=True),
             Dropout(params['dropout']),
-            LSTM(params['units'], return_sequences=False),
+            LSTM(params['units']),
             Dropout(params['dropout']),
             Dense(25),
             Dense(1)
         ])
-        
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=params['learning_rate']),
-            loss='mse'
-        )
-        
         return model
 
-    def train(self, ticker, column='value', params=None):
-        """Train the model"""
+    def _build_gru_model(self, input_shape, params):
+        """Build GRU model"""
+        model = Sequential([
+            Input(shape=input_shape),
+            GRU(params['units'], return_sequences=True),
+            Dropout(params['dropout']),
+            GRU(params['units']),
+            Dense(1)
+        ])
+        return model
+
+    def _build_simple_model(self, input_shape, params):
+        """Build simple model"""
+        model = Sequential([
+            Input(shape=input_shape),
+            LSTM(params['units']),
+            Dense(1)
+        ])
+        return model
+
+    def _build_deep_model(self, input_shape, params):
+        """Build deep model"""
+        model = Sequential([
+            Input(shape=input_shape),
+            LSTM(params['units'], return_sequences=True),
+            Dropout(params['dropout']),
+            LSTM(params['units'], return_sequences=True),
+            Dropout(params['dropout']),
+            LSTM(params['units']),
+            Dense(50),
+            Dense(25),
+            Dense(1)
+        ])
+        return model
+
+    def _build_bidirectional_model(self, input_shape, params):
+        """Build bidirectional model"""
+        model = Sequential([
+            Input(shape=input_shape),
+            Bidirectional(LSTM(params['units'], return_sequences=True)),
+            Dropout(params['dropout']),
+            Bidirectional(LSTM(params['units'])),
+            Dense(1)
+        ])
+        return model
+
+    def _build_transformer_model(self, input_shape, params):
+        """Build transformer model"""
+        inputs = Input(shape=input_shape)
+        x = inputs
+        
+        # Add positional encoding
+        pos_encoding = tf.keras.layers.Embedding(
+            input_dim=input_shape[0],
+            output_dim=params['units']
+        )(tf.range(start=0, limit=input_shape[0], delta=1))
+        x = tf.keras.layers.Add()([x, pos_encoding])
+        
+        # Transformer layers
+        for _ in range(2):
+            x = MultiHeadAttention(
+                num_heads=4,
+                key_dim=params['units']
+            )(x, x)
+            x = LayerNormalization()(x)
+        
+        x = GlobalAveragePooling1D()(x)
+        x = Dense(params['units'], activation='relu')(x)
+        outputs = Dense(1)(x)
+        
+        return Model(inputs=inputs, outputs=outputs)
+
+    def _build_cnn_lstm_model(self, input_shape, params):
+        """Build CNN-LSTM model"""
+        model = Sequential([
+            Input(shape=input_shape),
+            Conv1D(filters=64, kernel_size=3, activation='relu'),
+            MaxPooling1D(pool_size=2),
+            Conv1D(filters=32, kernel_size=3, activation='relu'),
+            LSTM(params['units']),
+            Dense(1)
+        ])
+        return model
+
+    def _build_attention_model(self, input_shape, params):
+        """Build attention model"""
+        inputs = Input(shape=input_shape)
+        lstm_out = LSTM(params['units'], return_sequences=True)(inputs)
+        attention = MultiHeadAttention(
+            num_heads=4,
+            key_dim=params['units']
+        )(lstm_out, lstm_out)
+        x = GlobalAveragePooling1D()(attention)
+        outputs = Dense(1)(x)
+        return Model(inputs=inputs, outputs=outputs)
+
+    def train(self, ticker, column, model_type='lstm', params=None):
+        """Train model for given ticker and column"""
         try:
+            # Set default parameters if none provided
             if params is None:
                 params = {
                     'units': 50,
@@ -236,14 +304,31 @@ class TickerAIAgent:
                     'epochs': 100
                 }
             
+            if model_type not in self.model_architectures:
+                raise ValueError(f"Unknown model type. Available: {list(self.model_architectures.keys())}")
+            
+            print(f"\nTraining {model_type} model for {ticker} using {column}")
+            
             # Prepare data
             X, y, _ = self.prepare_data(ticker, column)
             
+            if len(X) < self.sequence_length:
+                raise ValueError(f"Not enough data points for {ticker} in {column}. Need at least {self.sequence_length} points.")
+            
             # Build model
-            self.model = self.build_model(
+            self.model = self.model_architectures[model_type](
                 input_shape=(X.shape[1], 1),
                 params=params
             )
+            
+            # Compile model
+            self.model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=params['learning_rate']),
+                loss='mse'
+            )
+            
+            # Create models directory
+            os.makedirs('models', exist_ok=True)
             
             # Train model
             history = self.model.fit(
@@ -254,48 +339,50 @@ class TickerAIAgent:
                 verbose=1
             )
             
-            # Save model and scaler
-            os.makedirs('models', exist_ok=True)
-            self.model.save(f'models/{ticker}_{column}_model.keras')
-            joblib.dump(self.scaler, f'models/{ticker}_{column}_scaler.joblib')
-            joblib.dump(params, f'models/{ticker}_{column}_params.joblib')
+            # Save components
+            model_path = f'models/{ticker}_{column}_{model_type}_model.keras'
+            scaler_path = f'models/{ticker}_{column}_scaler.joblib'
+            params_path = f'models/{ticker}_{column}_params.joblib'
             
+            self.model.save(model_path)
+            joblib.dump(self.scaler, scaler_path)
+            joblib.dump(params, params_path)
+            
+            print(f"\nModel saved: {model_path}")
             return history
             
         except Exception as e:
             print(f"Training error: {e}")
             raise
 
-    def predict(self, ticker, column='value', prediction_days=30):
+    def predict(self, ticker, column='value', model_type='lstm', prediction_days=30):
         """Generate predictions"""
         try:
-            # Load the saved model and scaler
-            try:
-                model_path = f'models/{ticker}_{column}_model.keras'
-                self.model = tf.keras.models.load_model(model_path)
-                self.scaler = joblib.load(f'models/{ticker}_{column}_scaler.joblib')
-            except Exception as e:
-                raise ValueError(f"Failed to load model for {ticker}. Please train the model first.")
+            model_path = f'models/{ticker}_{column}_{model_type}_model.keras'
+            scaler_path = f'models/{ticker}_{column}_scaler.joblib'
             
-            # Prepare data
+            if not os.path.exists(model_path):
+                raise ValueError(f"Model not found. Please train first.")
+            
+            self.model = tf.keras.models.load_model(model_path)
+            self.scaler = joblib.load(scaler_path)
+            
             X, _, dates = self.prepare_data(ticker, column)
+            
             last_sequence = X[-1:]
             predictions = []
             current_sequence = last_sequence.copy()
             
-            # Generate predictions
             for _ in range(prediction_days):
                 pred = self.model.predict(current_sequence, verbose=0)
                 predictions.append(pred[0, 0])
                 current_sequence = np.roll(current_sequence, -1)
                 current_sequence[0, -1] = pred
             
-            # Inverse transform predictions
             predictions = self.scaler.inverse_transform(
                 np.array(predictions).reshape(-1, 1)
             )
             
-            # Generate future dates
             future_dates = pd.date_range(
                 start=pd.to_datetime(dates[-1]) + pd.Timedelta(days=1),
                 periods=prediction_days,
@@ -311,7 +398,9 @@ class TickerAIAgent:
     def cleanup(self):
         """Cleanup resources"""
         try:
-            self.conn.close()
-            print("Database connection closed")
+            # Only close the connection if we created it
+            if self.owns_connection and self.conn:
+                self.conn.close()
+                print("Database connection closed")
         except Exception as e:
             print(f"Error closing database connection: {e}") 

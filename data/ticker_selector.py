@@ -297,15 +297,21 @@ class TickerSelector:
             # Get all column names from the table
             columns = self.conn.execute(f"SELECT * FROM {current_table} LIMIT 0").df().columns
             
-            # Try to find the appropriate identifier column
+            # Use 'pair' if we're in the historical_forex table and it exists
             identifier_col = None
-            for possible_col in ['symbol', 'ticker', 'stock_symbol']:
-                if possible_col in columns:
-                    identifier_col = possible_col
-                    break
+            if current_table == 'historical_forex' and 'pair' in columns:
+                identifier_col = 'pair'
+                print("Using 'pair' column for historical_forex table.")
+            else:
+                # Try to find appropriate identifier column for other tables
+                for possible_col in ['symbol', 'ticker', 'stock_symbol']:
+                    if possible_col in columns:
+                        identifier_col = possible_col
+                        break
             
             if not identifier_col:
-                messagebox.showerror("Error", f"No ticker/symbol column found in table {current_table}")
+                messagebox.showerror("Error",
+                                     f"No ticker/symbol column found in table {current_table}")
                 return
             
             # Build the query

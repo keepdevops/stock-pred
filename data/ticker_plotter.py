@@ -1,111 +1,135 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import duckdb
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import pandas as pd
 from datetime import datetime, timedelta
+from ticker_ai_agent import TickerAIAgent
+import re
 
 class TickerPlotter:
-    def __init__(self, root, selected_tickers, selected_table):
+    def __init__(self, root, selected_tickers, selected_table, connection=None):
+        """Initialize the plotter with optional existing connection"""
         self.root = root
         self.selected_tickers = selected_tickers
         self.selected_table = selected_table
+        self.conn = connection
         
-        # Create a new top-level window
-        self.plot_window = tk.Toplevel(root)
-        self.plot_window.title("Ticker Plotter")
-        self.plot_window.geometry("800x600")
-        
-        # Database connection
-        try:
-            self.conn = duckdb.connect('historical_market_data.db', read_only=True)
-            print("Successfully connected to database")
-        except Exception as e:
-            messagebox.showerror("Database Error", f"Failed to connect to database: {e}")
-            raise
-
-        # Create main frame
-        self.main_frame = ttk.Frame(self.plot_window, padding="10")
-        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Configure grid weights
-        self.plot_window.grid_rowconfigure(0, weight=1)
-        self.plot_window.grid_columnconfigure(0, weight=1)
-        
-        # Setup widgets and create initial plot
-        self.setup_widgets()
-        self.create_plot()
-
-    def setup_widgets(self):
-        # Control Frame
-        control_frame = ttk.Frame(self.main_frame)
-        control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5)
-        
-        # Time range selection
-        ttk.Label(control_frame, text="Time Range:").pack(side=tk.LEFT, padx=5)
-        self.time_range = tk.StringVar(value="1Y")
-        time_choices = ["1M", "3M", "6M", "1Y", "3Y", "5Y", "ALL"]
-        time_menu = ttk.Combobox(control_frame, textvariable=self.time_range, values=time_choices, width=5)
-        time_menu.pack(side=tk.LEFT, padx=5)
-        
-        # Column selection (for numerical columns)
-        ttk.Label(control_frame, text="Column:").pack(side=tk.LEFT, padx=5)
-        self.column_var = tk.StringVar()
-        self.column_combo = ttk.Combobox(control_frame, textvariable=self.column_var, width=15)
-        self.column_combo.pack(side=tk.LEFT, padx=5)
-        
-        # Populate columns
-        self.update_column_choices()
-        
-        # Plot type selection
-        ttk.Label(control_frame, text="Plot Type:").pack(side=tk.LEFT, padx=5)
-        self.plot_type = tk.StringVar(value="line")
-        plot_choices = ["line", "bar", "scatter"]
-        plot_menu = ttk.Combobox(control_frame, textvariable=self.plot_type, values=plot_choices, width=8)
-        plot_menu.pack(side=tk.LEFT, padx=5)
-        
-        # Update button
-        ttk.Button(control_frame, text="Update Plot", command=self.create_plot).pack(side=tk.LEFT, padx=5)
-        
-        # Figure frame
-        self.figure_frame = ttk.Frame(self.main_frame)
-        self.figure_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Configure grid weights for figure frame
-        self.main_frame.grid_rowconfigure(1, weight=1)
-        self.main_frame.grid_columnconfigure(0, weight=1)
-
-    def update_column_choices(self):
-        try:
-            # Get numerical columns from the table
-            columns = self.conn.execute(f"SELECT * FROM {self.selected_table} LIMIT 0").df().columns
-            numerical_columns = [col for col in columns if 
-                              col not in ['date', 'symbol', 'ticker', 'sector', 'industry'] and 
-                              self.conn.execute(f"SELECT typeof({col}) FROM {self.selected_table} LIMIT 1").fetchone()[0]
-                              in ['INTEGER', 'DOUBLE', 'FLOAT', 'DECIMAL']]
-            
-            self.column_combo['values'] = numerical_columns
-            if numerical_columns:
-                self.column_combo.set(numerical_columns[0])
-                
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to get columns: {e}")
-
-    def get_time_delta(self):
-        range_map = {
-            "1M": timedelta(days=30),
-            "3M": timedelta(days=90),
-            "6M": timedelta(days=180),
-            "1Y": timedelta(days=365),
-            "3Y": timedelta(days=3*365),
-            "5Y": timedelta(days=5*365),
-            "ALL": None
+        # Define fields based on table type
+        self.table_fields = {
+            'balance_sheets': ['total_assets', 'total_liabilities', 'total_equity', 'working_capital'],
+            'financial_ratios': ['pe_ratio', 'price_to_book', 'debt_to_equity', 'current_ratio', 'quick_ratio', 'roe', 'roa', 'profit_margin'],
+            'income_statements': ['total_revenue', 'gross_profit', 'operating_income', 'net_income', 'eps', 'ebitda'],
+            'historical_prices': ['open', 'high', 'low', 'close', 'volume'],
+            'market_sentiment': ['rsi', 'macd', 'bollinger_position', 'sentiment_score'],
+            'stock_metrics': ['open_price', 'close_price', 'market_cap', 'pe_ratio', 'dividend_yield']
         }
-        return range_map[self.time_range.get()]
+        
+        self.selected_fields = self.table_fields.get(selected_table, ['close'])
+        
+        # Create plot window
+        self.plot_window = tk.Toplevel(self.root)
+        self.plot_window.title(f"Market Analysis - {', '.join(selected_tickers)}")
+        self.plot_window.geometry("1200x800")
+        
+        # Create main frame
+        self.main_frame = ttk.Frame(self.plot_window)
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Create metrics selection
+        self.create_metrics_selector()
+        
+        # Initialize the figure and canvas
+        self.fig = plt.figure(figsize=(12, 8))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.main_frame)
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        
+        # Add toolbar
+        self.toolbar = NavigationToolbar2Tk(self.canvas, self.main_frame)
+        self.toolbar.update()
+
+    def create_metrics_selector(self):
+        """Create metrics selection frame"""
+        metrics_frame = ttk.LabelFrame(self.main_frame, text="Metrics Selection", padding="5")
+        metrics_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Create scrollable frame for metrics
+        canvas = tk.Canvas(metrics_frame)
+        scrollbar = ttk.Scrollbar(metrics_frame, orient="horizontal", command=canvas.xview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(xscrollcommand=scrollbar.set)
+        
+        self.metric_vars = {}
+        for metric in self.selected_fields:
+            var = tk.BooleanVar(value=True)
+            self.metric_vars[metric] = var
+            ttk.Checkbutton(scrollable_frame, text=metric.replace('_', ' ').title(), 
+                           variable=var, command=self.update_plot).pack(side=tk.LEFT, padx=5)
+
+        canvas.pack(side="top", fill="x", expand=True)
+        scrollbar.pack(side="bottom", fill="x")
+
+    def fetch_data(self):
+        """Fetch data for selected tickers"""
+        data = {}
+        ticker_column = 'symbol' if 'symbol' in self.conn.execute(f"PRAGMA table_info({self.selected_table})").df()['name'].values else 'ticker'
+        
+        for ticker in self.selected_tickers:
+            query = f"""
+                SELECT date, {', '.join(self.selected_fields)}
+                FROM {self.selected_table}
+                WHERE {ticker_column} = '{ticker}'
+                ORDER BY date
+            """
+            df = self.conn.execute(query).df()
+            df['date'] = pd.to_datetime(df['date'])
+            data[ticker] = df
+        return data
+
+    def update_plot(self):
+        """Update the plot based on selected metrics"""
+        try:
+            self.fig.clear()
+            data = self.fetch_data()
+            
+            active_metrics = [m for m, v in self.metric_vars.items() if v.get()]
+            if not active_metrics:
+                return
+                
+            n_metrics = len(active_metrics)
+            fig_rows = (n_metrics + 1) // 2  # Two metrics per row
+            
+            for i, metric in enumerate(active_metrics, 1):
+                ax = self.fig.add_subplot(fig_rows, 2, i)
+                
+                for ticker in self.selected_tickers:
+                    df = data[ticker]
+                    ax.plot(df['date'], df[metric], label=ticker, marker='o')
+                    
+                ax.set_title(metric.replace('_', ' ').title())
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Value')
+                ax.grid(True)
+                ax.legend()
+                ax.tick_params(axis='x', rotation=45)
+                
+            self.fig.tight_layout()
+            self.canvas.draw()
+            
+        except Exception as e:
+            print(f"Error updating plot: {str(e)}")
+            messagebox.showerror("Plot Error", f"Failed to update plot: {str(e)}")
 
     def create_plot(self):
         try:
+            print("\nStarting plot creation...")
             # Clear previous plot
             for widget in self.figure_frame.winfo_children():
                 widget.destroy()
@@ -118,13 +142,31 @@ class TickerPlotter:
             column = self.column_var.get()
             time_delta = self.get_time_delta()
             
-            # Build query
-            query = f"""
-                SELECT date, symbol, {column}
-                FROM {self.selected_table}
-                WHERE symbol IN ({','.join(['?' for _ in self.selected_tickers])})
-            """
-            params = self.selected_tickers
+            print(f"Selected column: {column}")
+            print(f"Selected tickers: {self.selected_tickers}")
+            print(f"Using ticker column: {self.ticker_column}")
+            
+            # For forex data, ensure we're using the correct format
+            if self.selected_table == 'historical_forex':
+                # Clean up forex pair format
+                clean_tickers = [ticker.replace('=X', '').upper() for ticker in self.selected_tickers]
+                
+                # Build query for forex data
+                query = f"""
+                    SELECT date, pair as symbol, {column}
+                    FROM {self.selected_table}
+                    WHERE UPPER(REGEXP_REPLACE(pair, '[^A-Za-z]', '')) IN 
+                        ({','.join(['?' for _ in clean_tickers])})
+                """
+                params = clean_tickers
+            else:
+                # Regular query for other tables
+                query = f"""
+                    SELECT date, {self.ticker_column} as symbol, {column}
+                    FROM {self.selected_table}
+                    WHERE {self.ticker_column} IN ({','.join(['?' for _ in self.selected_tickers])})
+                """
+                params = self.selected_tickers
             
             if time_delta:
                 query += " AND date >= ?"
@@ -132,41 +174,68 @@ class TickerPlotter:
             
             query += " ORDER BY date"
             
+            print(f"Executing query: {query}")
+            print(f"With parameters: {params}")
+            
             # Execute query and plot data
             df = self.conn.execute(query, params).df()
+            print(f"Retrieved {len(df)} rows of data")
+            
+            if df.empty:
+                print("Warning: No data returned from query")
+                messagebox.showwarning("No Data", "No data found for the selected parameters")
+                return
             
             plot_type = self.plot_type.get()
-            for ticker in self.selected_tickers:
-                ticker_data = df[df['symbol'] == ticker]
+            print(f"Creating {plot_type} plot")
+            
+            # For forex, we'll plot against the original ticker names
+            ticker_map = {ticker.replace('=X', '').upper(): ticker for ticker in self.selected_tickers}
+            
+            for ticker in (self.selected_tickers if self.selected_table != 'historical_forex' else ticker_map.keys()):
+                display_ticker = ticker if self.selected_table != 'historical_forex' else ticker_map[ticker]
+                ticker_data = df[df['symbol'].str.replace('[^A-Za-z]', '', regex=True).str.upper() == ticker.replace('=X', '')]
+                print(f"Plotting {len(ticker_data)} points for {display_ticker}")
+                
+                if len(ticker_data) == 0:
+                    print(f"Warning: No data found for ticker {display_ticker}")
+                    continue
+                    
                 if plot_type == 'line':
-                    ax.plot(ticker_data['date'], ticker_data[column], label=ticker)
+                    ax.plot(ticker_data['date'], ticker_data[column], label=display_ticker)
                 elif plot_type == 'bar':
-                    ax.bar(ticker_data['date'], ticker_data[column], label=ticker, alpha=0.5)
+                    ax.bar(ticker_data['date'], ticker_data[column], label=display_ticker, alpha=0.5)
                 elif plot_type == 'scatter':
-                    ax.scatter(ticker_data['date'], ticker_data[column], label=ticker)
+                    ax.scatter(ticker_data['date'], ticker_data[column], label=display_ticker)
             
             # Customize plot
             ax.set_xlabel('Date')
             ax.set_ylabel(column)
-            ax.set_title(f'{column} for Selected Tickers')
+            ax.set_title(f'{column} for Selected {self.ticker_column.title()}s')
             ax.legend()
             ax.grid(True)
             
             # Rotate x-axis labels for better readability
             plt.xticks(rotation=45)
             
+            print("Creating canvas...")
             # Create canvas and add to frame
             canvas = FigureCanvasTkAgg(fig, master=self.figure_frame)
             canvas.draw()
             canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            print("Plot creation completed successfully")
             
         except Exception as e:
+            print(f"Error creating plot: {str(e)}")
+            print(f"Error type: {type(e)}")
+            import traceback
+            traceback.print_exc()
             messagebox.showerror("Error", f"Failed to create plot: {e}")
 
     def cleanup(self):
-        """Cleanup resources"""
+        """Cleanup resources and close window"""
         try:
-            self.conn.close()
-            print("Database connection closed")
+            if hasattr(self, 'plot_window'):
+                self.plot_window.destroy()
         except Exception as e:
-            print(f"Error closing database connection: {e}") 
+            print(f"Error during cleanup: {e}")
