@@ -382,8 +382,8 @@ class TickerSelector:
             print("\nSelected Tickers:")
             for ticker in selected_tickers:
                 print(ticker)
-            # Create plot window
-            TickerPlotter(self.root, selected_tickers, self.table_var.get())
+            # Create plot window with a valid connection
+            TickerPlotter(self.root, selected_tickers, self.table_var.get(), connection=self.conn)
         else:
             print("No tickers selected")
 

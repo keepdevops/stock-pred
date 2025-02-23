@@ -15,6 +15,12 @@ class TickerPlotter:
         self.selected_table = selected_table
         self.conn = connection
         
+        if self.conn is None:
+            raise ValueError("A valid database connection must be provided.")
+        
+        # Detect the correct ticker column
+        self.ticker_column = self.detect_ticker_column()
+        
         # Define fields based on table type
         self.table_fields = {
             'balance_sheets': ['total_assets', 'total_liabilities', 'total_equity', 'working_capital'],
@@ -48,6 +54,45 @@ class TickerPlotter:
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.main_frame)
         self.toolbar.update()
 
+    def detect_ticker_column(self):
+        """Detect the ticker column in the selected table"""
+        try:
+            # Get column names
+            columns = self.conn.execute(f"PRAGMA table_info({self.selected_table})").df()['name'].values
+            print(f"Available columns: {columns}")
+            
+            # Look for common ticker column names
+            if self.selected_table == 'historical_forex' and 'pair' in columns:
+                print("Using 'pair' column for historical_forex table.")
+                return 'pair'
+            
+            for col in ['symbol', 'ticker']:
+                if col in columns:
+                    print(f"Using '{col}' as ticker identifier")
+                    return col
+            
+            raise ValueError("No standard ticker column found")
+            
+        except Exception as e:
+            print(f"Error detecting ticker column: {e}")
+            raise
+
+    def fetch_data(self):
+        """Fetch data for selected tickers"""
+        data = {}
+        
+        for ticker in self.selected_tickers:
+            query = f"""
+                SELECT date, {', '.join(self.selected_fields)}
+                FROM {self.selected_table}
+                WHERE {self.ticker_column} = ?
+                ORDER BY date
+            """
+            df = self.conn.execute(query, [ticker]).df()
+            df['date'] = pd.to_datetime(df['date'])
+            data[ticker] = df
+        return data
+
     def create_metrics_selector(self):
         """Create metrics selection frame"""
         metrics_frame = ttk.LabelFrame(self.main_frame, text="Metrics Selection", padding="5")
@@ -75,23 +120,6 @@ class TickerPlotter:
 
         canvas.pack(side="top", fill="x", expand=True)
         scrollbar.pack(side="bottom", fill="x")
-
-    def fetch_data(self):
-        """Fetch data for selected tickers"""
-        data = {}
-        ticker_column = 'symbol' if 'symbol' in self.conn.execute(f"PRAGMA table_info({self.selected_table})").df()['name'].values else 'ticker'
-        
-        for ticker in self.selected_tickers:
-            query = f"""
-                SELECT date, {', '.join(self.selected_fields)}
-                FROM {self.selected_table}
-                WHERE {ticker_column} = '{ticker}'
-                ORDER BY date
-            """
-            df = self.conn.execute(query).df()
-            df['date'] = pd.to_datetime(df['date'])
-            data[ticker] = df
-        return data
 
     def update_plot(self):
         """Update the plot based on selected metrics"""

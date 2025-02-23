@@ -360,4 +360,88 @@ Parameters:
             if hasattr(self, 'plot_window'):
                 self.plot_window.destroy()
         except Exception as e:
-            print(f"Error during cleanup: {e}") 
+            print(f"Error during cleanup: {e}")
+
+    def update_plot(self):
+        """Update the plot based on selected metrics"""
+        try:
+            self.fig.clear()
+            data = self.fetch_data()
+            
+            active_metrics = [m for m, v in self.metric_vars.items() if v.get()]
+            if not active_metrics:
+                print("No active metrics selected for plotting.")
+                return
+                
+            n_metrics = len(active_metrics)
+            fig_rows = (n_metrics + 1) // 2  # Two metrics per row
+            
+            for i, metric in enumerate(active_metrics, 1):
+                ax = self.fig.add_subplot(fig_rows, 2, i)
+                
+                for ticker in self.selected_tickers:
+                    df = data[ticker]
+                    if df.empty:
+                        print(f"No data to plot for {ticker} and metric {metric}")
+                        continue
+                    ax.plot(df['date'], df[metric], label=ticker, marker='o')
+                    print(f"Plotting {len(df)} points for {ticker} - {metric}")
+                    
+                ax.set_title(metric.replace('_', ' ').title())
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Value')
+                ax.grid(True)
+                ax.legend()
+                ax.tick_params(axis='x', rotation=45)
+                
+            self.fig.tight_layout()
+            self.canvas.draw()
+            
+        except Exception as e:
+            print(f"Error updating plot: {str(e)}")
+            messagebox.showerror("Plot Error", f"Failed to update plot: {str(e)}")
+
+    def fetch_data(self):
+        """Fetch data for selected tickers"""
+        data = {}
+        
+        for ticker in self.selected_tickers:
+            query = f"""
+                SELECT date, {', '.join(self.selected_fields)}
+                FROM {self.selected_table}
+                WHERE {self.ticker_column} = ?
+                ORDER BY date
+            """
+            df = self.conn.execute(query, [ticker]).df()
+            df['date'] = pd.to_datetime(df['date'])
+            data[ticker] = df
+            print(f"Fetched {len(df)} rows for {ticker}")
+        return data
+
+    def create_metrics_selector(self):
+        """Create metrics selection frame"""
+        metrics_frame = ttk.LabelFrame(self.main_frame, text="Metrics Selection", padding="5")
+        metrics_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Create scrollable frame for metrics
+        canvas = tk.Canvas(metrics_frame)
+        scrollbar = ttk.Scrollbar(metrics_frame, orient="horizontal", command=canvas.xview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(xscrollcommand=scrollbar.set)
+        
+        self.metric_vars = {}
+        for metric in self.selected_fields:
+            var = tk.BooleanVar(value=True)  # Default to True to ensure at least one metric is selected
+            self.metric_vars[metric] = var
+            ttk.Checkbutton(scrollable_frame, text=metric.replace('_', ' ').title(), 
+                           variable=var, command=self.update_plot).pack(side=tk.LEFT, padx=5)
+
+        canvas.pack(side="top", fill="x", expand=True)
+        scrollbar.pack(side="bottom", fill="x") 
