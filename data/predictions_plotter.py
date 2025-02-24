@@ -144,12 +144,13 @@ class TickerPlotter:
             print(f"Error during cleanup: {e}")
 
 class PredictionsPlotter:
-    def __init__(self, root, selected_tickers, selected_table, selected_fields):
+    def __init__(self, root, selected_tickers, selected_table, selected_fields, agent_class=None):
         # Initialize basic attributes first
         self.root = root
         self.selected_tickers = selected_tickers
         self.selected_table = selected_table
         self.selected_fields = selected_fields
+        self.agent_class = agent_class  # Store the agent class
         
         # Create database connection
         try:
@@ -214,13 +215,15 @@ class PredictionsPlotter:
             return pd.DataFrame()
 
     def create_plots(self):
-        """Create subplots for each field"""
-        num_fields = len(self.selected_fields)
-        self.fig = plt.figure(figsize=(12, 6*num_fields))
-        gs = GridSpec(num_fields, 1, figure=self.fig)
-        
-        for i, field in enumerate(self.selected_fields):
-            ax = self.fig.add_subplot(gs[i])
+        """Create individual plots for each field in separate frames"""
+        for field in self.selected_fields:
+            # Create a new frame for each field
+            field_frame = ttk.LabelFrame(self.plot_window, text=f"{field.replace('_', ' ').title()} Plot", padding="5")
+            field_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Create a figure for the current field
+            fig = plt.Figure(figsize=(12, 6))
+            ax = fig.add_subplot(111)
             
             for ticker in self.selected_tickers:
                 try:
@@ -232,7 +235,7 @@ class PredictionsPlotter:
                         
                         # Create AI agent and get predictions
                         try:
-                            ai_agent = TickerAIAgent(self.selected_table, connection=self.conn)
+                            ai_agent = self.agent_class(self.selected_table, connection=self.conn)
                             # Train the model if it doesn't exist
                             model_path = f'models/{ticker}_{field}_lstm_model.keras'
                             if not os.path.exists(model_path):
@@ -256,19 +259,17 @@ class PredictionsPlotter:
             
             # Rotate x-axis labels for better readability
             plt.setp(ax.get_xticklabels(), rotation=45)
-        
-        plt.tight_layout()
-        
-        # Embed plot in tkinter window
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_window)
-        self.canvas.draw()
-        
-        # Add navigation toolbar
-        self.toolbar = NavigationToolbar2Tk(self.canvas, self.plot_window)
-        self.toolbar.update()
-        
-        # Pack canvas and toolbar
-        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            
+            # Embed plot in tkinter window
+            canvas = FigureCanvasTkAgg(fig, master=field_frame)
+            canvas.draw()
+            
+            # Add navigation toolbar
+            toolbar = NavigationToolbar2Tk(canvas, field_frame)
+            toolbar.update()
+            
+            # Pack canvas and toolbar
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
     def show_model_help(self):
         """Show help dialog with model descriptions"""

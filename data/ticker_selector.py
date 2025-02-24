@@ -3,6 +3,8 @@ from tkinter import ttk
 import duckdb
 from tkinter import messagebox
 from ticker_plotter import TickerPlotter
+from ai_agent import TickerAIAgent as AdvancedAIAgent
+from ticker_ai_agent import TickerAIAgent as SimpleAIAgent
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -241,6 +243,15 @@ class TickerSelector:
         ttk.Button(button_frame, text="Plot Data", command=self.get_selected).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Show Predictions", command=self.show_predictions).pack(side=tk.LEFT, padx=5)
 
+        # Add model selection control
+        self.model_type_var = tk.StringVar(value='simple')
+        ttk.Label(self.main_frame, text="Model Type:").grid(row=8, column=0, sticky=tk.W)
+        model_type_frame = ttk.Frame(self.main_frame)
+        model_type_frame.grid(row=8, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
+        
+        ttk.Radiobutton(model_type_frame, text="Simple", variable=self.model_type_var, value='simple').pack(side=tk.LEFT)
+        ttk.Radiobutton(model_type_frame, text="Advanced", variable=self.model_type_var, value='advanced').pack(side=tk.LEFT)
+
     def on_table_change(self, event):
         """Handle table selection change"""
         try:
@@ -382,8 +393,15 @@ class TickerSelector:
             print("\nSelected Tickers:")
             for ticker in selected_tickers:
                 print(ticker)
+            
+            # Determine which AI agent to use
+            if self.model_type_var.get() == 'simple':
+                agent_class = SimpleAIAgent
+            else:
+                agent_class = AdvancedAIAgent
+            
             # Create plot window with a valid connection
-            TickerPlotter(self.root, selected_tickers, self.table_var.get(), connection=self.conn)
+            TickerPlotter(self.root, selected_tickers, self.table_var.get(), connection=self.conn, agent_class=agent_class)
         else:
             print("No tickers selected")
 
@@ -402,13 +420,17 @@ class TickerSelector:
         
         if selected_tickers:
             # Get selected fields using actual database column names
-            selected_fields = [field for field, var in self.field_vars.items() 
-                              if var.get()]
+            selected_fields = [field for field, var in self.field_vars.items() if var.get()]
             
             if selected_fields:
+                # Determine which AI agent to use
+                if self.model_type_var.get() == 'simple':
+                    agent_class = SimpleAIAgent
+                else:
+                    agent_class = AdvancedAIAgent
+                
                 from predictions_plotter import PredictionsPlotter
-                PredictionsPlotter(self.root, selected_tickers, self.table_var.get(), 
-                                 selected_fields)
+                PredictionsPlotter(self.root, selected_tickers, self.table_var.get(), selected_fields, agent_class=agent_class)
             else:
                 messagebox.showerror("Error", "No fields selected for predictions")
         else:
