@@ -11,10 +11,13 @@ from datetime import datetime, timedelta
 import joblib
 import tensorflow as tf
 import os
+import tkinter as tk
+from tkinter import ttk, messagebox
 
 class TickerAIAgent:
-    def __init__(self, table_name='stock_metrics', connection=None):
+    def __init__(self, table_name='stock_metrics', connection=None, model_type=None):
         self.table_name = table_name
+        self.model_type = model_type  # Store the model type
         self.model = None
         self.scaler = MinMaxScaler()
         self.sequence_length = 10  # Reduced from 60 to 10 for shorter sequences
@@ -403,4 +406,43 @@ class TickerAIAgent:
                 self.conn.close()
                 print("Database connection closed")
         except Exception as e:
-            print(f"Error closing database connection: {e}") 
+            print(f"Error closing database connection: {e}")
+
+    def setup_fields(self):
+        try:
+            current_table = self.table_var.get()
+            print(f"Setting up fields for table: {current_table}")
+            
+            fields = self.conn.execute(f"SELECT * FROM {current_table} LIMIT 0").df().columns
+            print(f"Fields retrieved: {fields}")
+            
+            # Filter out non-numeric and special fields
+            excluded_fields = ['id', 'symbol', 'industry', 'date', 'updated_at']
+            available_fields = [field for field in fields if field not in excluded_fields]
+            print(f"Available fields: {available_fields}")
+            
+            # Clear existing field frame if it exists
+            if hasattr(self, 'field_frame'):
+                print("Destroying existing field frame")
+                self.field_frame.destroy()
+            
+            # Create new field frame
+            self.field_frame = ttk.LabelFrame(self.main_frame, text="Select Fields", padding="5")
+            self.field_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+            
+            # Create checkboxes for fields
+            self.field_vars = {}
+            for i, field in enumerate(available_fields):
+                display_name = field.replace('_', ' ').title()
+                var = tk.BooleanVar(value=field in ['value', 'sector'])
+                self.field_vars[field] = var
+                cb = ttk.Checkbutton(self.field_frame, text=display_name, variable=var)
+                cb.grid(row=i//3, column=i%3, sticky=tk.W, padx=5, pady=2)
+                
+                # Add tooltip for the field
+                field_tooltip = self.get_field_tooltip(field)
+                ToolTip(cb, field_tooltip)
+            
+        except Exception as e:
+            print(f"Error setting up fields: {e}")
+            messagebox.showerror("Error", f"Failed to setup fields: {e}") 

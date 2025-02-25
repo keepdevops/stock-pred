@@ -36,9 +36,10 @@ class ToolTip:
             self.tooltip = None
 
 class TickerSelector:
-    def __init__(self, root):
+    def __init__(self, root, connection):
         self.root = root
         self.root.title("Data Selector")
+        self.conn = connection  # Use the passed connection
         
         # Define available tables
         self.available_tables = [
@@ -47,18 +48,6 @@ class TickerSelector:
             'historical_prices', 'income_statements', 'industry_metrics', 
             'market_sentiment', 'sector_financials', 'stock_metrics'
         ]
-        
-        try:
-            # Connect to the database
-            self.conn = duckdb.connect('historical_market_data.db', read_only=True)
-            print("Successfully connected to database")
-        except Exception as e:
-            print(f"Error connecting to database: {e}")
-            messagebox.showerror(
-                "Database Error",
-                f"Failed to connect to database: {e}\n\nPlease ensure the database file exists and has proper permissions."
-            )
-            raise
         
         # Create main frame
         self.main_frame = ttk.Frame(root, padding="10")
@@ -521,13 +510,40 @@ class TickerSelector:
             print(f"Error setting up fields: {e}")
             messagebox.showerror("Error", f"Failed to setup fields: {e}")
 
+    def create_metrics_selector(self, table_name):
+        columns = get_table_columns(self.conn, table_name)
+        self.metrics_var = tk.StringVar(value=columns)
+        self.metrics_listbox = tk.Listbox(self.root, listvariable=self.metrics_var, selectmode='multiple')
+        self.metrics_listbox.pack()
+
+    def plot_selected_metrics(self):
+        selected_indices = self.metrics_listbox.curselection()
+        selected_metrics = [self.metrics_listbox.get(i) for i in selected_indices]
+        # Use selected_metrics for plotting
+        for metric in selected_metrics:
+            print(f"Plotting data for {metric}")
+            # Add your plotting logic here
+
 def main():
     root = tk.Tk()
-    app = TickerSelector(root)
+    
+    # Open the database connection once
+    try:
+        conn = duckdb.connect('historical_market_data.db', read_only=True)
+        print("Successfully connected to database")
+    except Exception as e:
+        print(f"Error connecting to database: {e}")
+        messagebox.showerror(
+            "Database Error",
+            f"Failed to connect to database: {e}\n\nPlease ensure the database file exists and has proper permissions."
+        )
+        return
+    
+    app = TickerSelector(root, conn)
     
     # Configure window with larger size
-    root.geometry("500x800")  # Increased from 400x600
-    root.minsize(400, 600)    # Increased minimum size
+    root.geometry("800x1000")
+    root.minsize(600, 800)
     
     # Setup cleanup on window close
     def on_closing():
