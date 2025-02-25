@@ -20,6 +20,19 @@ from tqdm import tqdm as tqdm_sync
 from dataclasses import dataclass
 import json
 
+# Configure logging for external libraries
+logging.getLogger('yfinance').setLevel(logging.ERROR)
+logging.getLogger('urllib3.connectionpool').setLevel(logging.ERROR)
+
+# Only log critical errors from these libraries
+logging.getLogger('yfinance').handlers = []
+logging.getLogger('yfinance').addHandler(logging.NullHandler())
+logging.getLogger('yfinance').propagate = False
+
+logging.getLogger('urllib3.connectionpool').handlers = []
+logging.getLogger('urllib3.connectionpool').addHandler(logging.NullHandler())
+logging.getLogger('urllib3.connectionpool').propagate = False
+
 # Configuration management
 @dataclass
 class ETLConfig:
@@ -160,7 +173,8 @@ class StockExtractor:
         await self.initialize_session()
         
         results: Dict[str, pd.DataFrame] = {}
-        failed_tickers: List[str] = []
+        failed_tickers = []
+        empty_tickers = []
         
         # Create tasks for all tickers
         tasks = [self.fetch_stock_data(ticker) for ticker in tickers]
@@ -172,16 +186,19 @@ class StockExtractor:
                 if df is not None and not df.empty:
                     results[ticker] = df
                 else:
-                    failed_tickers.append(ticker)
+                    empty_tickers.append(ticker)
             except Exception as e:
                 self.logger.error(f"Error processing task for {ticker}: {str(e)}")
                 failed_tickers.append(ticker)
         
-        self.logger.info(f"Successfully downloaded {len(results)}/{len(tickers)} tickers")
+        # At the end, log summaries
         if failed_tickers:
             self.logger.warning(f"Failed to download {len(failed_tickers)} tickers")
-            self.failed_downloads.update(failed_tickers)
         
+        if empty_tickers:
+            self.logger.warning(f"Empty dataframes for {len(empty_tickers)} tickers")
+        
+        self.logger.info(f"Successfully downloaded {len(results)}/{len(tickers)} tickers")
         return results
 
 
@@ -350,6 +367,10 @@ class StockTransformer:
         """Transform multiple dataframes"""
         results: Dict[str, pl.DataFrame] = {}
         
+        # Group errors instead of logging each one
+        error_tickers = []
+        error_counts = {}
+        
         for ticker, raw_df in raw_data.items():
             try:
                 # Standardize format
@@ -367,7 +388,19 @@ class StockTransformer:
                 results[ticker] = df
                 
             except Exception as e:
-                self.logger.error(f"Error in batch transform for {ticker}: {str(e)}")
+                error_tickers.append(ticker)
+                # Store error type for summary
+                if str(e) not in error_counts:
+                    error_counts[str(e)] = 0
+                error_counts[str(e)] += 1
+                continue
+        
+        # At the end, log summaries
+        if error_tickers:
+            self.logger.warning(f"Failed to transform {len(error_tickers)} tickers")
+            # Log error types and counts
+            for error, count in error_counts.items():
+                self.logger.warning(f"  - {error}: {count} occurrences")
         
         self.logger.info(f"Successfully transformed {len(results)}/{len(raw_data)} dataframes")
         return results
@@ -664,6 +697,10 @@ class ETLOrchestrator:
         successful_tickers = set(transformed_data.keys())
         failed_tickers = [t for t in tickers if t not in successful_tickers]
         
+        # Log a summary instead of individual failures
+        if failed_tickers:
+            self.logger.warning(f"Failed to process {len(failed_tickers)} tickers in this batch")
+            
         return len(successful_tickers), failed_tickers
     
     async def run_pipeline(self, tickers: List[str] = None):
@@ -700,18 +737,27 @@ class ETLOrchestrator:
                 self.logger.info(f"Processing letter group {letter} with {len(letter_tickers)} tickers")
                 
                 # Process in batches
+                batch_count = (len(letter_tickers) + self.config.batch_size - 1) // self.config.batch_size
+                
                 for i in range(0, len(letter_tickers), self.config.batch_size):
                     batch = letter_tickers[i:i + self.config.batch_size]
+                    batch_num = i//self.config.batch_size + 1
                     
-                    self.logger.info(f"Processing batch {i//self.config.batch_size + 1} for letter {letter}")
+                    self.logger.info(f"Processing batch {batch_num}/{batch_count} for letter {letter}")
                     successful, failed = await self.process_ticker_batch(batch)
                     
                     self.stats["successful_loads"] += successful
                     all_failed_tickers.extend(failed)
                     
+                    # Log batch summary
+                    self.logger.info(f"Batch {batch_num} complete: {successful}/{len(batch)} tickers processed successfully")
+                    
                     # Pause between batches
                     if i + self.config.batch_size < len(letter_tickers):
                         await asyncio.sleep(2)
+                
+                # Log letter group summary
+                self.logger.info(f"Letter {letter} complete: {len(letter_tickers) - len([t for t in all_failed_tickers if t[0].upper() == letter])}/{len(letter_tickers)} tickers processed successfully")
                 
                 # Pause between letter groups
                 if letter != list(ticker_groups.keys())[-1]:
