@@ -16,21 +16,14 @@ import logging
 from io import StringIO
 from typing import List, Dict, Optional, Tuple, Any, Set
 from tqdm.asyncio import tqdm as async_tqdm
-from tqdm import tqdm as tqdm_sync
+from tqdm import tqdm
 from dataclasses import dataclass
 import json
 
 # Configure logging for external libraries
-logging.getLogger('yfinance').setLevel(logging.ERROR)
-logging.getLogger('urllib3.connectionpool').setLevel(logging.ERROR)
-
-# Only log critical errors from these libraries
-logging.getLogger('yfinance').handlers = []
-logging.getLogger('yfinance').addHandler(logging.NullHandler())
+logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+logging.getLogger('urllib3.connectionpool').setLevel(logging.CRITICAL)
 logging.getLogger('yfinance').propagate = False
-
-logging.getLogger('urllib3.connectionpool').handlers = []
-logging.getLogger('urllib3.connectionpool').addHandler(logging.NullHandler())
 logging.getLogger('urllib3.connectionpool').propagate = False
 
 # Configuration management
@@ -172,9 +165,10 @@ class StockExtractor:
         """Fetch stock data for multiple tickers in parallel"""
         await self.initialize_session()
         
-        results: Dict[str, pd.DataFrame] = {}
-        failed_tickers = []
-        empty_tickers = []
+        # Don't log individual failures
+        result = {}
+        failed_count = 0
+        empty_count = 0
         
         # Create tasks for all tickers
         tasks = [self.fetch_stock_data(ticker) for ticker in tickers]
@@ -184,22 +178,23 @@ class StockExtractor:
             try:
                 df = await future
                 if df is not None and not df.empty:
-                    results[ticker] = df
+                    result[ticker] = df
                 else:
-                    empty_tickers.append(ticker)
+                    empty_count += 1
             except Exception as e:
-                self.logger.error(f"Error processing task for {ticker}: {str(e)}")
-                failed_tickers.append(ticker)
+                failed_count += 1
+            
+            # Don't log anything here - let the progress bars show progress
         
         # At the end, log summaries
-        if failed_tickers:
-            self.logger.warning(f"Failed to download {len(failed_tickers)} tickers")
+        if failed_count > 0:
+            self.logger.warning(f"Failed to download {failed_count} tickers")
         
-        if empty_tickers:
-            self.logger.warning(f"Empty dataframes for {len(empty_tickers)} tickers")
+        if empty_count > 0:
+            self.logger.warning(f"Empty dataframes for {empty_count} tickers")
         
-        self.logger.info(f"Successfully downloaded {len(results)}/{len(tickers)} tickers")
-        return results
+        self.logger.info(f"Successfully downloaded {len(result)}/{len(tickers)} tickers")
+        return result
 
 
 # 2. Transformation Layer
@@ -365,11 +360,9 @@ class StockTransformer:
     
     def batch_transform(self, raw_data: Dict[str, pd.DataFrame]) -> Dict[str, pl.DataFrame]:
         """Transform multiple dataframes"""
-        results: Dict[str, pl.DataFrame] = {}
-        
-        # Group errors instead of logging each one
-        error_tickers = []
-        error_counts = {}
+        # Don't log individual failures
+        result = {}
+        error_count = 0
         
         for ticker, raw_df in raw_data.items():
             try:
@@ -385,25 +378,18 @@ class StockTransformer:
                 # Calculate additional metrics
                 df = self.calculate_metrics(df)
                 
-                results[ticker] = df
+                result[ticker] = df
                 
             except Exception as e:
-                error_tickers.append(ticker)
-                # Store error type for summary
-                if str(e) not in error_counts:
-                    error_counts[str(e)] = 0
-                error_counts[str(e)] += 1
+                error_count += 1
                 continue
         
         # At the end, log summaries
-        if error_tickers:
-            self.logger.warning(f"Failed to transform {len(error_tickers)} tickers")
-            # Log error types and counts
-            for error, count in error_counts.items():
-                self.logger.warning(f"  - {error}: {count} occurrences")
+        if error_count > 0:
+            self.logger.warning(f"Failed to transform {error_count} tickers")
         
-        self.logger.info(f"Successfully transformed {len(results)}/{len(raw_data)} dataframes")
-        return results
+        self.logger.info(f"Successfully transformed {len(result)}/{len(raw_data)} dataframes")
+        return result
 
 
 # 3. Loading Layer
@@ -517,7 +503,7 @@ class DuckDBLoader:
             total_rows = len(combined)
             batch_size = self.config.db_batch_size
             
-            with tqdm_sync(total=total_rows, desc="Loading data", unit="rows") as pbar:
+            with tqdm(total=total_rows, desc="Loading data", unit="rows") as pbar:
                 for i in range(0, total_rows, batch_size):
                     batch = combined.slice(i, min(batch_size, total_rows - i))
                     batch_pd = batch.to_pandas()
@@ -679,28 +665,34 @@ class ETLOrchestrator:
             ]
         )
     
+    def _create_progress_bar(self, total, desc):
+        """Create a consistent progress bar"""
+        return tqdm(total=total, desc=desc, ncols=100, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}')
+
+    def _log_batch_summary(self, letter, batch_results):
+        """Log a summary of batch processing results"""
+        total_processed = sum(count for status, count in batch_results.items())
+        success_count = batch_results.get('success', 0)
+        
+        # Only log the summary, not individual batches
+        self.logger.info(f"Letter {letter}: {success_count}/{total_processed} tickers processed successfully")
+        
+        # Log error categories if any failures
+        if total_processed > success_count:
+            error_count = total_processed - success_count
+            self.logger.info(f"  Failed tickers: {error_count} (see detailed report in etl_report.json)")
+
     async def process_ticker_batch(self, tickers: List[str]) -> Tuple[int, List[str]]:
         """Process a batch of tickers through the ETL pipeline"""
-        # Extract
-        self.logger.info(f"Extracting data for {len(tickers)} tickers")
+        # Process silently without individual logs
         raw_data = await self.extractor.batch_fetch_stock_data(tickers)
-        
-        # Transform
-        self.logger.info(f"Transforming data for {len(raw_data)} tickers")
         transformed_data = self.transformer.batch_transform(raw_data)
-        
-        # Load
-        self.logger.info(f"Loading data for {len(transformed_data)} tickers")
         self.loader.batch_load_data(transformed_data)
         
         # Calculate failed tickers
         successful_tickers = set(transformed_data.keys())
         failed_tickers = [t for t in tickers if t not in successful_tickers]
         
-        # Log a summary instead of individual failures
-        if failed_tickers:
-            self.logger.warning(f"Failed to process {len(failed_tickers)} tickers in this batch")
-            
         return len(successful_tickers), failed_tickers
     
     async def run_pipeline(self, tickers: List[str] = None):
@@ -730,49 +722,74 @@ class ETLOrchestrator:
                     ticker_groups[first_letter] = []
                 ticker_groups[first_letter].append(ticker)
             
+            # Create progress bar for letter groups
+            letter_pbar = self._create_progress_bar(len(ticker_groups), "Processing letter groups")
+            
             # Process each letter group
             all_failed_tickers = []
             
             for letter, letter_tickers in ticker_groups.items():
-                self.logger.info(f"Processing letter group {letter} with {len(letter_tickers)} tickers")
+                letter_pbar.set_description(f"Processing letter {letter}")
                 
                 # Process in batches
                 batch_count = (len(letter_tickers) + self.config.batch_size - 1) // self.config.batch_size
                 
+                # Create progress bar for batches within this letter
+                batch_pbar = self._create_progress_bar(len(letter_tickers), f"Letter {letter}")
+                
+                # Track results for this letter
+                letter_results = {'success': 0, 'failed': 0}
+                
                 for i in range(0, len(letter_tickers), self.config.batch_size):
                     batch = letter_tickers[i:i + self.config.batch_size]
-                    batch_num = i//self.config.batch_size + 1
                     
-                    self.logger.info(f"Processing batch {batch_num}/{batch_count} for letter {letter}")
+                    # Process batch
                     successful, failed = await self.process_ticker_batch(batch)
                     
+                    # Update stats
                     self.stats["successful_loads"] += successful
                     all_failed_tickers.extend(failed)
                     
-                    # Log batch summary
-                    self.logger.info(f"Batch {batch_num} complete: {successful}/{len(batch)} tickers processed successfully")
+                    # Update letter results
+                    letter_results['success'] += successful
+                    letter_results['failed'] += len(failed)
+                    
+                    # Update progress bar
+                    batch_pbar.update(len(batch))
                     
                     # Pause between batches
                     if i + self.config.batch_size < len(letter_tickers):
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(1)
                 
-                # Log letter group summary
-                self.logger.info(f"Letter {letter} complete: {len(letter_tickers) - len([t for t in all_failed_tickers if t[0].upper() == letter])}/{len(letter_tickers)} tickers processed successfully")
+                # Close batch progress bar
+                batch_pbar.close()
+                
+                # Log letter summary
+                self._log_batch_summary(letter, letter_results)
+                
+                # Update letter progress bar
+                letter_pbar.update(1)
                 
                 # Pause between letter groups
                 if letter != list(ticker_groups.keys())[-1]:
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(2)
+            
+            # Close letter progress bar
+            letter_pbar.close()
             
             # Update stats
             self.stats["failed_tickers"] = all_failed_tickers
             
             # Optimize database
+            self.logger.info("Optimizing database...")
             self.loader.update_indexes()
             self.loader.optimize_storage()
             
-            # Get final database stats
-            db_stats = self.loader.get_db_stats()
-            self.logger.info(f"Database stats: {json.dumps(db_stats, indent=2)}")
+            # Final summary
+            self.logger.info(f"ETL pipeline summary:")
+            self.logger.info(f"  Processed: {self.stats['total_tickers']} tickers")
+            self.logger.info(f"  Successful: {self.stats['successful_loads']} tickers")
+            self.logger.info(f"  Failed: {len(self.stats['failed_tickers'])} tickers")
             
         except Exception as e:
             self.logger.error(f"Error in ETL pipeline: {str(e)}")
@@ -785,9 +802,6 @@ class ETLOrchestrator:
             self.stats["processing_time"] = (self.stats["end_time"] - self.stats["start_time"]).total_seconds()
             
             self.logger.info(f"ETL pipeline completed in {self.stats['processing_time']:.2f} seconds")
-            self.logger.info(f"Processed {self.stats['total_tickers']} tickers")
-            self.logger.info(f"Successfully loaded {self.stats['successful_loads']} tickers")
-            self.logger.info(f"Failed tickers: {len(self.stats['failed_tickers'])}")
     
     def generate_report(self) -> Dict[str, Any]:
         """Generate a report of the ETL process"""
