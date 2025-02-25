@@ -1,3 +1,6 @@
+import aiohttp
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import yfinance as yf
 import polars as pl
 import duckdb
@@ -12,17 +15,178 @@ import os
 import tkinter as tk
 from tkinter import messagebox
 import matplotlib.dates as mdates
-# Test to see if I can push my branch
+from tqdm.asyncio import tqdm
+from tqdm import tqdm as tqdm_sync
 
 class DataManager:
     def __init__(self, db_path='stocks.db'):
         self.db_path = db_path
         self.failed_downloads = []
+        self.session = None
         
         # Delete existing database file if it exists
         if os.path.exists(db_path):
             os.remove(db_path)
             print(f"Deleted existing database: {db_path}")
+
+    async def initialize_session(self):
+        """Initialize aiohttp session"""
+        if not self.session:
+            connector = aiohttp.TCPConnector(limit_per_host=10)  # Limit concurrent connections
+            self.session = aiohttp.ClientSession(connector=connector)
+
+    async def close_session(self):
+        """Close aiohttp session"""
+        if self.session:
+            await self.session.close()
+            self.session = None
+
+    async def get_nyse_tickers_async(self):
+        """Async version of get_nyse_tickers"""
+        try:
+            url = "https://www.nyse.com/api/quotes/filter"
+            payload = {
+                "instrumentType": "EQUITY",
+                "pageNumber": 1,
+                "sortColumn": "SYMBOL",
+                "sortOrder": "ASC",
+                "maxResultsPerPage": 10000,
+                "filterToken": ""
+            }
+            headers = {"Content-Type": "application/json"}
+            
+            await self.initialize_session()
+            async with self.session.post(url, json=payload, headers=headers) as response:
+                data = await response.json()
+                tickers = [item['symbolTicker'] for item in data]
+                print(f"Found {len(tickers)} NYSE tickers")
+                return sorted(tickers)
+        except Exception as e:
+            print(f"Error fetching NYSE tickers: {str(e)}")
+            return []
+
+    async def download_stock_data_async(self, ticker, retries=3):
+        """Async version of download_stock_data"""
+        for attempt in range(retries):
+            try:
+                print(f"\nDownloading {ticker}... (attempt {attempt + 1})", end='')
+                
+                # Use ThreadPoolExecutor for yfinance download since it's not async
+                loop = asyncio.get_running_loop()
+                with ThreadPoolExecutor() as pool:
+                    df = await loop.run_in_executor(
+                        pool,
+                        lambda: yf.download(ticker, progress=False, period="1y")
+                    )
+                
+                if len(df) == 0:
+                    print(" Empty dataframe")
+                    self.failed_downloads.append(ticker)
+                    return None
+                
+                # Process the dataframe
+                df = pl.from_pandas(df).with_columns([
+                    pl.col('Open').cast(pl.Float64),
+                    pl.col('High').cast(pl.Float64),
+                    pl.col('Low').cast(pl.Float64),
+                    pl.col('Close').cast(pl.Float64),
+                    pl.col('Adj Close').cast(pl.Float64),
+                    pl.col('Volume').cast(pl.Float64)
+                ])
+                
+                df = df.with_columns(pl.lit(ticker).alias('Symbol'))
+                print(f" Done! ({len(df)} days)")
+                return df
+                
+            except Exception as e:
+                if attempt < retries - 1:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    print(f" Failed after {retries} attempts: {str(e)}")
+                    self.failed_downloads.append(ticker)
+                    return None
+
+    async def process_letter_group_async(self, tickers_for_letter, letter):
+        """Process a group of tickers for a single letter asynchronously"""
+        print(f"\nProcessing letter group {letter} with {len(tickers_for_letter)} tickers")
+        
+        # Create tasks for all tickers in the group
+        tasks = [self.download_stock_data_async(ticker) for ticker in tickers_for_letter]
+        
+        # Process tasks in batches with progress bar
+        batch_size = 10
+        letter_data = []
+        
+        # Create progress bar for this letter group
+        pbar = tqdm(
+            total=len(tasks),
+            desc=f"Letter {letter}",
+            position=1,
+            leave=False
+        )
+        
+        for i in range(0, len(tasks), batch_size):
+            batch_tasks = tasks[i:i + batch_size]
+            batch_results = await asyncio.gather(*batch_tasks)
+            letter_data.extend([df for df in batch_results if df is not None])
+            
+            # Update progress bar
+            pbar.update(len(batch_tasks))
+            
+            # Brief pause between batches
+            await asyncio.sleep(1)
+        
+        pbar.close()
+        
+        # Store the letter group's data using ThreadPoolExecutor
+        if letter_data:
+            loop = asyncio.get_running_loop()
+            with ThreadPoolExecutor() as pool:
+                await loop.run_in_executor(pool, self.store_in_duckdb, letter_data)
+        
+        return [t for t in tickers_for_letter if t in self.failed_downloads]
+
+    async def process_all_data_async(self, ticker_groups):
+        """Process all letter groups asynchronously"""
+        all_failures = []
+        
+        try:
+            # Calculate total tickers for overall progress
+            total_tickers = sum(len(tickers) for tickers in ticker_groups.values())
+            
+            # Create overall progress bar
+            overall_pbar = tqdm(
+                total=total_tickers,
+                desc="Overall Progress",
+                position=0,
+                leave=True
+            )
+            
+            for letter in sorted(ticker_groups.keys()):
+                tickers = ticker_groups[letter]
+                failures = await self.process_letter_group_async(tickers, letter)
+                all_failures.extend(failures)
+                
+                # Update overall progress
+                overall_pbar.update(len(tickers))
+                
+                # Show database status without disrupting progress bars
+                if not failures:  # Only show if letter completed successfully
+                    print(f"\nCompleted letter {letter} successfully")
+                
+                # Pause between letter groups
+                await asyncio.sleep(5)
+            
+            overall_pbar.close()
+                
+        except KeyboardInterrupt:
+            print("\nProcess interrupted. Saving progress...")
+            await loop.run_in_executor(None, self.show_duckdb_status)
+            
+        finally:
+            await self.close_session()
+            
+        return all_failures
 
     def get_nyse_tickers(self):
         """Get list of NYSE tickers from NYSE website"""
@@ -222,7 +386,7 @@ class DataManager:
                     return None
 
     def store_in_duckdb(self, dfs, batch_size=1000):
-        """Store processed data in DuckDB with batching"""
+        """Store processed data in DuckDB with batching and progress bar"""
         if not dfs:
             print("No data to store")
             return
@@ -235,11 +399,11 @@ class DataManager:
             con = duckdb.connect(self.db_path)
             
             # Drop existing table if it exists
-            con.execute("DROP TABLE IF EXISTS nyse_table")
+            #con.execute("DROP TABLE IF EXISTS nyse_table")
             
             # Create new table
             con.execute("""
-                CREATE TABLE nyse_table (
+                CREATE TABLE IF NOT EXISTS nyse_table (
                     date DATE,
                     ticker VARCHAR,
                     open DOUBLE,
@@ -251,25 +415,22 @@ class DataManager:
                 )
             """)
             
-            # Debug print
-            print(f"\nStoring {len(combined)} rows with schema:")
-            print(combined.schema)
+            # Insert data with progress bar
+            total_rows = len(combined)
+            with tqdm_sync(total=total_rows, desc="Storing in DB", leave=False) as pbar:
+                for i in range(0, total_rows, batch_size):
+                    batch = combined.slice(i, batch_size)
+                    con.execute("INSERT INTO nyse_table SELECT * FROM batch")
+                    pbar.update(len(batch))
             
-            # Insert data
-            con.execute("INSERT INTO nyse_table SELECT * FROM combined")
-            
-            # Create indices
-            con.execute("CREATE INDEX idx_date_ticker ON nyse_table(date, ticker)")
-            con.execute("CREATE INDEX idx_ticker_date ON nyse_table(ticker, date)")
-            
-            print(f"Successfully stored {len(combined)} records in DuckDB")
+            # Create indices if they don't exist
+            con.execute("""
+                CREATE INDEX IF NOT EXISTS idx_date_ticker ON nyse_table(date, ticker);
+                CREATE INDEX IF NOT EXISTS idx_ticker_date ON nyse_table(ticker, date);
+            """)
             
         except Exception as e:
             print(f"Error storing data in DuckDB: {str(e)}")
-            print("\nDebug information:")
-            if len(dfs) > 0:
-                print("First dataframe schema:")
-                print(dfs[0].schema)
         finally:
             if 'con' in locals():
                 con.close()
@@ -536,23 +697,14 @@ if __name__ == "__main__":
     try:
         data_manager = DataManager()
         
-        # Get NYSE tickers
-        tickers = data_manager.get_nyse_tickers()
-        print(f"Found {len(tickers)} NYSE tickers")
+        # Create event loop
+        loop = asyncio.get_event_loop()
         
-        # Check current progress
-        start_letter = data_manager.get_current_progress()
-        if start_letter is None:
-            print("\nAll letters have been processed!")
-            sys.exit(0)
-            
-        print(f"\nResuming from letter {start_letter}")
+        # Get NYSE tickers asynchronously
+        tickers = loop.run_until_complete(data_manager.get_nyse_tickers_async())
         
-        # Sample tickers by letter
+        # Sample and group tickers
         sampled_tickers = data_manager.sample_tickers_by_letter(tickers, per_letter=100)
-        print(f"\nProcessing {len(sampled_tickers)} tickers (50 per letter):")
-        
-        # Group sampled tickers by letter
         ticker_groups = {}
         for ticker in sampled_tickers:
             letter = ticker[0].upper()
@@ -560,18 +712,8 @@ if __name__ == "__main__":
                 ticker_groups[letter] = []
             ticker_groups[letter].append(ticker)
         
-        all_failures = []
-        
-        # Process each letter group starting from the resume point
-        for letter in sorted(ticker_groups.keys()):
-            if start_letter and letter < start_letter:
-                print(f"\nSkipping letter {letter} (already processed)")
-                continue
-                
-            tickers_for_letter = ticker_groups[letter]
-            print(f"\nProcessing letter {letter} ({len(tickers_for_letter)} tickers)")
-            letter_failures = data_manager.process_letter_group(tickers_for_letter, letter)
-            all_failures.extend(letter_failures)
+        # Process all data asynchronously
+        all_failures = loop.run_until_complete(data_manager.process_all_data_async(ticker_groups))
         
         # Print final summary
         print("\nDownload Summary:")
@@ -582,7 +724,7 @@ if __name__ == "__main__":
         if all_failures:
             print("\nFailed tickers:")
             print(", ".join(all_failures))
-            
+        
         # Show final database status
         data_manager.show_duckdb_status()
         
@@ -590,3 +732,5 @@ if __name__ == "__main__":
         print("\n\nProcess interrupted by user. Showing final status:")
         data_manager.show_duckdb_status()
         sys.exit(1)
+    finally:
+        loop.close()
