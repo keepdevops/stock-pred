@@ -12,6 +12,7 @@ import os
 import tkinter as tk
 from tkinter import messagebox
 import matplotlib.dates as mdates
+# Test to see if I can push my branch
 
 class DataManager:
     def __init__(self, db_path='stocks.db'):
