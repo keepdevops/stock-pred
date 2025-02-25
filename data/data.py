@@ -17,17 +17,30 @@ from tkinter import messagebox
 import matplotlib.dates as mdates
 from tqdm.asyncio import tqdm
 from tqdm import tqdm as tqdm_sync
+import logging
+from io import StringIO
 
 class DataManager:
     def __init__(self, db_path='stocks.db'):
         self.db_path = db_path
         self.failed_downloads = []
         self.session = None
+        self.error_buffer = StringIO()
+        
+        # Configure logging
+        self.logger = logging.getLogger('DataManager')
+        self.logger.setLevel(logging.ERROR)
+        handler = logging.StreamHandler(self.error_buffer)
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        self.logger.addHandler(handler)
         
         # Delete existing database file if it exists
         if os.path.exists(db_path):
             os.remove(db_path)
             print(f"Deleted existing database: {db_path}")
+
+        self.rate_limit = asyncio.Semaphore(5)  # Limit concurrent requests
+        self.delay = 0.5  # Delay between requests in seconds
 
     async def initialize_session(self):
         """Initialize aiohttp session"""
@@ -65,13 +78,14 @@ class DataManager:
             print(f"Error fetching NYSE tickers: {str(e)}")
             return []
 
-    async def download_stock_data_async(self, ticker, retries=3):
-        """Async version of download_stock_data"""
+    async def _download_stock_data_raw(self, ticker, retries=3):
+        """Downloads raw stock data from yfinance"""
         for attempt in range(retries):
             try:
-                print(f"\nDownloading {ticker}... (attempt {attempt + 1})", end='')
+                # Add delay between attempts
+                if attempt > 0:
+                    await asyncio.sleep(self.delay * (2 ** attempt))
                 
-                # Use ThreadPoolExecutor for yfinance download since it's not async
                 loop = asyncio.get_running_loop()
                 with ThreadPoolExecutor() as pool:
                     df = await loop.run_in_executor(
@@ -80,65 +94,103 @@ class DataManager:
                     )
                 
                 if len(df) == 0:
-                    print(" Empty dataframe")
-                    self.failed_downloads.append(ticker)
+                    self.logger.error(f"Empty dataframe for {ticker}")
                     return None
                 
-                # Process the dataframe
-                df = pl.from_pandas(df).with_columns([
-                    pl.col('Open').cast(pl.Float64),
-                    pl.col('High').cast(pl.Float64),
-                    pl.col('Low').cast(pl.Float64),
-                    pl.col('Close').cast(pl.Float64),
-                    pl.col('Adj Close').cast(pl.Float64),
-                    pl.col('Volume').cast(pl.Float64)
-                ])
-                
-                df = df.with_columns(pl.lit(ticker).alias('Symbol'))
-                print(f" Done! ({len(df)} days)")
                 return df
                 
             except Exception as e:
                 if attempt < retries - 1:
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    self.logger.warning(f"Retry {attempt + 1} for {ticker}: {str(e)}")
+                    await asyncio.sleep(self.delay * (2 ** attempt))
                 else:
-                    print(f" Failed after {retries} attempts: {str(e)}")
-                    self.failed_downloads.append(ticker)
+                    self.logger.error(f"Failed to download {ticker}: {str(e)}")
                     return None
+
+    def _process_stock_data(self, df, ticker):
+        """Processes raw stock data into standardized format"""
+        try:
+            # Handle multi-index columns if they exist
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            
+            # Ensure column names are unique and valid
+            df.columns = [str(col).strip().replace(' ', '_') for col in df.columns]
+            
+            # Convert to polars and handle column types
+            df = pl.from_pandas(df)
+            df = df.with_columns([
+                pl.col('Open').cast(pl.Float64),
+                pl.col('High').cast(pl.Float64),
+                pl.col('Low').cast(pl.Float64),
+                pl.col('Close').cast(pl.Float64),
+                pl.col('Adj_Close').cast(pl.Float64),
+                pl.col('Volume').cast(pl.Float64)
+            ])
+            
+            # Add ticker column
+            df = df.with_columns(pl.lit(ticker).alias('Symbol'))
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error processing {ticker} data: {str(e)}")
+            return None
+
+    async def download_stock_data_async(self, ticker, retries=3):
+        """Async version of download_stock_data"""
+        async with self.rate_limit:  # Rate limit downloads
+            # Download raw data
+            raw_df = await self._download_stock_data_raw(ticker, retries)
+            if raw_df is None:
+                self.failed_downloads.append(ticker)
+                return None
+            
+            # Process the data
+            processed_df = self._process_stock_data(raw_df, ticker)
+            if processed_df is None:
+                self.failed_downloads.append(ticker)
+                return None
+            
+            return processed_df
 
     async def process_letter_group_async(self, tickers_for_letter, letter):
         """Process a group of tickers for a single letter asynchronously"""
-        print(f"\nProcessing letter group {letter} with {len(tickers_for_letter)} tickers")
+        # Reduce batch size to avoid rate limits
+        batch_size = 5  # Reduced from 10
         
-        # Create tasks for all tickers in the group
         tasks = [self.download_stock_data_async(ticker) for ticker in tickers_for_letter]
-        
-        # Process tasks in batches with progress bar
-        batch_size = 10
         letter_data = []
         
-        # Create progress bar for this letter group
-        pbar = tqdm(
+        # Create progress bars
+        overall_pbar = tqdm(
             total=len(tasks),
             desc=f"Letter {letter}",
-            position=1,
-            leave=False
+            position=0,
+            leave=True,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
         )
         
         for i in range(0, len(tasks), batch_size):
             batch_tasks = tasks[i:i + batch_size]
             batch_results = await asyncio.gather(*batch_tasks)
-            letter_data.extend([df for df in batch_results if df is not None])
+            successful_results = [df for df in batch_results if df is not None]
+            letter_data.extend(successful_results)
             
-            # Update progress bar
-            pbar.update(len(batch_tasks))
+            # Update progress
+            overall_pbar.update(len(batch_tasks))
             
-            # Brief pause between batches
-            await asyncio.sleep(1)
+            # Display accumulated errors below progress bar
+            if self.error_buffer.getvalue():
+                print("\nErrors:", flush=True)
+                print(self.error_buffer.getvalue(), flush=True)
+                self.error_buffer.truncate(0)
+                self.error_buffer.seek(0)
+            
+            # Add delay between batches
+            await asyncio.sleep(self.delay)
         
-        pbar.close()
+        overall_pbar.close()
         
-        # Store the letter group's data using ThreadPoolExecutor
         if letter_data:
             loop = asyncio.get_running_loop()
             with ThreadPoolExecutor() as pool:
@@ -154,35 +206,24 @@ class DataManager:
             # Calculate total tickers for overall progress
             total_tickers = sum(len(tickers) for tickers in ticker_groups.values())
             
-            # Create overall progress bar
-            overall_pbar = tqdm(
-                total=total_tickers,
-                desc="Overall Progress",
-                position=0,
-                leave=True
-            )
+            print("\nStarting download process...")
+            print("=" * 80)
             
             for letter in sorted(ticker_groups.keys()):
                 tickers = ticker_groups[letter]
                 failures = await self.process_letter_group_async(tickers, letter)
                 all_failures.extend(failures)
                 
-                # Update overall progress
-                overall_pbar.update(len(tickers))
+                if failures:
+                    print(f"\nFailed downloads for letter {letter}: {len(failures)}")
                 
-                # Show database status without disrupting progress bars
-                if not failures:  # Only show if letter completed successfully
-                    print(f"\nCompleted letter {letter} successfully")
-                
-                # Pause between letter groups
-                await asyncio.sleep(5)
+                await asyncio.sleep(2)
             
-            overall_pbar.close()
-                
+            print("\n" + "=" * 80)
+            print("Download process completed!")
+            
         except KeyboardInterrupt:
             print("\nProcess interrupted. Saving progress...")
-            await loop.run_in_executor(None, self.show_duckdb_status)
-            
         finally:
             await self.close_session()
             
