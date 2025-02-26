@@ -76,20 +76,36 @@ class TickerAIAgent:
             print(f"Data preparation error: {str(e)}")
             raise
 
+    def build_model(self):
+        if self.model_type == 'simple':
+            return self.build_simple_model()
+        elif self.model_type == 'lstm':
+            return self.create_lstm_model(input_shape=(10, 1))  # Example input shape
+        else:
+            raise ValueError(f"Unsupported model type: {self.model_type}")
+
+    def build_simple_model(self):
+        # Define a simple model using an Input layer
+        model = tf.keras.Sequential([
+            tf.keras.layers.Input(shape=(10,)),  # Define input shape here
+            tf.keras.layers.Dense(64, activation='relu'),
+            tf.keras.layers.Dense(1)
+        ])
+        model.compile(optimizer='adam', loss='mse')
+        return model
+
     def create_lstm_model(self, input_shape):
         """Create LSTM model"""
-        model = Sequential([
+        model = tf.keras.Sequential([
             tf.keras.layers.Input(shape=input_shape),
-            LSTM(units=self.parameters['units'], return_sequences=False),
-            Dropout(self.parameters['dropout']),
-            Dense(1)
+            tf.keras.layers.LSTM(units=self.parameters['units'], return_sequences=False),
+            tf.keras.layers.Dropout(self.parameters['dropout']),
+            tf.keras.layers.Dense(1)
         ])
-        
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=self.parameters['learning_rate']),
             loss='mse'
         )
-        
         return model
 
     def train_model(self, ticker, field):
@@ -175,16 +191,6 @@ class TickerAIAgent:
                     continue
         
         return predictions
-
-    def build_model(self):
-        # Define a simple model using an Input layer
-        model = tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(10,)),  # Define input shape here
-            tf.keras.layers.Dense(64, activation='relu'),
-            tf.keras.layers.Dense(1)
-        ])
-        model.compile(optimizer='adam', loss='mse')
-        return model
 
     def train(self, data, labels):
         self.model.fit(data, labels, epochs=self.parameters['epochs'])

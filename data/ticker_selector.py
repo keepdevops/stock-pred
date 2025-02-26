@@ -254,6 +254,13 @@ class TickerSelector:
         self.batch_size_var = tk.IntVar(value=32)
         ttk.Entry(tuning_frame, textvariable=self.batch_size_var).grid(row=2, column=1, sticky=(tk.W, tk.E))
 
+        # Model Type
+        ttk.Label(tuning_frame, text="Model Type:").grid(row=3, column=0, sticky=tk.W)
+        self.model_type_var = tk.StringVar(value='simple')
+        model_type_options = ['simple', 'lstm']
+        model_type_menu = ttk.OptionMenu(tuning_frame, self.model_type_var, *model_type_options)
+        model_type_menu.grid(row=3, column=1, sticky=(tk.W, tk.E))
+
     def on_table_change(self, event):
         """Handle table selection change"""
         try:
@@ -443,7 +450,8 @@ class TickerSelector:
                         'epochs': self.epochs_var.get(),
                         'batch_size': self.batch_size_var.get()
                     }
-                    agent = SimpleAIAgent(tickers=selected_tickers, fields=selected_fields, connection=self.conn, parameters=parameters)
+                    model_type = self.model_type_var.get()
+                    agent = SimpleAIAgent(tickers=selected_tickers, fields=selected_fields, connection=self.conn, parameters=parameters, model_type=model_type)
                     
                     # Assuming you have a model and data prepared for predictions
                     model = agent.model
