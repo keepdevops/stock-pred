@@ -697,6 +697,9 @@ class StockAnalyzerGUI:
                 self.table_combo.set(self.tables[0])
                 self.table_combo.bind('<<ComboboxSelected>>', self.on_table_change)
             
+            # Add an update button to refresh the table list
+            ttk.Button(table_frame, text="Update", command=self.refresh_tables).pack(side="left", padx=5)
+            
             # Sector selection frame
             self.sector_frame = ttk.LabelFrame(self.control_panel, text="Sector Selection", padding="5")
             self.sector_frame.pack(fill="x", padx=5, pady=5)
@@ -734,6 +737,12 @@ class StockAnalyzerGUI:
             self.symbol_var = tk.StringVar()
             self.symbol_combo = ttk.Combobox(ticker_frame, textvariable=self.symbol_var)
             self.symbol_combo.pack(fill="x", padx=5, pady=2)
+            
+            # Pair selection
+            ttk.Label(ticker_frame, text="Pair:").pack(side="left", padx=5)
+            self.pair_var = tk.StringVar()
+            self.pair_combo = ttk.Combobox(ticker_frame, textvariable=self.pair_var)
+            self.pair_combo.pack(fill="x", padx=5, pady=2)
             
         except Exception as e:
             print(f"Error creating ticker controls: {str(e)}")
@@ -981,15 +990,18 @@ class StockAnalyzerGUI:
         try:
             print(f"\nTable selection changed to: {self.table_var.get()}")
             
+            # Add print message for table selection
+            print(f"Table Selection Table: {self.table_var.get()}")
+
             if not hasattr(self, 'db_conn') or not self.db_conn:
                 print("No database connection available")
-                self.clear_ticker_selection()
+                self.clear_all_selections()
                 return
             
             table = self.table_var.get()
             if not table or table == 'No tables available':
                 print("No valid table selected")
-                self.clear_ticker_selection()
+                self.clear_all_selections()
                 return
             
             # Get column information
@@ -1010,49 +1022,12 @@ class StockAnalyzerGUI:
                 chk.pack(anchor='w')
                 self.field_vars[column] = var
             
-            # Check if table has ticker column
-            if 'ticker' in column_names:
-                print("Found ticker column, retrieving unique tickers...")
-                tickers = self.db_conn.execute(
-                    f"SELECT DISTINCT ticker FROM {table} ORDER BY ticker"
-                ).fetchall()
-                tickers = [t[0] for t in tickers]
-                print(f"Found {len(tickers)} tickers")
-                
-                # Update ticker combobox
-                self.ticker_combo['values'] = tickers
-                if tickers:
-                    self.ticker_combo.set(tickers[0])
-                    print(f"Set initial ticker to: {tickers[0]}")
-                    # Start analysis automatically
-                    self.start_analysis()
-                else:
-                    print("No tickers found in table")
-                    self.clear_ticker_selection()
-            else:
-                print("No ticker column found in table")
-                self.clear_ticker_selection()
-            
-            # Check if table has symbol column
-            if 'symbol' in column_names:
-                print("Found symbol column, retrieving unique symbols...")
-                symbols = self.db_conn.execute(
-                    f"SELECT DISTINCT symbol FROM {table} ORDER BY symbol"
-                ).fetchall()
-                symbols = [s[0] for s in symbols]
-                print(f"Found {len(symbols)} symbols")
-                
-                # Update symbol combobox
-                self.symbol_combo['values'] = symbols
-                if symbols:
-                    self.symbol_combo.set(symbols[0])
-                    print(f"Set initial symbol to: {symbols[0]}")
-                else:
-                    print("No symbols found in table")
-                    self.clear_symbol_selection()
-            else:
-                print("No symbol column found in table")
-                self.clear_symbol_selection()
+            # Special handling for historical_forex table
+            if table == 'historical_forex':
+                print("Special handling for historical_forex table")
+                # Update sector, field selection, and pair as needed
+                # This can include additional logic specific to the historical_forex table
+                self.update_sector_for_historical_forex(column_names)
             
             # Check if table has sector column
             if 'sector' in column_names:
@@ -1079,54 +1054,103 @@ class StockAnalyzerGUI:
             # Update symbols based on sector
             self.update_symbols_based_on_sector()
             
+            # Check if table has pair column
+            if 'pair' in column_names:
+                print("Found pair column, retrieving unique pairs...")
+                pairs = self.db_conn.execute(
+                    f"SELECT DISTINCT pair FROM {table} ORDER BY pair"
+                ).fetchall()
+                pairs = [p[0] for p in pairs]
+                print(f"Found {len(pairs)} pairs")
+                
+                # Update pair combobox
+                self.pair_combo['values'] = pairs
+                if pairs:
+                    self.pair_combo.set(pairs[0])
+                    print(f"Set initial pair to: {pairs[0]}")
+                else:
+                    print("No pairs found in table")
+                    self.clear_pair_selection()
+            else:
+                print("No pair column found in table")
+                self.clear_pair_selection()
+            
         except Exception as e:
             print(f"Error in table change handler: {str(e)}")
             traceback.print_exc()
-            self.clear_ticker_selection()
+            self.clear_all_selections()
+
+    def update_sector_for_historical_forex(self, column_names):
+        """Update sector selection specifically for historical_forex table"""
+        # Assuming historical_forex does not have a sector column
+        print("Updating sector for historical_forex table")
+        self.clear_sector_selection()
+        # Additional logic for historical_forex can be added here if needed
+
+    def clear_all_selections(self):
+        """Clear all selections when no valid table/database is selected"""
+        self.clear_sector_selection()
+        self.clear_symbol_selection()
+        self.clear_pair_selection()
+
+    def clear_sector_selection(self):
+        """Clear sector selection when no valid table/database is selected"""
+        self.sector_combo['values'] = ['No sectors available']
+        self.sector_combo.set('No sectors available')
+
+    def clear_symbol_selection(self):
+        """Clear symbol selection when no valid table/database is selected"""
+        self.symbol_combo['values'] = ['No symbols available']
+        self.symbol_combo.set('No symbols available')
+
+    def clear_pair_selection(self):
+        """Clear pair selection when no valid table/database is selected"""
+        self.pair_combo['values'] = ['No pairs available']
+        self.pair_combo.set('No pairs available')
 
     def on_sector_change(self, event=None):
         """Handle sector selection change"""
         self.update_symbols_based_on_sector()
 
     def update_symbols_based_on_sector(self):
-        """Update symbols based on the selected sector"""
+        """Update symbols and pairs based on the selected sector"""
         try:
             table = self.table_var.get()
             selected_sector = self.sector_var.get()
             
-            if 'sector' in self.field_vars and selected_sector:
-                print(f"Filtering symbols for sector: {selected_sector}")
-                symbols = self.db_conn.execute(
-                    f"SELECT DISTINCT symbol FROM {table} WHERE sector = ? ORDER BY symbol",
+            if table == 'historical_forex' and selected_sector:
+                print(f"Filtering pairs for sector: {selected_sector}")
+                pairs = self.db_conn.execute(
+                    f"SELECT DISTINCT pair FROM {table} WHERE sector = ? ORDER BY pair",
                     [selected_sector]
                 ).fetchall()
-                symbols = [s[0] for s in symbols]
-                print(f"Found {len(symbols)} symbols for sector {selected_sector}")
+                pairs = [p[0] for p in pairs]
+                print(f"Found {len(pairs)} pairs for sector {selected_sector}")
                 
-                # Update symbol combobox
-                self.symbol_combo['values'] = symbols
-                if symbols:
-                    self.symbol_combo.set(symbols[0])
-                    print(f"Set initial symbol to: {symbols[0]}")
+                # Update pair combobox
+                self.pair_combo['values'] = pairs
+                if pairs:
+                    self.pair_combo.set(pairs[0])
+                    print(f"Set initial pair to: {pairs[0]}")
                 else:
-                    print("No symbols found for sector")
-                    self.clear_symbol_selection()
+                    print("No pairs found for sector")
+                    self.clear_pair_selection()
             else:
-                # If no sector is selected, show all symbols
-                symbols = self.db_conn.execute(
-                    f"SELECT DISTINCT symbol FROM {table} ORDER BY symbol"
+                # If no sector is selected or not historical_forex, show all pairs
+                pairs = self.db_conn.execute(
+                    f"SELECT DISTINCT pair FROM {table} ORDER BY pair"
                 ).fetchall()
-                symbols = [s[0] for s in symbols]
-                self.symbol_combo['values'] = symbols
-                if symbols:
-                    self.symbol_combo.set(symbols[0])
+                pairs = [p[0] for p in pairs]
+                self.pair_combo['values'] = pairs
+                if pairs:
+                    self.pair_combo.set(pairs[0])
                 else:
-                    self.clear_symbol_selection()
+                    self.clear_pair_selection()
                 
         except Exception as e:
-            print(f"Error updating symbols based on sector: {str(e)}")
+            print(f"Error updating pairs based on sector: {str(e)}")
             traceback.print_exc()
-            self.clear_symbol_selection()
+            self.clear_pair_selection()
 
     def clear_ticker_selection(self):
         """Clear ticker selection when no valid table/database is selected"""
@@ -1839,15 +1863,101 @@ class StockAnalyzerGUI:
             traceback.print_exc()
             return None
 
-    def clear_symbol_selection(self):
-        """Clear symbol selection when no valid table/database is selected"""
-        self.symbol_combo['values'] = ['No symbols available']
-        self.symbol_combo.set('No symbols available')
+    def clear_all_selections(self):
+        """Clear all selections when no valid table/database is selected"""
+        self.clear_sector_selection()
+        self.clear_symbol_selection()
+        self.clear_pair_selection()
 
     def clear_sector_selection(self):
         """Clear sector selection when no valid table/database is selected"""
         self.sector_combo['values'] = ['No sectors available']
         self.sector_combo.set('No sectors available')
+
+    def clear_symbol_selection(self):
+        """Clear symbol selection when no valid table/database is selected"""
+        self.symbol_combo['values'] = ['No symbols available']
+        self.symbol_combo.set('No symbols available')
+
+    def clear_pair_selection(self):
+        """Clear pair selection when no valid table/database is selected"""
+        self.pair_combo['values'] = ['No pairs available']
+        self.pair_combo.set('No pairs available')
+
+    def refresh_tables(self):
+        """Refresh the list of available tables"""
+        try:
+            print("Refreshing table list...")
+            
+            # Store the current selection
+            current_selection = self.table_var.get()
+            
+            # Refresh the list of tables
+            self.tables = self.get_tables()
+            self.table_combo['values'] = self.tables if self.tables else ['No tables available']
+            
+            # Restore the previous selection if it still exists
+            if current_selection in self.tables:
+                self.table_combo.set(current_selection)
+            elif self.tables:
+                self.table_combo.set(self.tables[0])
+                self.on_table_change()
+            else:
+                self.table_combo.set('No tables available')
+                self.clear_ticker_selection()
+            
+            # Update sector and field selection based on the new table
+            self.update_sector_and_fields()
+            
+            print("Table list refreshed")
+        except Exception as e:
+            print(f"Error refreshing tables: {str(e)}")
+            traceback.print_exc()
+
+    def update_sector_and_fields(self):
+        """Update sector and field selection based on the current table"""
+        try:
+            table = self.table_var.get()
+            if not table or table == 'No tables available':
+                self.clear_sector_selection()
+                self.clear_field_selection()
+                return
+            
+            # Get column information
+            columns = self.db_conn.execute(f"SELECT * FROM {table} LIMIT 0").description
+            column_names = [col[0] for col in columns]
+            
+            # Update sector selection if sector column exists
+            if 'sector' in column_names:
+                sectors = self.db_conn.execute(
+                    f"SELECT DISTINCT sector FROM {table} ORDER BY sector"
+                ).fetchall()
+                sectors = [s[0] for s in sectors]
+                self.sector_combo['values'] = sectors
+                if sectors:
+                    self.sector_combo.set(sectors[0])
+                else:
+                    self.clear_sector_selection()
+            else:
+                self.clear_sector_selection()
+            
+            # Update field selection
+            self.clear_field_selection()
+            for column in column_names:
+                var = tk.BooleanVar(value=True)  # Default to checked
+                chk = ttk.Checkbutton(self.field_frame, text=column, variable=var)
+                chk.pack(anchor='w')
+                self.field_vars[column] = var
+            
+        except Exception as e:
+            print(f"Error updating sector and fields: {str(e)}")
+            traceback.print_exc()
+
+    def clear_field_selection(self):
+        """Clear field selection when no valid table/database is selected"""
+        for widget in self.field_frame.winfo_children():
+            widget.destroy()
+        self.field_vars.clear()
 
 @process_data_safely
 def initialize_gui(databases):
