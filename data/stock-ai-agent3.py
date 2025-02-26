@@ -470,6 +470,7 @@ class StockAIAgent:
             
             print("Technical indicators calculated successfully")
             print(f"DataFrame shape after calculations: {df.shape}")
+            print("Retrieved columns:", df.columns)
             return df
             
         except Exception as e:
@@ -728,7 +729,19 @@ class StockAnalyzerGUI:
             self.field_frame = ttk.LabelFrame(self.control_panel, text="Field Selection", padding="5")
             self.field_frame.pack(fill="x", padx=5, pady=5)
             
-            self.field_vars = {}  # Dictionary to hold field variables
+            # Initialize field_vars to store checkbox variables
+            self.field_vars = {
+                'Close': tk.BooleanVar(),
+                'Open': tk.BooleanVar(),
+                'High': tk.BooleanVar(),
+                'Low': tk.BooleanVar(),
+                'Volume': tk.BooleanVar()
+            }
+
+            # Create checkboxes for field selection
+            for i, (field, var) in enumerate(self.field_vars.items()):
+                checkbox = ttk.Checkbutton(self.field_frame, text=field, variable=var)
+                checkbox.grid(row=i // 2, column=i % 2, sticky="w", padx=5, pady=5)
             
         except Exception as e:
             print(f"Error creating table controls: {str(e)}")
@@ -747,12 +760,12 @@ class StockAnalyzerGUI:
             self.ticker_combo = ttk.Combobox(ticker_frame, textvariable=self.ticker_var)
             self.ticker_combo.pack(fill="x", padx=5, pady=2)
             
-            # Pair selection
-            # pair_label = ttk.Label(ticker_frame, text="Pair:")
-            # pair_label.grid(row=1, column=0, sticky="w", padx=5, pady=5)
+            # Add "Clear All" and "Select All" buttons
+            clear_all_button = ttk.Button(ticker_frame, text="Clear All", command=self.clear_all_tickers)
+            clear_all_button.pack(side="left", padx=5, pady=5)
 
-            # self.pair_combo = ttk.Combobox(ticker_frame, state="readonly")
-            # self.pair_combo.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
+            select_all_button = ttk.Button(ticker_frame, text="Select All", command=self.select_all_tickers)
+            select_all_button.pack(side="left", padx=5, pady=5)
             
         except Exception as e:
             print(f"Error creating ticker controls: {str(e)}")
@@ -860,6 +873,7 @@ class StockAnalyzerGUI:
                 raise ValueError("No data retrieved from the table")
             
             print(f"Retrieved {len(df)} rows of data")
+            print("Retrieved columns:", df.columns)
             return df
             
         except Exception as e:
@@ -877,51 +891,78 @@ class StockAnalyzerGUI:
             current_table = self.table_var.get()
             current_sector = self.sector_var.get()
             current_ticker = self.ticker_combo.get()
+            selected_fields = self.get_selected_fields()  # Method to get selected fields from checkboxes
             
             print(f"Current Database: {current_db}")
             print(f"Selected Table: {current_table}")
             print(f"Selected Sector: {current_sector}")
             print(f"Selected Ticker: {current_ticker}")
+            print(f"Selected Fields: {selected_fields}")
             
             # Validate selections
             if not current_db or current_db == 'No databases available':
                 print("No valid database selected")
                 return
-            if not current_table or current_table == 'No tables available':
-                print("No valid table selected")
-                return
-            if not current_ticker or current_ticker == 'No tickers available':
-                print("No valid ticker selected")
+            
+            # Connect to the DuckDB database
+            conn = create_connection(current_db)
+            if conn is None:
+                print("Failed to connect to the database")
                 return
             
-            # Connect to the selected database
-            conn = duckdb.connect(current_db)
-            
-            # Retrieve historical data for the selected ticker
-            query = f"SELECT * FROM {current_table} WHERE ticker = ?"
-            print(f"Executing query: {query}")
+            # Construct query with selected fields
+            fields_str = ', '.join(selected_fields)
+            query = f"SELECT {fields_str} FROM {current_table} WHERE ticker = ?"
             df = conn.execute(query, (current_ticker,)).fetchdf()
-            
-            if df.empty:
-                print("No data retrieved for the selected ticker")
-                return
-            
             print(f"Retrieved {len(df)} rows of data")
             
-            # Calculate technical indicators
+            # Check for required columns
+            required_columns = ['close', 'open', 'high', 'low', 'volume']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                print(f"Error: Missing required columns: {missing_columns}")
+                print("Skipping model training due to missing technical indicators.")
+                return
+            
+            # Proceed with technical indicator calculations and model training
             df = self.calculate_technical_indicators(df)
             if df is None:
                 print("Skipping model training due to missing technical indicators.")
                 return
             
-            # Filter fields based on user selection
-            selected_fields = [field for field, var in self.field_vars.items() if var.get()]
-            df = df[selected_fields]
+            # Check if data is retrieved
+            if df is None or df.empty:
+                print("No data retrieved from the table. Please check your query and selections.")
+                self.loading_label.config(text="Training error: No data retrieved")
+                return
             
             # Proceed with model training using the prepared data
-            # ... (model training code here) ...
-            
-            print("Model training completed successfully")
+            if df is not None:
+                # Initialize AI agent if not already done
+                if self.ai_agent.model is None:
+                    input_shape = (self.sequence_length, len(selected_fields))
+                    self.ai_agent.build_model(input_shape)
+                
+                # Prepare data using the data adapter
+                data = self.data_adapter.prepare_training_data(df)
+                if data is None:
+                    print("Data preparation failed. Please check your data and try again.")
+                    self.loading_label.config(text="Training error: Data preparation failed")
+                    return
+                
+                (X_train, y_train), (X_val, y_val) = data
+                
+                # Train the model
+                history = self.ai_agent.train(X_train, y_train, X_val, y_val, 
+                                              epochs=int(self.epochs_var.get()), 
+                                              batch_size=int(self.batch_size_var.get()))
+                
+                if history is not None:
+                    print("Model training completed successfully")
+                    self.ai_status.config(text="AI Status: Trained")
+                else:
+                    print("Model training failed")
+                    self.ai_status.config(text="AI Status: Training failed")
             
         except Exception as e:
             print("\n=== Error in Training ===")
@@ -930,6 +971,10 @@ class StockAnalyzerGUI:
             print("\nTraceback:")
             traceback.print_exc()
             self.loading_label.config(text=f"Training error: {str(e)}")
+
+    def get_selected_fields(self):
+        """Retrieve the list of selected fields from checkboxes."""
+        return [field for field, var in self.field_vars.items() if var.get()]
 
     def plot_training_history(self, history):
         """Plot training history"""
@@ -1120,7 +1165,7 @@ class StockAnalyzerGUI:
             self.clear_all_selections()
 
     def update_tickers_symbols_pairs(self, table, column_names):
-        """Update tickers, symbols, and pairs based on the current table"""
+        """Update tickers and symbols based on the current table"""
         try:
             # Update tickers
             if 'ticker' in column_names:
@@ -1138,40 +1183,8 @@ class StockAnalyzerGUI:
             else:
                 self.clear_ticker_selection()
             
-            # Update symbols
-            if 'symbol' in column_names:
-                print("Found symbol column, retrieving unique symbols...")
-                symbols = self.db_conn.execute(
-                    f"SELECT DISTINCT symbol FROM {table} ORDER BY symbol"
-                ).fetchall()
-                symbols = [s[0] for s in symbols]
-                print(f"Found {len(symbols)} symbols")
-                self.symbol_combo['values'] = symbols
-                if symbols:
-                    self.symbol_combo.set(symbols[0])
-                else:
-                    self.clear_symbol_selection()
-            else:
-                self.clear_symbol_selection()
-            
-            # Update pairs
-            if 'pair' in column_names:
-                print("Found pair column, retrieving unique pairs...")
-                pairs = self.db_conn.execute(
-                    f"SELECT DISTINCT pair FROM {table} ORDER BY pair"
-                ).fetchall()
-                pairs = [p[0] for p in pairs]
-                print(f"Found {len(pairs)} pairs")
-                self.pair_combo['values'] = pairs
-                if pairs:
-                    self.pair_combo.set(pairs[0])
-                else:
-                    self.clear_pair_selection()
-            else:
-                self.clear_pair_selection()
-            
         except Exception as e:
-            print(f"Error updating tickers, symbols, and pairs: {str(e)}")
+            print(f"Error updating tickers and symbols: {str(e)}")
             traceback.print_exc()
             self.clear_all_selections()
 
@@ -1228,16 +1241,6 @@ class StockAnalyzerGUI:
         """Clear sector selection when no valid sector is available"""
         self.sector_combo['values'] = ['No sectors available']
         self.sector_combo.set('No sectors available')
-
-    def clear_symbol_selection(self):
-        """Clear symbol selection when no valid table/database is selected"""
-        self.symbol_combo['values'] = ['No symbols available']
-        self.symbol_combo.set('No symbols available')
-
-    def clear_pair_selection(self):
-        """Clear pair selection when no valid table/database is selected"""
-        self.pair_combo['values'] = ['No pairs available']
-        self.pair_combo.set('No pairs available')
 
     def refresh_tables(self):
         """Refresh the list of available tables"""
@@ -1413,7 +1416,7 @@ class StockAnalyzerGUI:
 
     def calculate_technical_indicators(self, df):
         """Calculate technical indicators for the given DataFrame."""
-        required_columns = ['Close']
+        required_columns = ['close', 'open', 'high', 'low', 'volume']
         missing_columns = [col for col in required_columns if col not in df.columns]
         
         if missing_columns:
@@ -1422,13 +1425,23 @@ class StockAnalyzerGUI:
         
         try:
             # Example: Calculate a 20-day moving average
-            df['MA20'] = df['Close'].rolling(window=20).mean()
+            df['MA20'] = df['close'].rolling(window=20).mean()
             # Add more technical indicators as needed
             print("Technical indicators calculated successfully.")
             return df
         except Exception as e:
             print(f"Error calculating technical indicators: {e}")
             return None
+
+    def clear_all_tickers(self):
+        """Clear all selected tickers."""
+        # Assuming self.ticker_listbox is a Listbox widget for tickers
+        self.ticker_listbox.selection_clear(0, tk.END)
+
+    def select_all_tickers(self):
+        """Select all tickers."""
+        # Assuming self.ticker_listbox is a Listbox widget for tickers
+        self.ticker_listbox.selection_set(0, tk.END)
 
 @process_data_safely
 def initialize_gui(databases):
