@@ -6,6 +6,8 @@ from ticker_plotter import TickerPlotter
 from ai_agent import TickerAIAgent as AdvancedAIAgent
 from ticker_ai_agent import TickerAIAgent as SimpleAIAgent
 import tensorflow as tf
+import numpy as np
+from predictions_plotter import PredictionsPlotter
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -233,14 +235,24 @@ class TickerSelector:
         ttk.Button(button_frame, text="Plot Data", command=self.get_selected).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Show Predictions", command=self.show_predictions).pack(side=tk.LEFT, padx=5)
 
-        # Add model selection control
-        self.model_type_var = tk.StringVar(value='simple')
-        ttk.Label(self.main_frame, text="Model Type:").grid(row=8, column=0, sticky=tk.W)
-        model_type_frame = ttk.Frame(self.main_frame)
-        model_type_frame.grid(row=8, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
-        
-        ttk.Radiobutton(model_type_frame, text="Simple", variable=self.model_type_var, value='simple').pack(side=tk.LEFT)
-        ttk.Radiobutton(model_type_frame, text="Advanced", variable=self.model_type_var, value='advanced').pack(side=tk.LEFT)
+        # AI Tuning Parameters Frame
+        tuning_frame = ttk.LabelFrame(self.main_frame, text="AI Tuning Parameters", padding="5")
+        tuning_frame.grid(row=8, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+
+        # Learning Rate
+        ttk.Label(tuning_frame, text="Learning Rate:").grid(row=0, column=0, sticky=tk.W)
+        self.learning_rate_var = tk.DoubleVar(value=0.001)
+        ttk.Entry(tuning_frame, textvariable=self.learning_rate_var).grid(row=0, column=1, sticky=(tk.W, tk.E))
+
+        # Epochs
+        ttk.Label(tuning_frame, text="Epochs:").grid(row=1, column=0, sticky=tk.W)
+        self.epochs_var = tk.IntVar(value=10)
+        ttk.Entry(tuning_frame, textvariable=self.epochs_var).grid(row=1, column=1, sticky=(tk.W, tk.E))
+
+        # Batch Size
+        ttk.Label(tuning_frame, text="Batch Size:").grid(row=2, column=0, sticky=tk.W)
+        self.batch_size_var = tk.IntVar(value=32)
+        ttk.Entry(tuning_frame, textvariable=self.batch_size_var).grid(row=2, column=1, sticky=(tk.W, tk.E))
 
     def on_table_change(self, event):
         """Handle table selection change"""
@@ -392,15 +404,8 @@ class TickerSelector:
             selected_fields = [field for field in selected_fields if field in available_fields]
             
             if selected_fields:
-                # Determine which AI agent to use
-                if self.model_type_var.get() == 'simple':
-                    agent_class = SimpleAIAgent
-                else:
-                    agent_class = AdvancedAIAgent
-                
                 try:
-                    from ticker_plotter import TickerPlotter
-                    plotter = TickerPlotter(self.root, selected_tickers, self.table_var.get(), connection=self.conn, agent_class=agent_class, fields=selected_fields)
+                    plotter = TickerPlotter(self.root, selected_tickers, self.table_var.get(), connection=self.conn, fields=selected_fields)
                     plotter.create_plot()  # Ensure this method is called to initialize plotting
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to plot data: {e}")
@@ -431,15 +436,20 @@ class TickerSelector:
                 selected_fields.append('date')
             
             if selected_fields:
-                # Determine which AI agent to use
-                if self.model_type_var.get() == 'simple':
-                    agent_class = SimpleAIAgent
-                else:
-                    agent_class = AdvancedAIAgent
-                
                 try:
-                    from ticker_plotter import TickerPlotter
-                    TickerPlotter(self.root, selected_tickers, self.table_var.get(), connection=self.conn, agent_class=agent_class, fields=selected_fields)
+                    # Create an instance of TickerAIAgent with the required arguments
+                    parameters = {
+                        'learning_rate': self.learning_rate_var.get(),
+                        'epochs': self.epochs_var.get(),
+                        'batch_size': self.batch_size_var.get()
+                    }
+                    agent = SimpleAIAgent(tickers=selected_tickers, fields=selected_fields, connection=self.conn, parameters=parameters)
+                    
+                    # Assuming you have a model and data prepared for predictions
+                    model = agent.model
+                    data = np.random.rand(100, 10)  # Example input data
+                    predictions_plotter = PredictionsPlotter(model, data)
+                    predictions_plotter.make_predictions()
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to show predictions: {e}")
             else:
@@ -551,6 +561,16 @@ class TickerSelector:
         query = f"PRAGMA table_info({table_name})"
         df = self.conn.execute(query).df()
         return df['name'].tolist()
+
+# Define the function outside of any loops
+@tf.function
+def train_step(model, inputs, targets):
+    with tf.GradientTape() as tape:
+        predictions = model(inputs, training=True)
+        loss = compute_loss(targets, predictions)
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    return loss
 
 def main():
     root = tk.Tk()

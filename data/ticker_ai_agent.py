@@ -21,6 +21,7 @@ class TickerAIAgent:
         }
         self.conn = connection
         print("AI agent using database connection")
+        self.model = self.build_model()
 
     def prepare_data(self, ticker, field):
         """Prepare data for training"""
@@ -174,3 +175,19 @@ class TickerAIAgent:
                     continue
         
         return predictions
+
+    def build_model(self):
+        # Define a simple model using an Input layer
+        model = tf.keras.Sequential([
+            tf.keras.layers.Input(shape=(10,)),  # Define input shape here
+            tf.keras.layers.Dense(64, activation='relu'),
+            tf.keras.layers.Dense(1)
+        ])
+        model.compile(optimizer='adam', loss='mse')
+        return model
+
+    def train(self, data, labels):
+        self.model.fit(data, labels, epochs=self.parameters['epochs'])
+
+    def predict(self, data):
+        return self.model.predict(data)

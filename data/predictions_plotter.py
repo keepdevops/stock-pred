@@ -12,6 +12,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 import duckdb
 import os
+import tensorflow as tf
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -145,42 +146,22 @@ class TickerPlotter:
             print(f"Error during cleanup: {e}")
 
 class PredictionsPlotter:
-    def __init__(self, root, selected_tickers, selected_table, selected_fields, agent_class=None, ai_model_type=None):
-        # Initialize basic attributes first
-        self.root = root
-        self.selected_tickers = selected_tickers
-        self.selected_table = selected_table
-        self.selected_fields = selected_fields  # Store the selected fields
-        self.agent_class = agent_class  # Store the agent class
-        self.ai_model_type = ai_model_type  # Store the AI model type
-        
-        # Create database connection
-        try:
-            self.conn = duckdb.connect('historical_market_data.db', read_only=True)
-            print("Successfully connected to database")
-        except Exception as e:
-            print(f"Database connection error: {e}")
-            messagebox.showerror("Database Error", f"Failed to connect to database: {e}")
-            raise
-        
-        try:
-            # Create plot window
-            self.plot_window = tk.Toplevel(root)
-            self.plot_window.title("Predictions Plot")
-            self.plot_window.geometry("1200x800")  # Increased window size
-            
-            # Create figure with subplots for each field
-            self.create_plots()
-            
-            # Setup cleanup on window close
-            self.plot_window.protocol("WM_DELETE_WINDOW", self.cleanup)
-            
-        except Exception as e:
-            print(f"Error creating plots: {e}")
-            if hasattr(self, 'conn'):
-                self.conn.close()
-            messagebox.showerror("Error", f"Failed to create plots: {str(e)}")
-            raise
+    def __init__(self, model, data):
+        self.model = model
+        self.data = data
+
+    def make_predictions(self):
+        predictions = self.model.predict(self.data)
+        self.plot_predictions(predictions)
+
+    def plot_predictions(self, predictions):
+        plt.figure(figsize=(10, 6))
+        plt.plot(predictions, label='Predictions')
+        plt.title('Model Predictions')
+        plt.xlabel('Time')
+        plt.ylabel('Predicted Values')
+        plt.legend()
+        plt.show()
 
     def get_historical_data(self, ticker, field):
         """Get historical data for a specific ticker and field"""
