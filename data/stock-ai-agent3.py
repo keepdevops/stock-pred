@@ -760,6 +760,10 @@ class StockAnalyzerGUI:
             self.ticker_combo = ttk.Combobox(ticker_frame, textvariable=self.ticker_var)
             self.ticker_combo.pack(fill="x", padx=5, pady=2)
             
+            # Initialize ticker listbox
+            self.ticker_listbox = tk.Listbox(ticker_frame, selectmode=tk.MULTIPLE)
+            self.ticker_listbox.pack(fill="x", padx=5, pady=2)
+            
             # Add "Clear All" and "Select All" buttons
             clear_all_button = ttk.Button(ticker_frame, text="Clear All", command=self.clear_all_tickers)
             clear_all_button.pack(side="left", padx=5, pady=5)
@@ -1434,13 +1438,11 @@ class StockAnalyzerGUI:
             return None
 
     def clear_all_tickers(self):
-        """Clear all selected tickers."""
-        # Assuming self.ticker_listbox is a Listbox widget for tickers
+        """Clear all selections in the ticker listbox"""
         self.ticker_listbox.selection_clear(0, tk.END)
 
     def select_all_tickers(self):
-        """Select all tickers."""
-        # Assuming self.ticker_listbox is a Listbox widget for tickers
+        """Select all items in the ticker listbox"""
         self.ticker_listbox.selection_set(0, tk.END)
 
 @process_data_safely
