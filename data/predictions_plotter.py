@@ -550,4 +550,69 @@ Parameters:
             toolbar.update()
             
             # Pack canvas and toolbar
-            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True) 
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    def create_plots(self):
+        """Create individual plots for each field in separate frames"""
+        for field in self.selected_fields:
+            # Create a new frame for each field
+            field_frame = ttk.LabelFrame(self.plot_window, text=f"{field.replace('_', ' ').title()} Plot", padding="5")
+            field_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Create a figure for the current field
+            fig = plt.Figure(figsize=(12, 6))
+            ax = fig.add_subplot(111)
+            
+            for ticker in self.selected_tickers:
+                try:
+                    # Get historical data
+                    df = self.get_historical_data(ticker, field)
+                    if not df.empty:
+                        # Plot historical data
+                        ax.plot(df['date'], df[field], label=f'{ticker} Historical')
+                        
+                        # Create AI agent and get predictions
+                        try:
+                            ai_agent = self.agent_class(self.selected_table, connection=self.conn, model_type=self.ai_model_type)
+                            # Train the model if it doesn't exist
+                            model_path = f'models/{ticker}_{field}_lstm_model.keras'
+                            if not os.path.exists(model_path):
+                                ai_agent.train(ticker, field)
+                            
+                            # Get predictions
+                            future_dates, predictions = ai_agent.predict(ticker, field)
+                            ax.plot(future_dates, predictions, '--', label=f'{ticker} Predicted')
+                        except Exception as e:
+                            print(f"Could not plot predictions for {ticker}-{field}: {e}")
+                
+                except Exception as e:
+                    print(f"Error plotting {ticker}-{field}: {e}")
+                    continue
+            
+            ax.set_title(f'{field.replace("_", " ").title()} Over Time')
+            ax.set_xlabel('Date')
+            ax.set_ylabel(field.replace("_", " ").title())
+            ax.legend()
+            ax.grid(True)
+            
+            # Rotate x-axis labels for better readability
+            plt.setp(ax.get_xticklabels(), rotation=45)
+            
+            # Embed plot in tkinter window
+            canvas = FigureCanvasTkAgg(fig, master=field_frame)
+            canvas.draw()
+            
+            # Add navigation toolbar
+            toolbar = NavigationToolbar2Tk(canvas, field_frame)
+            toolbar.update()
+            
+            # Pack canvas and toolbar
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+def plot_bar_chart(data, labels):
+    plt.figure(figsize=(10, 6))
+    plt.bar(labels, data)
+    plt.title('Bar Chart Example')
+    plt.xlabel('Categories')
+    plt.ylabel('Values')
+    plt.show() 

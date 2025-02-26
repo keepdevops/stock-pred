@@ -15,7 +15,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 # Define the function outside of any loops
-@tf.function
+@tf.function(reduce_retracing=True)
 def train_step(model, inputs, targets):
     with tf.GradientTape() as tape:
         predictions = model(inputs, training=True)
