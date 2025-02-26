@@ -577,6 +577,57 @@ class TickerSelector:
         df = self.conn.execute(query).df()
         return df['name'].tolist()
 
+    def detect_ticker_column(self):
+        """Detect which column to use for ticker identification and rename if necessary"""
+        try:
+            current_table = self.table_var.get() if hasattr(self, 'table_var') else self.available_tables[0]
+            columns = self.conn.execute(f"SELECT * FROM {current_table} LIMIT 0").df().columns
+            print(f"Detecting ticker column for table {current_table}")
+            print(f"Available columns: {columns.tolist()}")
+            
+            # Check for ticker identifier column (pair, symbol, or ticker)
+            possible_ticker_columns = ['pair', 'symbol', 'ticker', 'currency_pair']
+            
+            for col in possible_ticker_columns:
+                if col in columns:
+                    if col == 'pair':
+                        # Rename 'pair' to 'ticker'
+                        print("Renaming 'pair' column to 'ticker'...")
+                        self.conn.execute(f"""
+                            ALTER TABLE {current_table}
+                            RENAME COLUMN pair TO ticker;
+                        """)
+                        self.ticker_column = 'ticker'
+                    elif col == 'symbol':
+                        # Rename 'symbol' to 'ticker'
+                        print("Renaming 'symbol' column to 'ticker'...")
+                        self.conn.execute(f"""
+                            ALTER TABLE {current_table}
+                            RENAME COLUMN symbol TO ticker;
+                        """)
+                        self.ticker_column = 'ticker'
+                    else:
+                        self.ticker_column = col
+                    print(f"Using '{self.ticker_column}' as ticker identifier")
+                    return
+            
+            # If no standard column found, use the first string column that might be an identifier
+            for col in columns:
+                if col not in ['date', 'sector', 'industry', 'updated_at', 'value']:
+                    self.ticker_column = col
+                    print(f"Using '{self.ticker_column}' as ticker identifier")
+                    return
+            
+            raise ValueError(f"No suitable ticker column found in table {current_table}")
+            
+        except Exception as e:
+            print(f"Error detecting ticker column: {e}")
+            messagebox.showerror(
+                "Database Error",
+                f"Failed to detect ticker column: {e}\n\nPlease ensure the table has a suitable identifier column."
+            )
+            raise
+
 # Define the function outside of any loops
 @tf.function
 def train_step(model, inputs, targets):
