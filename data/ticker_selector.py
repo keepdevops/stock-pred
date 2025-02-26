@@ -5,6 +5,7 @@ from tkinter import messagebox
 from ticker_plotter import TickerPlotter
 from ai_agent import TickerAIAgent as AdvancedAIAgent
 from ticker_ai_agent import TickerAIAgent as SimpleAIAgent
+import tensorflow as tf
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -374,25 +375,39 @@ class TickerSelector:
         self.update_statistics()
 
     def get_selected(self):
-        """Get selected tickers and create plot"""
+        """Handle the selection of tickers and fields for plotting"""
         selected_indices = self.ticker_listbox.curselection()
         selected_tickers = [self.ticker_listbox.get(i) for i in selected_indices]
         
         if selected_tickers:
-            print("\nSelected Tickers:")
-            for ticker in selected_tickers:
-                print(ticker)
+            # Get selected fields using actual database column names
+            selected_fields = [field for field, var in self.field_vars.items() if var.get()]
             
-            # Determine which AI agent to use
-            if self.model_type_var.get() == 'simple':
-                agent_class = SimpleAIAgent
+            # Ensure 'date' is included in the selected fields
+            if 'date' not in selected_fields:
+                selected_fields.append('date')
+            
+            # Verify that selected fields exist in the table
+            available_fields = self.get_available_fields(self.table_var.get())
+            selected_fields = [field for field in selected_fields if field in available_fields]
+            
+            if selected_fields:
+                # Determine which AI agent to use
+                if self.model_type_var.get() == 'simple':
+                    agent_class = SimpleAIAgent
+                else:
+                    agent_class = AdvancedAIAgent
+                
+                try:
+                    from ticker_plotter import TickerPlotter
+                    plotter = TickerPlotter(self.root, selected_tickers, self.table_var.get(), connection=self.conn, agent_class=agent_class, fields=selected_fields)
+                    plotter.create_plot()  # Ensure this method is called to initialize plotting
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to plot data: {e}")
             else:
-                agent_class = AdvancedAIAgent
-            
-            # Create plot window with a valid connection
-            TickerPlotter(self.root, selected_tickers, self.table_var.get(), connection=self.conn, agent_class=agent_class)
+                messagebox.showerror("Error", "No valid fields selected for plotting")
         else:
-            print("No tickers selected")
+            messagebox.showwarning("Warning", "Please select at least one ticker")
 
     def update_statistics(self):
         """Update statistics label"""
@@ -411,6 +426,10 @@ class TickerSelector:
             # Get selected fields using actual database column names
             selected_fields = [field for field, var in self.field_vars.items() if var.get()]
             
+            # Ensure 'date' is included in the selected fields
+            if 'date' not in selected_fields:
+                selected_fields.append('date')
+            
             if selected_fields:
                 # Determine which AI agent to use
                 if self.model_type_var.get() == 'simple':
@@ -418,8 +437,11 @@ class TickerSelector:
                 else:
                     agent_class = AdvancedAIAgent
                 
-                from predictions_plotter import PredictionsPlotter
-                PredictionsPlotter(self.root, selected_tickers, self.table_var.get(), selected_fields, agent_class=agent_class)
+                try:
+                    from ticker_plotter import TickerPlotter
+                    TickerPlotter(self.root, selected_tickers, self.table_var.get(), connection=self.conn, agent_class=agent_class, fields=selected_fields)
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to show predictions: {e}")
             else:
                 messagebox.showerror("Error", "No fields selected for predictions")
         else:
@@ -523,6 +545,12 @@ class TickerSelector:
         for metric in selected_metrics:
             print(f"Plotting data for {metric}")
             # Add your plotting logic here
+
+    def get_available_fields(self, table_name):
+        """Get available fields for the selected table"""
+        query = f"PRAGMA table_info({table_name})"
+        df = self.conn.execute(query).df()
+        return df['name'].tolist()
 
 def main():
     root = tk.Tk()

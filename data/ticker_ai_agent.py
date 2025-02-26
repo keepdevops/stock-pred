@@ -27,14 +27,15 @@ class TickerAIAgent:
         try:
             print(f"\nPreparing data for {ticker} using {field}")
             
-            # Query data from database
+            # Query data from database using DuckDB's execute method
             query = f"""
                 SELECT date, {field}
                 FROM balance_sheets
                 WHERE symbol = ?
                 ORDER BY date
             """
-            df = pd.read_sql_query(query, self.conn, params=(ticker,))
+            # Use DuckDB's execute method and convert to DataFrame
+            df = self.conn.execute(query, [ticker]).df()
             
             # Convert date to datetime
             df['date'] = pd.to_datetime(df['date'])
@@ -77,9 +78,8 @@ class TickerAIAgent:
     def create_lstm_model(self, input_shape):
         """Create LSTM model"""
         model = Sequential([
-            LSTM(units=self.parameters['units'], 
-                 input_shape=input_shape,
-                 return_sequences=False),
+            tf.keras.layers.Input(shape=input_shape),
+            LSTM(units=self.parameters['units'], return_sequences=False),
             Dropout(self.parameters['dropout']),
             Dense(1)
         ])
@@ -136,7 +136,7 @@ class TickerAIAgent:
                 LIMIT 10
             """
             print(f"Executing query with symbol={ticker}")
-            df = pd.read_sql_query(query, self.conn, params=(ticker,))
+            df = self.conn.execute(query, [ticker]).df()
             
             # Prepare input sequence
             values = df[field].values.reshape(-1, 1)
