@@ -205,74 +205,46 @@ class StockTransformer:
         self.config = config
         self.logger = logging.getLogger('StockTransformer')
     
-    def standardize_format(self, raw_df: pd.DataFrame, ticker: str) -> Optional[pl.DataFrame]:
-        """Standardize the format of a raw dataframe"""
+    def transform_dataframe(self, ticker: str, df: pd.DataFrame) -> pl.DataFrame:
+        """Transform a single dataframe"""
         try:
-            # Handle multi-index columns if they exist
-            if isinstance(raw_df.columns, pd.MultiIndex):
-                raw_df.columns = raw_df.columns.get_level_values(0)
+            # Check if we have a multi-level column index
+            if isinstance(df.columns, pd.MultiIndex):
+                # Flatten multi-level columns into single strings
+                df.columns = [f"{col[0]}_{col[1]}" if isinstance(col, tuple) else str(col) 
+                              for col in df.columns]
             
-            # Ensure column names are unique and valid
-            raw_df.columns = [str(col).strip().replace(' ', '_') for col in raw_df.columns]
+            # Ensure all column names are strings and unique
+            df.columns = [str(col) for col in df.columns]
             
-            # Reset index to make date a column
-            raw_df = raw_df.reset_index()
+            # Check for duplicate column names and make them unique
+            if len(df.columns) != len(set(df.columns)):
+                # Find duplicates and append a suffix
+                seen = {}
+                new_cols = []
+                for col in df.columns:
+                    if col in seen:
+                        seen[col] += 1
+                        new_cols.append(f"{col}_{seen[col]}")
+                    else:
+                        seen[col] = 0
+                        new_cols.append(col)
+                df.columns = new_cols
             
             # Add ticker column
-            raw_df['ticker'] = ticker
+            df['ticker'] = ticker
             
-            # Convert to polars
-            df = pl.from_pandas(raw_df)
+            # Convert to Polars DataFrame
+            pl_df = pl.from_pandas(df.reset_index())
             
-            # Standardize column names (case-insensitive mapping)
-            column_mapping = {
-                'Date': 'date',
-                'Open': 'open',
-                'High': 'high',
-                'Low': 'low',
-                'Close': 'close',
-                'Adj_Close': 'adj_close',
-                'Volume': 'volume'
-            }
+            # Ensure date column is properly formatted
+            if 'Date' in pl_df.columns:
+                pl_df = pl_df.with_columns(pl.col('Date').cast(pl.Date))
             
-            # Rename columns if they exist
-            for old_name, new_name in column_mapping.items():
-                if old_name in df.columns:
-                    df = df.rename({old_name: new_name})
-            
-            # If adj_close is missing, use close
-            if 'adj_close' not in df.columns and 'close' in df.columns:
-                df = df.with_columns(pl.col('close').alias('adj_close'))
-            
-            # Ensure all required columns exist
-            required_columns = ['date', 'ticker', 'open', 'high', 'low', 'close', 'adj_close', 'volume']
-            
-            # Check for missing columns
-            missing_columns = set(required_columns) - set(df.columns)
-            if missing_columns:
-                self.logger.error(f"Missing required columns for {ticker}: {missing_columns}")
-                return None
-            
-            # Select columns in specific order
-            df = df.select(required_columns)
-            
-            # Cast columns to correct types
-            df = df.with_columns([
-                pl.col('date').cast(pl.Date),
-                pl.col('ticker').cast(pl.Utf8),
-                pl.col('open').cast(pl.Float64),
-                pl.col('high').cast(pl.Float64),
-                pl.col('low').cast(pl.Float64),
-                pl.col('close').cast(pl.Float64),
-                pl.col('adj_close').cast(pl.Float64),
-                pl.col('volume').cast(pl.Int64)
-            ])
-            
-            return df
-            
+            return pl_df
         except Exception as e:
             self.logger.error(f"Error transforming data for {ticker}: {str(e)}")
-            return None
+            raise
     
     def validate_data(self, df: pl.DataFrame, ticker: str) -> bool:
         """Validate transformed data"""
@@ -366,10 +338,8 @@ class StockTransformer:
         
         for ticker, raw_df in raw_data.items():
             try:
-                # Standardize format
-                df = self.standardize_format(raw_df, ticker)
-                if df is None:
-                    continue
+                # Transform dataframe
+                df = self.transform_dataframe(ticker, raw_df)
                 
                 # Validate data
                 if not self.validate_data(df, ticker):
