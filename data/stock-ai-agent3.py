@@ -720,6 +720,12 @@ class StockAnalyzerGUI:
             self.ticker_combo = ttk.Combobox(ticker_frame, textvariable=self.ticker_var)
             self.ticker_combo.pack(fill="x", padx=5, pady=2)
             
+            # Symbol selection
+            ttk.Label(ticker_frame, text="Symbol:").pack(side="left", padx=5)
+            self.symbol_var = tk.StringVar()
+            self.symbol_combo = ttk.Combobox(ticker_frame, textvariable=self.symbol_var)
+            self.symbol_combo.pack(fill="x", padx=5, pady=2)
+            
         except Exception as e:
             print(f"Error creating ticker controls: {str(e)}")
             traceback.print_exc()
@@ -1014,6 +1020,27 @@ class StockAnalyzerGUI:
             else:
                 print("No ticker column found in table")
                 self.clear_ticker_selection()
+            
+            # Check if table has symbol column
+            if 'symbol' in column_names:
+                print("Found symbol column, retrieving unique symbols...")
+                symbols = self.db_conn.execute(
+                    f"SELECT DISTINCT symbol FROM {table} ORDER BY symbol"
+                ).fetchall()
+                symbols = [s[0] for s in symbols]
+                print(f"Found {len(symbols)} symbols")
+                
+                # Update symbol combobox
+                self.symbol_combo['values'] = symbols
+                if symbols:
+                    self.symbol_combo.set(symbols[0])
+                    print(f"Set initial symbol to: {symbols[0]}")
+                else:
+                    print("No symbols found in table")
+                    self.clear_symbol_selection()
+            else:
+                print("No symbol column found in table")
+                self.clear_symbol_selection()
             
         except Exception as e:
             print(f"Error in table change handler: {str(e)}")
@@ -1727,6 +1754,11 @@ class StockAnalyzerGUI:
             print(f"Error calculating technical indicators: {str(e)}")
             traceback.print_exc()
             return None
+
+    def clear_symbol_selection(self):
+        """Clear symbol selection when no valid table/database is selected"""
+        self.symbol_combo['values'] = ['No symbols available']
+        self.symbol_combo.set('No symbols available')
 
 @process_data_safely
 def initialize_gui(databases):
