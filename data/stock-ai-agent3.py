@@ -426,31 +426,38 @@ class StockAIAgent:
             if df is None or df.empty:
                 print("Error: Input DataFrame is None or empty")
                 return None
-                
+
+            # Check for required columns
+            # Adjust the column name if 'Close' is named differently
+            close_column = 'Close'  # Change this to the correct column name if needed
+            if close_column not in df.columns:
+                print(f"Error: Missing required columns: [{close_column}]")
+                return None
+
             # Create a copy to avoid modifying original
             df = df.copy()
                 
             # Calculate moving averages
-            df['MA20'] = df['Close'].rolling(window=20).mean()
-            df['MA50'] = df['Close'].rolling(window=50).mean()
+            df['MA20'] = df[close_column].rolling(window=20).mean()
+            df['MA50'] = df[close_column].rolling(window=50).mean()
             
             # Calculate RSI
-            delta = df['Close'].diff()
+            delta = df[close_column].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / loss
             df['RSI'] = 100 - (100 / (1 + rs))
             
             # Calculate MACD
-            exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-            exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+            exp1 = df[close_column].ewm(span=12, adjust=False).mean()
+            exp2 = df[close_column].ewm(span=26, adjust=False).mean()
             df['MACD'] = exp1 - exp2
             df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
             
             # Calculate Bollinger Bands
-            df['BB_middle'] = df['Close'].rolling(window=20).mean()
-            df['BB_upper'] = df['BB_middle'] + 2 * df['Close'].rolling(window=20).std()
-            df['BB_lower'] = df['BB_middle'] - 2 * df['Close'].rolling(window=20).std()
+            df['BB_middle'] = df[close_column].rolling(window=20).mean()
+            df['BB_upper'] = df['BB_middle'] + 2 * df[close_column].rolling(window=20).std()
+            df['BB_lower'] = df['BB_middle'] - 2 * df[close_column].rolling(window=20).std()
             
             # Handle NaN values
             df = df.fillna(method='ffill').fillna(method='bfill')
@@ -708,6 +715,9 @@ class StockAnalyzerGUI:
             self.sector_combo = ttk.Combobox(self.sector_frame, textvariable=self.sector_var)
             self.sector_combo.pack(side="left", fill="x", expand=True, padx=5)
             
+            # Add an update button to refresh the sector list
+            ttk.Button(self.sector_frame, text="Update", command=self.refresh_sectors).pack(side="left", padx=5)
+            
             # Field selection frame
             self.field_frame = ttk.LabelFrame(self.control_panel, text="Field Selection", padding="5")
             self.field_frame.pack(fill="x", padx=5, pady=5)
@@ -828,6 +838,34 @@ class StockAnalyzerGUI:
             print(f"Error adding AI controls: {str(e)}")
             traceback.print_exc()
 
+    def get_historical_data(self):
+        """Retrieve historical data from the selected table"""
+        try:
+            print("Retrieving historical data...")
+            
+            if not hasattr(self, 'db_conn') or not self.db_conn:
+                raise ValueError("No database connection available")
+            
+            table = self.table_var.get()
+            if not table or table == 'No tables available':
+                raise ValueError("No valid table selected")
+            
+            # Construct query to fetch data
+            query = f"SELECT * FROM {table}"
+            print(f"Executing query: {query}")
+            df = self.db_conn.execute(query).fetchdf()
+            
+            if df.empty:
+                raise ValueError("No data retrieved from the table")
+            
+            print(f"Retrieved {len(df)} rows of data")
+            return df
+            
+        except Exception as e:
+            print(f"Error retrieving historical data: {str(e)}")
+            traceback.print_exc()
+            return None
+
     def train_model(self):
         """Train the AI model"""
         try:
@@ -847,6 +885,7 @@ class StockAnalyzerGUI:
             # Calculate technical indicators
             df = self.calculate_technical_indicators(df)
             if df is None:
+                print("Skipping model training due to missing technical indicators.")
                 return
                 
             # Prepare data for training using data adapter
@@ -1030,7 +1069,7 @@ class StockAnalyzerGUI:
                 # Update sector combobox
                 self.sector_combo['values'] = sectors
                 if sectors:
-                    self.sector_combo.set(sectors[0])
+                    self.sector_combo.set(sectors[0])  # Set the first sector as default
                     print(f"Set initial sector to: {sectors[0]}")
                     self.sector_combo.bind('<<ComboboxSelected>>', self.on_sector_change)
                 else:
@@ -1105,17 +1144,56 @@ class StockAnalyzerGUI:
             self.clear_all_selections()
 
     def on_sector_change(self, event=None):
-        """Handle sector selection change"""
-        self.update_tickers_symbols_pairs(self.table_var.get(), self.field_vars.keys())
+        """Handle sector selection change and update tickers"""
+        try:
+            print("Sector selection changed, updating tickers...")
+            selected_sector = self.sector_var.get()
+            table = self.table_var.get()
+            
+            if not table or table == 'No tables available':
+                self.clear_ticker_selection()
+                return
+            
+            # Check if the sector column exists
+            columns = self.db_conn.execute(f"SELECT * FROM {table} LIMIT 0").description
+            column_names = [col[0] for col in columns]
+            
+            if 'sector' in column_names and 'ticker' in column_names:
+                # Query to get tickers for the selected sector
+                tickers = self.db_conn.execute(
+                    f"SELECT DISTINCT ticker FROM {table} WHERE sector = ? ORDER BY ticker", 
+                    (selected_sector,)
+                ).fetchall()
+                tickers = [t[0] for t in tickers]
+                self.ticker_combo['values'] = tickers
+                
+                if tickers:
+                    self.ticker_combo.set(tickers[0])
+                else:
+                    self.clear_ticker_selection()
+            else:
+                self.clear_ticker_selection()
+            
+            print("Tickers updated based on sector selection")
+        except Exception as e:
+            print(f"Error updating tickers on sector change: {str(e)}")
+            traceback.print_exc()
+
+    def clear_ticker_selection(self):
+        """Clear ticker selection when no valid sector/database is selected"""
+        self.ticker_combo['values'] = ['No tickers available']
+        self.ticker_combo.set('No tickers available')
 
     def clear_all_selections(self):
         """Clear all selections when no valid table/database is selected"""
+        self.clear_ticker_selection()
         self.clear_sector_selection()
-        self.clear_symbol_selection()
-        self.clear_pair_selection()
+        for widget in self.field_frame.winfo_children():
+            widget.destroy()
+        self.field_vars.clear()
 
     def clear_sector_selection(self):
-        """Clear sector selection when no valid table/database is selected"""
+        """Clear sector selection when no valid sector is available"""
         self.sector_combo['values'] = ['No sectors available']
         self.sector_combo.set('No sectors available')
 
@@ -1208,13 +1286,23 @@ class StockAnalyzerGUI:
         """Refresh the list of available databases"""
         try:
             print("Refreshing database list...")
+            
+            # Store the current selection
+            current_selection = self.db_combo.get()
+            
+            # Refresh the list of databases
             self.available_dbs = find_databases()
             self.db_combo['values'] = self.available_dbs
-            if self.available_dbs:
+            
+            # Reapply the previous selection if it still exists
+            if current_selection in self.available_dbs:
+                self.db_combo.set(current_selection)
+            elif self.available_dbs:
                 self.db_combo.set(self.available_dbs[0])
                 self.on_database_change()
             else:
                 self.db_combo.set('No databases available')
+            
             print("Database list refreshed")
         except Exception as e:
             print(f"Error refreshing databases: {str(e)}")
@@ -1243,6 +1331,45 @@ class StockAnalyzerGUI:
             traceback.print_exc()
             return []
 
+    def refresh_sectors(self):
+        """Refresh the list of available sectors"""
+        try:
+            print("Refreshing sector list...")
+            table = self.table_var.get()
+            if not table or table == 'No tables available':
+                self.clear_sector_selection()
+                return
+            
+            # Store the current selection
+            current_selection = self.sector_var.get()
+            
+            # Get column information
+            columns = self.db_conn.execute(f"SELECT * FROM {table} LIMIT 0").description
+            column_names = [col[0] for col in columns]
+            
+            # Update sector selection if sector column exists
+            if 'sector' in column_names:
+                sectors = self.db_conn.execute(
+                    f"SELECT DISTINCT sector FROM {table} ORDER BY sector"
+                ).fetchall()
+                sectors = [s[0] for s in sectors]
+                self.sector_combo['values'] = sectors
+                
+                # Reapply the previous selection if it still exists
+                if current_selection in sectors:
+                    self.sector_combo.set(current_selection)
+                elif sectors:
+                    self.sector_combo.set(sectors[0])
+                else:
+                    self.clear_sector_selection()
+            else:
+                self.clear_sector_selection()
+            
+            print("Sector list refreshed")
+        except Exception as e:
+            print(f"Error refreshing sectors: {str(e)}")
+            traceback.print_exc()
+
     def run(self):
         """Run the Tkinter main loop"""
         try:
@@ -1251,6 +1378,58 @@ class StockAnalyzerGUI:
         except Exception as e:
             print(f"Error running the application: {str(e)}")
             traceback.print_exc()
+
+    def calculate_technical_indicators(self, df):
+        """Calculate technical indicators for the dataset"""
+        try:
+            print("Starting technical indicator calculations...")
+            if df is None or df.empty:
+                print("Error: Input DataFrame is None or empty")
+                return None
+
+            # Check for required columns
+            # Adjust the column name if 'Close' is named differently
+            close_column = 'Close'  # Change this to the correct column name if needed
+            if close_column not in df.columns:
+                print(f"Error: Missing required columns: [{close_column}]")
+                return None
+
+            # Create a copy to avoid modifying original
+            df = df.copy()
+                
+            # Calculate moving averages
+            df['MA20'] = df[close_column].rolling(window=20).mean()
+            df['MA50'] = df[close_column].rolling(window=50).mean()
+            
+            # Calculate RSI
+            delta = df[close_column].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['RSI'] = 100 - (100 / (1 + rs))
+            
+            # Calculate MACD
+            exp1 = df[close_column].ewm(span=12, adjust=False).mean()
+            exp2 = df[close_column].ewm(span=26, adjust=False).mean()
+            df['MACD'] = exp1 - exp2
+            df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+            
+            # Calculate Bollinger Bands
+            df['BB_middle'] = df[close_column].rolling(window=20).mean()
+            df['BB_upper'] = df['BB_middle'] + 2 * df[close_column].rolling(window=20).std()
+            df['BB_lower'] = df['BB_middle'] - 2 * df[close_column].rolling(window=20).std()
+            
+            # Handle NaN values
+            df = df.fillna(method='ffill').fillna(method='bfill')
+            
+            print("Technical indicators calculated successfully")
+            print(f"DataFrame shape after calculations: {df.shape}")
+            return df
+            
+        except Exception as e:
+            print(f"Error calculating technical indicators: {str(e)}")
+            traceback.print_exc()
+            return None
 
 @process_data_safely
 def initialize_gui(databases):
