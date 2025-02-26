@@ -3,7 +3,7 @@ from tkinter import ttk
 import duckdb
 from tkinter import messagebox
 from ticker_plotter import TickerPlotter
-from ai_agent import TickerAIAgent as AdvancedAIAgent
+from ai_agent import TickerAIAgent
 from ticker_ai_agent import TickerAIAgent as SimpleAIAgent
 import tensorflow as tf
 import numpy as np
@@ -257,9 +257,16 @@ class TickerSelector:
         # Model Type
         ttk.Label(tuning_frame, text="Model Type:").grid(row=3, column=0, sticky=tk.W)
         self.model_type_var = tk.StringVar(value='simple')
-        model_type_options = ['simple', 'lstm']
+        model_type_options = ['simple', 'lstm', 'gru', 'deep', 'bidirectional', 'transformer', 'cnn_lstm', 'attention']
         model_type_menu = ttk.OptionMenu(tuning_frame, self.model_type_var, *model_type_options)
         model_type_menu.grid(row=3, column=1, sticky=(tk.W, tk.E))
+
+        # Prediction Days
+        ttk.Label(tuning_frame, text="Prediction Days:").grid(row=4, column=0, sticky=tk.W)
+        self.prediction_days_var = tk.IntVar(value=30)
+        prediction_days_options = [30, 60, 90, 120]  # Example range of days
+        prediction_days_menu = ttk.OptionMenu(tuning_frame, self.prediction_days_var, *prediction_days_options)
+        prediction_days_menu.grid(row=4, column=1, sticky=(tk.W, tk.E))
 
     def on_table_change(self, event):
         """Handle table selection change"""
@@ -451,12 +458,12 @@ class TickerSelector:
                         'batch_size': self.batch_size_var.get()
                     }
                     model_type = self.model_type_var.get()
-                    agent = SimpleAIAgent(tickers=selected_tickers, fields=selected_fields, connection=self.conn, parameters=parameters, model_type=model_type)
+                    agent = TickerAIAgent(tickers=selected_tickers, fields=selected_fields, connection=self.conn, parameters=parameters, model_type=model_type)
                     
                     # Assuming you have a model and data prepared for predictions
                     model = agent.model
                     data = np.random.rand(100, 10)  # Example input data
-                    predictions_plotter = PredictionsPlotter(model, data)
+                    predictions_plotter = PredictionsPlotter(model, data, prediction_days=self.prediction_days_var.get())
                     predictions_plotter.make_predictions()
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to show predictions: {e}")

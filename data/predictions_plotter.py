@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from ticker_ai_agent import TickerAIAgent
+from ai_agent import TickerAIAgent
 import pandas as pd
 from datetime import datetime, timedelta
 from matplotlib.dates import DateFormatter
@@ -13,6 +13,7 @@ from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 import duckdb
 import os
 import tensorflow as tf
+import numpy as np
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -146,9 +147,10 @@ class TickerPlotter:
             print(f"Error during cleanup: {e}")
 
 class PredictionsPlotter:
-    def __init__(self, model, data):
+    def __init__(self, model, data, prediction_days=30):
         self.model = model
         self.data = data
+        self.prediction_days = prediction_days
 
     def make_predictions(self):
         predictions = self.model.predict(self.data)
@@ -156,12 +158,18 @@ class PredictionsPlotter:
 
     def plot_predictions(self, predictions):
         plt.figure(figsize=(10, 6))
-        plt.plot(predictions, label='Predictions')
+        plt.plot(predictions, label='Predictions', linestyle='--', color='r')
         plt.title('Model Predictions')
         plt.xlabel('Time')
         plt.ylabel('Predicted Values')
         plt.legend()
         plt.show()
+
+    def extend_predictions(self):
+        # Extend predictions for future days
+        future_data = np.random.rand(self.prediction_days, self.data.shape[1])  # Example future data
+        future_predictions = self.model.predict(future_data)
+        return future_predictions
 
     def get_historical_data(self, ticker, field):
         """Get historical data for a specific ticker and field"""

@@ -14,45 +14,74 @@ import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+# Define the function outside of any loops
+@tf.function
+def train_step(model, inputs, targets):
+    with tf.GradientTape() as tape:
+        predictions = model(inputs, training=True)
+        loss = compute_loss(targets, predictions)
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    return loss
+
 class TickerAIAgent:
-    def __init__(self, table_name='stock_metrics', connection=None, model_type=None):
-        self.table_name = table_name
-        self.model_type = model_type  # Store the model type
-        self.model = None
-        self.scaler = MinMaxScaler()
-        self.sequence_length = 10  # Reduced from 60 to 10 for shorter sequences
-        
-        # Define available model architectures
-        self.model_architectures = {
-            'lstm': self._build_lstm_model,
-            'gru': self._build_gru_model,
-            'simple': self._build_simple_model,
-            'deep': self._build_deep_model,
-            'bidirectional': self._build_bidirectional_model,
-            'transformer': self._build_transformer_model,
-            'cnn_lstm': self._build_cnn_lstm_model,
-            'attention': self._build_attention_model
+    def __init__(self, tickers, fields, model_type='simple', parameters=None, connection=None):
+        self.tickers = tickers
+        self.fields = fields
+        self.model_type = model_type
+        self.parameters = parameters or {
+            'learning_rate': 0.001,
+            'epochs': 10,
+            'batch_size': 32
         }
-        
-        try:
-            # Use the provided connection or create a new one
-            self.conn = connection if connection else duckdb.connect('historical_market_data.db')
-            self.owns_connection = connection is None
-            print("AI agent using database connection")
-            
-            # Get actual columns from the table
-            self.verify_table_structure()
-            
-            # Define numeric columns based on actual table structure
-            self.numeric_columns = [
-                col for col in self.available_columns 
-                if col not in ['date', 'ticker', 'symbol', 'pair', 'sector', 'updated_at']
-            ]
-            print(f"Available numeric columns: {self.numeric_columns}")
-            
-        except Exception as e:
-            print(f"Error initializing AI agent: {e}")
-            raise
+        self.connection = connection
+        self.model = self.build_model()
+
+    def build_model(self):
+        if self.model_type == 'simple':
+            return self.build_simple_model()
+        elif self.model_type == 'lstm':
+            return self.build_lstm_model()
+        elif self.model_type == 'gru':
+            return self.build_gru_model()
+        # Add other model types as needed
+        else:
+            raise ValueError(f"Unsupported model type: {self.model_type}")
+
+    def build_simple_model(self):
+        model = Sequential([
+            Input(shape=(10,)),  # Example input shape
+            Dense(64, activation='relu'),
+            Dense(1)
+        ])
+        model.compile(optimizer='adam', loss='mse')
+        return model
+
+    def build_lstm_model(self):
+        model = Sequential([
+            Input(shape=(10, 1)),  # Example input shape for LSTM
+            LSTM(64, return_sequences=False),
+            Dropout(0.2),
+            Dense(1)
+        ])
+        model.compile(optimizer='adam', loss='mse')
+        return model
+
+    def build_gru_model(self):
+        model = Sequential([
+            Input(shape=(10, 1)),  # Example input shape for GRU
+            GRU(64, return_sequences=False),
+            Dropout(0.2),
+            Dense(1)
+        ])
+        model.compile(optimizer='adam', loss='mse')
+        return model
+
+    def train(self, data, labels):
+        self.model.fit(data, labels, epochs=self.parameters['epochs'], batch_size=self.parameters['batch_size'])
+
+    def predict(self, data):
+        return self.model.predict(data)
 
     def verify_table_structure(self):
         """Verify table exists and has required columns"""
