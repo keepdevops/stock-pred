@@ -697,6 +697,15 @@ class StockAnalyzerGUI:
                 self.table_combo.set(self.tables[0])
                 self.table_combo.bind('<<ComboboxSelected>>', self.on_table_change)
             
+            # Sector selection frame
+            self.sector_frame = ttk.LabelFrame(self.control_panel, text="Sector Selection", padding="5")
+            self.sector_frame.pack(fill="x", padx=5, pady=5)
+            
+            ttk.Label(self.sector_frame, text="Sector:").pack(side="left", padx=5)
+            self.sector_var = tk.StringVar()
+            self.sector_combo = ttk.Combobox(self.sector_frame, textvariable=self.sector_var)
+            self.sector_combo.pack(side="left", fill="x", expand=True, padx=5)
+            
             # Field selection frame
             self.field_frame = ttk.LabelFrame(self.control_panel, text="Field Selection", padding="5")
             self.field_frame.pack(fill="x", padx=5, pady=5)
@@ -817,7 +826,10 @@ class StockAnalyzerGUI:
             print("\n=== Starting Model Training ===")
             print(f"Current Database: {self.current_db}")
             print(f"Selected Table: {self.table_var.get()}")
-            print(f"Selected Ticker: {self.ticker_var.get()}")
+            
+            # Use symbol if available, otherwise use ticker
+            identifier_value = self.symbol_var.get() if self.symbol_var.get() else self.ticker_var.get()
+            print(f"Selected Identifier: {identifier_value}")
             
             # Get historical data
             df = self.get_historical_data()
@@ -1042,10 +1054,79 @@ class StockAnalyzerGUI:
                 print("No symbol column found in table")
                 self.clear_symbol_selection()
             
+            # Check if table has sector column
+            if 'sector' in column_names:
+                print("Found sector column, retrieving unique sectors...")
+                sectors = self.db_conn.execute(
+                    f"SELECT DISTINCT sector FROM {table} ORDER BY sector"
+                ).fetchall()
+                sectors = [s[0] for s in sectors]
+                print(f"Found {len(sectors)} sectors")
+                
+                # Update sector combobox
+                self.sector_combo['values'] = sectors
+                if sectors:
+                    self.sector_combo.set(sectors[0])
+                    print(f"Set initial sector to: {sectors[0]}")
+                    self.sector_combo.bind('<<ComboboxSelected>>', self.on_sector_change)
+                else:
+                    print("No sectors found in table")
+                    self.clear_sector_selection()
+            else:
+                print("No sector column found in table")
+                self.clear_sector_selection()
+            
+            # Update symbols based on sector
+            self.update_symbols_based_on_sector()
+            
         except Exception as e:
             print(f"Error in table change handler: {str(e)}")
             traceback.print_exc()
             self.clear_ticker_selection()
+
+    def on_sector_change(self, event=None):
+        """Handle sector selection change"""
+        self.update_symbols_based_on_sector()
+
+    def update_symbols_based_on_sector(self):
+        """Update symbols based on the selected sector"""
+        try:
+            table = self.table_var.get()
+            selected_sector = self.sector_var.get()
+            
+            if 'sector' in self.field_vars and selected_sector:
+                print(f"Filtering symbols for sector: {selected_sector}")
+                symbols = self.db_conn.execute(
+                    f"SELECT DISTINCT symbol FROM {table} WHERE sector = ? ORDER BY symbol",
+                    [selected_sector]
+                ).fetchall()
+                symbols = [s[0] for s in symbols]
+                print(f"Found {len(symbols)} symbols for sector {selected_sector}")
+                
+                # Update symbol combobox
+                self.symbol_combo['values'] = symbols
+                if symbols:
+                    self.symbol_combo.set(symbols[0])
+                    print(f"Set initial symbol to: {symbols[0]}")
+                else:
+                    print("No symbols found for sector")
+                    self.clear_symbol_selection()
+            else:
+                # If no sector is selected, show all symbols
+                symbols = self.db_conn.execute(
+                    f"SELECT DISTINCT symbol FROM {table} ORDER BY symbol"
+                ).fetchall()
+                symbols = [s[0] for s in symbols]
+                self.symbol_combo['values'] = symbols
+                if symbols:
+                    self.symbol_combo.set(symbols[0])
+                else:
+                    self.clear_symbol_selection()
+                
+        except Exception as e:
+            print(f"Error updating symbols based on sector: {str(e)}")
+            traceback.print_exc()
+            self.clear_symbol_selection()
 
     def clear_ticker_selection(self):
         """Clear ticker selection when no valid table/database is selected"""
@@ -1190,7 +1271,7 @@ class StockAnalyzerGUI:
             return []
 
     def get_historical_data(self):
-        """Get historical price data for a ticker"""
+        """Get historical price data for a ticker or symbol"""
         try:
             # Get column names first
             columns = self.db_conn.execute(f"SELECT * FROM {self.table_var.get()} LIMIT 0").description
@@ -1234,29 +1315,32 @@ class StockAnalyzerGUI:
                 elif db_col == 'adj_close' and 'close' in column_names:
                     select_columns.append(f"close as {df_col}")
             
-            # Determine ticker column
-            ticker_column = None
+            # Determine ticker or symbol column
+            identifier_column = None
             for col in ['ticker', 'symbol', 'pair']:
                 if col in column_names:
-                    ticker_column = col
+                    identifier_column = col
                     break
             
-            if not ticker_column:
-                raise ValueError(f"No ticker column found in table {self.table_var.get()}")
+            if not identifier_column:
+                raise ValueError(f"No identifier column found in table {self.table_var.get()}")
+            
+            # Use symbol if available, otherwise use ticker
+            identifier_value = self.symbol_var.get() if 'symbol' in column_names else self.ticker_var.get()
             
             # Build and execute query
             query = f"""
                 SELECT {', '.join(select_columns)}
                 FROM {self.table_var.get()}
-                WHERE {ticker_column} = ?
+                WHERE {identifier_column} = ?
                 AND {date_column} >= CURRENT_DATE - INTERVAL '{interval}'
                 ORDER BY {date_column}
             """
             
             print(f"Executing query: {query}")
-            print(f"Parameters: {[self.ticker_var.get()]}")
+            print(f"Parameters: [{identifier_value}]")
             
-            df = self.db_conn.execute(query, [self.ticker_var.get()]).df()
+            df = self.db_conn.execute(query, [identifier_value]).df()
             if df is not None and not df.empty:
                 print(f"Retrieved {len(df)} rows of data")
                 print(f"Sample data:\n{df.head()}")
@@ -1759,6 +1843,11 @@ class StockAnalyzerGUI:
         """Clear symbol selection when no valid table/database is selected"""
         self.symbol_combo['values'] = ['No symbols available']
         self.symbol_combo.set('No symbols available')
+
+    def clear_sector_selection(self):
+        """Clear sector selection when no valid table/database is selected"""
+        self.sector_combo['values'] = ['No sectors available']
+        self.sector_combo.set('No sectors available')
 
 @process_data_safely
 def initialize_gui(databases):
