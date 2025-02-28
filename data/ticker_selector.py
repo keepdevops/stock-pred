@@ -8,6 +8,7 @@ from ticker_ai_agent import TickerAIAgent as SimpleAIAgent
 import tensorflow as tf
 import numpy as np
 from predictions_plotter import PredictionsPlotter
+import glob
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -42,19 +43,42 @@ class TickerSelector:
     def __init__(self, root, connection):
         self.root = root
         self.root.title("Data Selector")
-        self.conn = connection  # Use the passed connection
+        self.conn = connection
         
-        # Define available tables
-        self.available_tables = [
-            'balance_sheets', 'financial_ratios', 'historical_commodities',
-            'historical_exchanges', 'historical_forex', 'historical_indices', 
-            'historical_prices', 'income_statements', 'industry_metrics', 
-            'market_sentiment', 'sector_financials', 'stock_metrics'
-        ]
+        # Initialize variables
+        self.table_var = tk.StringVar()
+        self.sector_var = tk.StringVar()
+        self.available_tables = []
+        
+        # Create database selection frame
+        self.db_frame = ttk.LabelFrame(self.root, text="Database Selection", padding="5")
+        self.db_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        
+        # Database selection
+        self.db_var = tk.StringVar()
+        self.db_combo = ttk.Combobox(self.db_frame, textvariable=self.db_var)
+        self.db_combo.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        
+        # Refresh button
+        self.refresh_btn = ttk.Button(self.db_frame, text="🔄", width=3, command=self.refresh_databases)
+        self.refresh_btn.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Create table selection frame
+        self.table_frame = ttk.LabelFrame(self.root, text="Table Selection", padding="5")
+        self.table_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        
+        # Table selection
+        self.table_combo = ttk.Combobox(self.table_frame, textvariable=self.table_var)
+        self.table_combo.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        self.table_combo.bind('<<ComboboxSelected>>', self.on_table_change)
+        
+        # Load initial databases and tables
+        self.refresh_databases()
+        self.refresh_tables()  # This will populate available_tables
         
         # Create main frame
         self.main_frame = ttk.Frame(root, padding="10")
-        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.main_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         # Create and pack widgets
         self.setup_widgets()
@@ -82,73 +106,59 @@ class TickerSelector:
         
         for table in tables:
             try:
-                # Create table with a basic structure if it doesn't exist
+                # First drop the table if it exists
+                self.conn.execute(f"DROP TABLE IF EXISTS {table}")
+                
+                # Create table with a simplified structure
                 self.conn.execute(f"""
-                    CREATE TABLE IF NOT EXISTS {table} (
-                        id INTEGER PRIMARY KEY,
-                        symbol VARCHAR,
+                    CREATE TABLE {table} (
+                        ticker VARCHAR,
                         date TIMESTAMP,
                         sector VARCHAR,
                         industry VARCHAR,
-                        value DOUBLE,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        value DOUBLE
                     )
                 """)
-                print(f"Created or verified table: {table}")
+                print(f"Created table: {table}")
                 
-                # Add sample data if table is empty
-                count = self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                if count == 0:
-                    # Insert sample data
-                    if table == 'historical_prices':
-                        self.conn.execute(f"""
-                            INSERT INTO {table} (symbol, date, sector, industry, value)
-                            VALUES 
-                            ('AAPL', '2024-02-21', 'Technology', 'Consumer Electronics', 180.5),
-                            ('MSFT', '2024-02-21', 'Technology', 'Software', 410.2),
-                            ('GOOGL', '2024-02-21', 'Technology', 'Internet Services', 138.4),
-                            ('AMZN', '2024-02-21', 'Consumer Cyclical', 'Internet Retail', 175.6),
-                            ('TSLA', '2024-02-21', 'Consumer Cyclical', 'Auto Manufacturers', 202.8)
-                        """)
-                    elif table == 'sector_sentiment':
-                        self.conn.execute(f"""
-                            INSERT INTO {table} (symbol, date, sector, industry, value)
-                            VALUES 
-                            ('Technology', '2024-02-21', 'Technology', NULL, 0.75),
-                            ('Healthcare', '2024-02-21', 'Healthcare', NULL, 0.62),
-                            ('Finance', '2024-02-21', 'Finance', NULL, 0.58),
-                            ('Energy', '2024-02-21', 'Energy', NULL, 0.45),
-                            ('Materials', '2024-02-21', 'Materials', NULL, 0.52)
-                        """)
-                    else:
-                        self.conn.execute(f"""
-                            INSERT INTO {table} (symbol, date, sector, industry, value)
-                            VALUES 
-                            ('SAMPLE1', '2024-02-21', 'Technology', 'Software', 100.0),
-                            ('SAMPLE2', '2024-02-21', 'Healthcare', 'Biotechnology', 50.0),
-                            ('SAMPLE3', '2024-02-21', 'Finance', 'Banking', 75.0)
-                        """)
-                    print(f"Added sample data to {table}")
+                # Now insert sample data
+                if table == 'historical_prices':
+                    self.conn.execute(f"""
+                        INSERT INTO {table} (ticker, date, sector, industry, value)
+                        VALUES 
+                        ('AAPL', '2024-02-21', 'Technology', 'Consumer Electronics', 180.5),
+                        ('MSFT', '2024-02-21', 'Technology', 'Software', 410.2),
+                        ('GOOGL', '2024-02-21', 'Technology', 'Internet Services', 138.4),
+                        ('AMZN', '2024-02-21', 'Consumer Cyclical', 'Internet Retail', 175.6),
+                        ('TSLA', '2024-02-21', 'Consumer Cyclical', 'Auto Manufacturers', 202.8)
+                    """)
+                else:
+                    self.conn.execute(f"""
+                        INSERT INTO {table} (ticker, date, sector, industry, value)
+                        VALUES 
+                        ('SAMPLE1', '2024-02-21', 'Technology', 'Software', 100.0),
+                        ('SAMPLE2', '2024-02-21', 'Healthcare', 'Biotechnology', 50.0),
+                        ('SAMPLE3', '2024-02-21', 'Finance', 'Banking', 75.0)
+                    """)
+                print(f"Added sample data to {table}")
                 
             except Exception as e:
-                print(f"Error creating table {table}: {e}")
+                print(f"Error with table {table}: {e}")
                 messagebox.showerror(
                     "Database Error",
-                    f"Failed to create table {table}: {e}"
+                    f"Failed to setup table {table}: {e}"
                 )
 
     def setup_widgets(self):
+        # Add database combobox binding
+        self.db_combo.bind('<<ComboboxSelected>>', self.on_database_change)
+        
         # Table selection
         ttk.Label(self.main_frame, text="Table:").grid(row=0, column=0, sticky=tk.W)
-        self.table_var = tk.StringVar()
-        self.table_combo = ttk.Combobox(self.main_frame, 
-                                       textvariable=self.table_var,
-                                       values=self.available_tables)
-        self.table_combo.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
+        self.table_combo.bind('<<ComboboxSelected>>', self.on_table_change)
         
         # Add sector selection
         ttk.Label(self.main_frame, text="Sector:").grid(row=1, column=0, sticky=tk.W)
-        self.sector_var = tk.StringVar()
         self.sector_combo = ttk.Combobox(self.main_frame,
                                         textvariable=self.sector_var,
                                         state="readonly")
@@ -158,8 +168,6 @@ class TickerSelector:
         # Set default table to first available table
         if self.available_tables:
             self.table_combo.set(self.available_tables[0])
-        
-        self.table_combo.bind('<<ComboboxSelected>>', self.on_table_change)
         
         # Create field selection variables and checkboxes
         self.field_vars = {}
@@ -284,36 +292,46 @@ class TickerSelector:
             messagebox.showerror("Error", f"Failed to change table: {e}")
 
     def load_sectors(self):
-        """Load sectors from database"""
+        """Load sectors for the current table"""
         try:
             current_table = self.table_var.get()
+            if not current_table:
+                return
             
-            # Check if the table has a sector column
-            columns = self.conn.execute(f"SELECT * FROM {current_table} LIMIT 0").df().columns
+            # Get column names
+            columns = self.conn.execute(f"SELECT * FROM {current_table} LIMIT 1").df().columns
+            
+            # Check for sector or category column
             if 'sector' in columns:
-                sectors = self.conn.execute(f"""
-                    SELECT DISTINCT sector 
-                    FROM {current_table}
-                    WHERE sector IS NOT NULL 
-                    ORDER BY sector
-                """).fetchall()
-                
-                sector_list = [row[0] for row in sectors]
-                self.sector_combo['values'] = sector_list
-                
-                if sector_list:
-                    self.sector_combo.set(sector_list[0])
-                    self.load_tickers(sector_list[0])
-                else:
-                    self.sector_combo.set('')
-                    self.load_tickers(None)
+                sector_col = 'sector'
+            elif 'category' in columns:
+                sector_col = 'category'
             else:
+                print(f"No sector/category column found in {current_table}")
+                return
+            
+            # Get unique sectors
+            query = f"""
+                SELECT DISTINCT {sector_col}
+                FROM {current_table}
+                WHERE {sector_col} IS NOT NULL
+                ORDER BY {sector_col}
+            """
+            sectors = self.conn.execute(query).fetchall()
+            
+            # Update sector combobox
+            if hasattr(self, 'sector_combo'):
+                self.sector_combo['values'] = [sector[0] for sector in sectors]
+                if sectors:
+                    self.sector_combo.set(sectors[0][0])
+                
+            print(f"Loaded sectors for table {current_table}")
+            
+        except Exception as e:
+            print(f"Error loading sectors: {e}")
+            if hasattr(self, 'sector_combo'):
                 self.sector_combo.set('')
                 self.sector_combo['values'] = []
-                self.load_tickers(None)
-                
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load sectors: {e}")
 
     def load_tickers(self, sector=None):
         """Load tickers based on sector and search term"""
@@ -383,8 +401,11 @@ class TickerSelector:
 
     def on_sector_change(self, event):
         """Handle sector selection change"""
-        selected_sector = self.sector_var.get()
-        self.load_tickers(selected_sector)
+        try:
+            # Update tickers based on new sector
+            self.update_tickers()
+        except Exception as e:
+            print(f"Error handling sector change: {e}")
 
     def on_search_change(self, *args):
         """Handle search text change"""
@@ -628,6 +649,231 @@ class TickerSelector:
             )
             raise
 
+    def refresh_databases(self):
+        """Refresh the list of available DuckDB databases"""
+        try:
+            # Store current selection
+            current_db = self.db_var.get()
+            
+            # Find all .db files in current directory
+            db_files = glob.glob('*.db')
+            
+            # Update combobox values
+            self.db_combo['values'] = db_files
+            
+            # Restore previous selection or select first available
+            if current_db in db_files:
+                self.db_combo.set(current_db)
+            elif db_files:
+                self.db_combo.set(db_files[0])
+                self.switch_database(db_files[0])
+            
+            print(f"Found databases: {db_files}")
+            
+        except Exception as e:
+            print(f"Error refreshing databases: {e}")
+            messagebox.showerror("Error", f"Failed to refresh databases: {e}")
+
+    def switch_database(self, db_name):
+        """Switch to a different database"""
+        try:
+            # Close existing connection if any
+            if hasattr(self, 'conn') and self.conn:
+                self.conn.close()
+            
+            # Open new connection
+            self.conn = duckdb.connect(db_name)
+            print(f"Connected to database: {db_name}")
+            
+            # Refresh tables and related data
+            self.refresh_tables()
+            self.update_fields()
+            self.update_tickers()
+            
+        except Exception as e:
+            print(f"Error switching database: {e}")
+            messagebox.showerror("Error", f"Failed to switch to database {db_name}: {e}")
+
+    def refresh_tables(self):
+        """Refresh the list of available tables"""
+        try:
+            # Get list of tables
+            tables = self.conn.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name != 'sqlite_sequence'
+            """).fetchall()
+            
+            # Extract table names and update available_tables
+            self.available_tables = [table[0] for table in tables]
+            print(f"Retrieved tables: {self.available_tables}")
+            
+            # Update table combobox
+            if hasattr(self, 'table_combo'):
+                self.table_combo['values'] = self.available_tables
+                if self.available_tables:
+                    self.table_combo.set(self.available_tables[0])
+                    self.on_table_change()
+            
+            print(f"Found tables: {self.available_tables}")
+            
+        except Exception as e:
+            print(f"Error refreshing tables: {e}")
+            messagebox.showerror("Error", f"Failed to refresh tables: {e}")
+
+    def on_database_change(self, event=None):
+        """Handle database selection change"""
+        selected_db = self.db_var.get()
+        if selected_db:
+            self.load_database(selected_db)
+
+    def update_fields(self):
+        """Update available fields based on current table"""
+        try:
+            current_table = self.table_var.get()
+            if not current_table:
+                return
+            
+            # Verify table exists before querying
+            table_exists_query = f"""
+                SELECT count(*) 
+                FROM information_schema.tables 
+                WHERE table_name = '{current_table}'
+            """
+            if not self.conn.execute(table_exists_query).fetchone()[0]:
+                print(f"Table {current_table} does not exist")
+                return
+            
+            # Get column names from current table
+            columns = self.conn.execute(f"SELECT * FROM {current_table} LIMIT 0").description
+            column_names = [col[0] for col in columns]
+            
+            # Update fields listbox
+            if hasattr(self, 'fields_listbox'):
+                self.fields_listbox.delete(0, tk.END)
+                for col in column_names:
+                    self.fields_listbox.insert(tk.END, col)
+            
+            print(f"Updated fields for table {current_table}: {column_names}")
+            
+        except Exception as e:
+            print(f"Error updating fields: {e}")
+            # Clear the fields listbox on error
+            if hasattr(self, 'fields_listbox'):
+                self.fields_listbox.delete(0, tk.END)
+
+    def update_tickers(self):
+        """Update available tickers based on current table and sector"""
+        try:
+            current_table = self.table_var.get()
+            current_sector = self.sector_var.get()
+            
+            if not current_table:
+                return
+            
+            # Verify table exists before querying
+            table_exists_query = f"""
+                SELECT count(*) 
+                FROM information_schema.tables 
+                WHERE table_name = '{current_table}'
+            """
+            if not self.conn.execute(table_exists_query).fetchone()[0]:
+                print(f"Table {current_table} does not exist")
+                return
+            
+            # Get column names directly from a SELECT statement
+            columns = self.conn.execute(f"SELECT * FROM {current_table} LIMIT 1").df().columns
+            print(f"Available columns in {current_table}: {columns}")
+            
+            # Build query based on available columns
+            if current_sector and ('sector' in columns or 'category' in columns):
+                sector_col = 'sector' if 'sector' in columns else 'category'
+                query = f"""
+                    SELECT DISTINCT ticker 
+                    FROM {current_table} 
+                    WHERE {sector_col} = '{current_sector}'
+                    ORDER BY ticker
+                """
+                tickers = self.conn.execute(query).fetchall()
+            else:
+                # If no sector column or no sector selected, get all tickers
+                query = f"""
+                    SELECT DISTINCT ticker 
+                    FROM {current_table} 
+                    ORDER BY ticker
+                """
+                tickers = self.conn.execute(query).fetchall()
+            
+            # Update ticker listbox
+            if hasattr(self, 'ticker_listbox'):
+                self.ticker_listbox.delete(0, tk.END)
+                for ticker in tickers:
+                    self.ticker_listbox.insert(tk.END, ticker[0])
+            
+            print(f"Updated tickers for table {current_table}, sector {current_sector}")
+            print(f"Query executed: {query}")
+            
+        except Exception as e:
+            print(f"Error updating tickers: {e}")
+            # Clear the ticker listbox on error
+            if hasattr(self, 'ticker_listbox'):
+                self.ticker_listbox.delete(0, tk.END)
+
+    def on_table_change(self, event=None):
+        """Handle table selection change"""
+        try:
+            # Load sectors for new table
+            self.load_sectors()
+            
+            # Update fields
+            self.update_fields()
+            
+            # Update tickers
+            self.update_tickers()
+            
+        except Exception as e:
+            print(f"Error handling table change: {e}")
+            self.clear_all_fields()
+
+    def load_database(self, db_name):
+        """Load database and update all associated UI elements"""
+        try:
+            print(f"\nLoading database: {db_name}")
+            
+            # Switch database connection
+            if hasattr(self, 'conn') and self.conn:
+                self.conn.close()
+            self.conn = duckdb.connect(db_name)
+            print(f"Connected to database: {db_name}")
+            
+            # Update tables
+            self.refresh_tables()
+            
+            # Load sectors for the current table
+            self.load_sectors()
+            
+            # Update fields
+            self.update_fields()
+            
+            # Update tickers
+            self.update_tickers()
+            
+            print(f"Database {db_name} loaded successfully")
+            
+        except Exception as e:
+            print(f"Error loading database: {e}")
+            self.clear_all_fields()
+
+    def clear_all_fields(self):
+        """Clear all UI elements"""
+        if hasattr(self, 'fields_listbox'):
+            self.fields_listbox.delete(0, tk.END)
+        if hasattr(self, 'ticker_listbox'):
+            self.ticker_listbox.delete(0, tk.END)
+        if hasattr(self, 'sector_combo'):
+            self.sector_combo.set('')
+        if hasattr(self, 'table_combo'):
+            self.table_combo.set('')
+
 # Define the function outside of any loops
 @tf.function
 def train_step(model, inputs, targets):
@@ -641,9 +887,9 @@ def train_step(model, inputs, targets):
 def main():
     root = tk.Tk()
     
-    # Open the database connection once
+    # Open the database connection without read-only mode
     try:
-        conn = duckdb.connect('historical_market_data.db', read_only=True)
+        conn = duckdb.connect('historical_market_data.db')  # Remove read_only=True
         print("Successfully connected to database")
     except Exception as e:
         print(f"Error connecting to database: {e}")
