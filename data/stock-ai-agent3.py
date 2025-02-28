@@ -88,17 +88,36 @@ class AIAgent:
         try:
             print(f"Building model with input shape: {input_shape}")
             model = Sequential([
+                # First LSTM layer with input_shape=(sequence_length, n_features)
                 LSTM(50, return_sequences=True, input_shape=input_shape),
+                BatchNormalization(),
                 Dropout(0.2),
-                LSTM(50, return_sequences=False),
+                
+                # Second LSTM layer
+                LSTM(50, return_sequences=True),
+                BatchNormalization(),
                 Dropout(0.2),
-                Dense(25),
+                
+                # Third LSTM layer
+                LSTM(50),
+                BatchNormalization(),
+                Dropout(0.2),
+                
+                # Dense layers for prediction
+                Dense(25, activation='relu'),
                 Dense(1)
             ])
             
-            model.compile(optimizer='adam', loss='mse')
+            # Compile model with Adam optimizer and MSE loss
+            model.compile(
+                optimizer=Adam(learning_rate=0.001),
+                loss='mse',
+                metrics=['mae']  # Adding mean absolute error as a metric
+            )
+            
             self.model = model
             print("Model built successfully")
+            model.summary()  # Print model architecture
             return True
             
         except Exception as e:
@@ -110,15 +129,18 @@ class AIAgent:
         """Train the LSTM model"""
         try:
             print("\nStarting model training...")
+            print(f"Training data shape: X_train={X_train.shape}, y_train={y_train.shape}")
+            print(f"Validation data shape: X_val={X_val.shape}, y_val={y_val.shape}")
             
             if self.model is None:
                 raise ValueError("Model not built. Call build_model first.")
             
-            # Early stopping callback
+            # Early stopping callback with more patience
             early_stopping = EarlyStopping(
                 monitor='val_loss',
-                patience=10,
-                restore_best_weights=True
+                patience=15,
+                restore_best_weights=True,
+                verbose=1
             )
             
             # Train model
@@ -142,10 +164,10 @@ class AIAgent:
 class DataAdapter:
     def __init__(self, sequence_length=60, features=None):
         self.sequence_length = sequence_length
-        # Update feature names to match the actual column names in lowercase
+        # Define features in lowercase to match DataFrame columns
         self.features = features or [
             'open', 'high', 'low', 'close', 'volume',
-            'ma20', 'rsi', 'macd', 'ma50'  # Technical indicators
+            'ma20', 'rsi', 'macd', 'ma50'  # All 9 features in lowercase
         ]
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         
@@ -175,30 +197,28 @@ class DataAdapter:
 
             # Set the date column as index
             df.set_index(date_column, inplace=True)
-            print("Index before datetime conversion:", df.index)
             
             # Convert index to datetime
-            print("Converting index to datetime...")
+            print("Index before datetime conversion:", df.index)
             df.index = pd.to_datetime(df.index)
+            print("Converting index to datetime...")
             print("Index after datetime conversion:", df.index)
-
-            # Sort by date
             df.sort_index(inplace=True)
 
             # Calculate technical indicators
             df = self.calculate_technical_indicators(df)
             
-            # Verify all required features are present
-            required_features = ['open', 'high', 'low', 'close', 'volume', 'ma20', 'rsi', 'macd', 'ma50']
-            missing_features = [feat for feat in required_features if feat not in df.columns.str.lower()]
+            # Verify all required features are present (case-insensitive)
+            df_cols_lower = df.columns.str.lower()
+            missing_features = [feat for feat in self.features if feat not in df_cols_lower]
             
             if missing_features:
                 print(f"Error: Missing required features: {missing_features}")
                 print("Available columns:", df.columns.tolist())
                 return None
 
-            # Create feature matrix using lowercase column names
-            feature_data = df[required_features].values
+            # Create feature matrix using only the specified features (case-insensitive)
+            feature_data = df[[col for col in df.columns if col.lower() in self.features]].values
             
             if len(feature_data) < self.sequence_length:
                 print(f"Error: Not enough data points. Need at least {self.sequence_length}")
@@ -220,6 +240,7 @@ class DataAdapter:
             y_train, y_val = y[:split_idx], y[split_idx:]
             
             print(f"Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
+            print(f"Feature shape: X_train={X_train.shape}, X_val={X_val.shape}")
             return (X_train, y_train), (X_val, y_val)
 
         except Exception as e:
@@ -361,7 +382,7 @@ class StockAIAgent:
             self.model = None
             self.data_adapter = DataAdapter(
                 sequence_length=self.sequence_length,
-                features=['Open', 'High', 'Low', 'Close', 'Volume', 'RSI', 'MA20', 'MA50', 'MACD']
+                features=['open', 'high', 'low', 'close', 'volume', 'rsi', 'ma20', 'ma50', 'macd']
             )
             self.scaler = MinMaxScaler(feature_range=(0, 1))
             self.sequence_length = 60  # Number of time steps to look back
@@ -648,7 +669,7 @@ class StockAnalyzerGUI:
             self.ai_agent = AIAgent()
             self.data_adapter = DataAdapter(
                 sequence_length=self.sequence_length,
-                features=['Open', 'High', 'Low', 'Close', 'Volume', 'RSI', 'MA20', 'MA50', 'MACD']
+                features=['open', 'high', 'low', 'close', 'volume', 'rsi', 'ma20', 'ma50', 'macd']
             )
             
             # Create GUI elements
@@ -1673,34 +1694,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-def rename_category_to_sector(conn, table_name):
-    """Rename 'category' column to 'sector' in the specified table."""
-    try:
-        # Check if 'category' column exists
-        columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-        column_names = [col[1] for col in columns]
-        
-        if 'category' in column_names:
-            print(f"Renaming 'category' to 'sector' in table {table_name}...")
-            conn.execute(f"ALTER TABLE {table_name} RENAME COLUMN category TO sector;")
-            print(f"Column renamed successfully in table {table_name}.")
-        else:
-            print(f"No 'category' column found in table {table_name}.")
-            
-    except Exception as e:
-        print(f"Error renaming column in table {table_name}: {str(e)}")
-        traceback.print_exc()
-
-# Example usage
-database_path = 'your_database_path.db'
-conn = duckdb.connect(database_path)
-
-# Specify the table you want to alter
-table_name = 'your_table_name'
-
-# Rename the column
-rename_category_to_sector(conn, table_name)
-
-# Close the connection
-conn.close()
