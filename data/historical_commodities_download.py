@@ -4,10 +4,12 @@ import pandas as pd
 from datetime import datetime
 import time
 
+DATABASE_PATH = 'historical_market_data.db'
+
 class CommoditiesDataDownloader:
     def __init__(self):
         # Create connection for writing commodities data
-        self.conn = duckdb.connect('historical_market_data.db')
+        self.conn = duckdb.connect(DATABASE_PATH)
         self.setup_database()
         
         # Define commodities by sector
@@ -51,7 +53,7 @@ class CommoditiesDataDownloader:
         """Create necessary table for commodities data"""
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS historical_commodities (
-                symbol VARCHAR,
+                ticker VARCHAR,
                 date DATE,
                 open DOUBLE,
                 high DOUBLE,
@@ -77,7 +79,7 @@ class CommoditiesDataDownloader:
                 return
             
             df.reset_index(inplace=True)
-            df['symbol'] = symbol
+            df['ticker'] = symbol
             df['sector'] = sector
             df['updated_at'] = datetime.now()
             
@@ -88,12 +90,12 @@ class CommoditiesDataDownloader:
             self.conn.execute("""
                 INSERT INTO historical_commodities 
                 SELECT 
-                    symbol,
-                    Date as date,
-                    Open as open,
-                    High as high,
-                    Low as low,
-                    Close as close,
+                    ticker,
+                    date as date,
+                    open as open,
+                    high as high,
+                    low as low,
+                    close as close,
                     CAST(Volume as BIGINT) as volume,
                     sector,
                     updated_at
@@ -125,7 +127,7 @@ class CommoditiesDataDownloader:
         result = self.conn.execute("""
             SELECT 
                 sector,
-                COUNT(DISTINCT symbol) as commodities,
+                COUNT(DISTINCT ticker) as commodities,
                 MIN(date) as earliest_date,
                 MAX(date) as latest_date,
                 COUNT(*) as total_records
