@@ -147,63 +147,41 @@ class TickerPlotter:
             print(f"Error during cleanup: {e}")
 
 class PredictionsPlotter:
-    def __init__(self, model, data, prediction_days=30):
-        self.model = model
-        self.data = data
-        self.prediction_days = prediction_days
-
-    def make_predictions(self):
-        predictions = self.model.predict(self.data)
-        self.plot_predictions(predictions)
-
-    def plot_predictions(self, predictions):
-        plt.figure(figsize=(10, 6))
-        plt.plot(predictions, label='Predictions', linestyle='--', color='r')
-        plt.title('Model Predictions')
-        plt.xlabel('Time')
-        plt.ylabel('Predicted Values')
-        plt.legend()
-        plt.show()
-
-    def extend_predictions(self):
-        # Extend predictions for future days
-        future_data = np.random.rand(self.prediction_days, self.data.shape[1])  # Example future data
-        future_predictions = self.model.predict(future_data)
-        return future_predictions
+    def __init__(self, parent, selected_table, selected_tickers, selected_fields, connection):
+        self.parent = parent
+        self.selected_table = selected_table
+        self.selected_tickers = selected_tickers
+        self.selected_fields = selected_fields
+        self.conn = connection
+        self.ai_model_type = 'lstm'  # Default model type
+        
+        # Use the standardized TickerAIAgent
+        self.agent_class = TickerAIAgent
+        
+        # Create the plot window
+        self.create_plot_window()
 
     def get_historical_data(self, ticker, field):
-        """Get historical data for a specific ticker and field"""
+        """Get historical data for a ticker and field"""
         try:
-            # Get the correct ticker column name
-            columns = self.conn.execute(f"SELECT * FROM {self.selected_table} LIMIT 0").df().columns
-            ticker_column = None
-
-            # Force 'pair' column for historical_forex tables
-            if self.selected_table == 'historical_forex' and 'pair' in columns:
-                ticker_column = 'pair'
-                print("Using 'pair' column for historical_forex table.")
-            else:
-                # Check for possible ticker columns in order of preference
-                for col in ['symbol', 'ticker', 'pair']:
-                    if col in columns:
-                        ticker_column = col
-                        break
-
-            if not ticker_column:
-                raise ValueError(f"No ticker column found in table {self.selected_table}")
-
             query = f"""
                 SELECT date, {field}
                 FROM {self.selected_table}
-                WHERE {ticker_column} = ?
-                    AND {field} IS NOT NULL
-                    AND CAST({field} AS VARCHAR) != ''
-                ORDER BY date ASC
+                WHERE {self.get_ticker_column()} = ?
+                ORDER BY date
             """
-            return self.conn.execute(query, [ticker]).df()
+            df = self.conn.execute(query, [ticker]).df()
+            df['date'] = pd.to_datetime(df['date'])
+            return df
         except Exception as e:
             print(f"Error getting historical data: {e}")
             return pd.DataFrame()
+
+    def get_ticker_column(self):
+        """Determine the ticker column name based on table"""
+        if self.selected_table == 'historical_forex':
+            return 'pair'
+        return 'symbol'
 
     def create_plots(self):
         """Create individual plots for each field in separate frames"""
@@ -401,7 +379,7 @@ Parameters:
             query = f"""
                 SELECT date, {', '.join(self.selected_fields)}
                 FROM {self.selected_table}
-                WHERE {self.ticker_column} = ?
+                WHERE {self.get_ticker_column()} = ?
                 ORDER BY date
             """
             df = self.conn.execute(query, [ticker]).df()
@@ -437,177 +415,6 @@ Parameters:
 
         canvas.pack(side="top", fill="x", expand=True)
         scrollbar.pack(side="bottom", fill="x")
-
-    def create_plots(self):
-        """Create individual plots for each field in separate frames"""
-        for field in self.selected_fields:
-            # Create a new frame for each field
-            field_frame = ttk.LabelFrame(self.plot_window, text=f"{field.replace('_', ' ').title()} Plot", padding="5")
-            field_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-            
-            # Create a figure for the current field
-            fig = plt.Figure(figsize=(12, 6))
-            ax = fig.add_subplot(111)
-            
-            for ticker in self.selected_tickers:
-                try:
-                    # Get historical data
-                    df = self.get_historical_data(ticker, field)
-                    if not df.empty:
-                        # Plot historical data
-                        ax.plot(df['date'], df[field], label=f'{ticker} Historical')
-                        
-                        # Create AI agent and get predictions
-                        try:
-                            ai_agent = self.agent_class(self.selected_table, connection=self.conn, model_type=self.ai_model_type)
-                            # Train the model if it doesn't exist
-                            model_path = f'models/{ticker}_{field}_lstm_model.keras'
-                            if not os.path.exists(model_path):
-                                ai_agent.train(ticker, field)
-                            
-                            # Get predictions
-                            future_dates, predictions = ai_agent.predict(ticker, field)
-                            ax.plot(future_dates, predictions, '--', label=f'{ticker} Predicted')
-                        except Exception as e:
-                            print(f"Could not plot predictions for {ticker}-{field}: {e}")
-                
-                except Exception as e:
-                    print(f"Error plotting {ticker}-{field}: {e}")
-                    continue
-            
-            ax.set_title(f'{field.replace("_", " ").title()} Over Time')
-            ax.set_xlabel('Date')
-            ax.set_ylabel(field.replace("_", " ").title())
-            ax.legend()
-            ax.grid(True)
-            
-            # Rotate x-axis labels for better readability
-            plt.setp(ax.get_xticklabels(), rotation=45)
-            
-            # Embed plot in tkinter window
-            canvas = FigureCanvasTkAgg(fig, master=field_frame)
-            canvas.draw()
-            
-            # Add navigation toolbar
-            toolbar = NavigationToolbar2Tk(canvas, field_frame)
-            toolbar.update()
-            
-            # Pack canvas and toolbar
-            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-    def create_plots(self):
-        """Create individual plots for each field in separate frames"""
-        for field in self.selected_fields:
-            # Create a new frame for each field
-            field_frame = ttk.LabelFrame(self.plot_window, text=f"{field.replace('_', ' ').title()} Plot", padding="5")
-            field_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-            
-            # Create a figure for the current field
-            fig = plt.Figure(figsize=(12, 6))
-            ax = fig.add_subplot(111)
-            
-            for ticker in self.selected_tickers:
-                try:
-                    # Get historical data
-                    df = self.get_historical_data(ticker, field)
-                    if not df.empty:
-                        # Plot historical data
-                        ax.plot(df['date'], df[field], label=f'{ticker} Historical')
-                        
-                        # Create AI agent and get predictions
-                        try:
-                            ai_agent = self.agent_class(self.selected_table, connection=self.conn, model_type=self.ai_model_type)
-                            # Train the model if it doesn't exist
-                            model_path = f'models/{ticker}_{field}_lstm_model.keras'
-                            if not os.path.exists(model_path):
-                                ai_agent.train(ticker, field)
-                            
-                            # Get predictions
-                            future_dates, predictions = ai_agent.predict(ticker, field)
-                            ax.plot(future_dates, predictions, '--', label=f'{ticker} Predicted')
-                        except Exception as e:
-                            print(f"Could not plot predictions for {ticker}-{field}: {e}")
-                
-                except Exception as e:
-                    print(f"Error plotting {ticker}-{field}: {e}")
-                    continue
-            
-            ax.set_title(f'{field.replace("_", " ").title()} Over Time')
-            ax.set_xlabel('Date')
-            ax.set_ylabel(field.replace("_", " ").title())
-            ax.legend()
-            ax.grid(True)
-            
-            # Rotate x-axis labels for better readability
-            plt.setp(ax.get_xticklabels(), rotation=45)
-            
-            # Embed plot in tkinter window
-            canvas = FigureCanvasTkAgg(fig, master=field_frame)
-            canvas.draw()
-            
-            # Add navigation toolbar
-            toolbar = NavigationToolbar2Tk(canvas, field_frame)
-            toolbar.update()
-            
-            # Pack canvas and toolbar
-            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-    def create_plots(self):
-        """Create individual plots for each field in separate frames"""
-        for field in self.selected_fields:
-            # Create a new frame for each field
-            field_frame = ttk.LabelFrame(self.plot_window, text=f"{field.replace('_', ' ').title()} Plot", padding="5")
-            field_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-            
-            # Create a figure for the current field
-            fig = plt.Figure(figsize=(12, 6))
-            ax = fig.add_subplot(111)
-            
-            for ticker in self.selected_tickers:
-                try:
-                    # Get historical data
-                    df = self.get_historical_data(ticker, field)
-                    if not df.empty:
-                        # Plot historical data
-                        ax.plot(df['date'], df[field], label=f'{ticker} Historical')
-                        
-                        # Create AI agent and get predictions
-                        try:
-                            ai_agent = self.agent_class(self.selected_table, connection=self.conn, model_type=self.ai_model_type)
-                            # Train the model if it doesn't exist
-                            model_path = f'models/{ticker}_{field}_lstm_model.keras'
-                            if not os.path.exists(model_path):
-                                ai_agent.train(ticker, field)
-                            
-                            # Get predictions
-                            future_dates, predictions = ai_agent.predict(ticker, field)
-                            ax.plot(future_dates, predictions, '--', label=f'{ticker} Predicted')
-                        except Exception as e:
-                            print(f"Could not plot predictions for {ticker}-{field}: {e}")
-                
-                except Exception as e:
-                    print(f"Error plotting {ticker}-{field}: {e}")
-                    continue
-            
-            ax.set_title(f'{field.replace("_", " ").title()} Over Time')
-            ax.set_xlabel('Date')
-            ax.set_ylabel(field.replace("_", " ").title())
-            ax.legend()
-            ax.grid(True)
-            
-            # Rotate x-axis labels for better readability
-            plt.setp(ax.get_xticklabels(), rotation=45)
-            
-            # Embed plot in tkinter window
-            canvas = FigureCanvasTkAgg(fig, master=field_frame)
-            canvas.draw()
-            
-            # Add navigation toolbar
-            toolbar = NavigationToolbar2Tk(canvas, field_frame)
-            toolbar.update()
-            
-            # Pack canvas and toolbar
-            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
 def plot_bar_chart(data, labels):
     plt.figure(figsize=(10, 6))

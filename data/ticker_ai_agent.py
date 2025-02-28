@@ -6,6 +6,8 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 import os
+import duckdb
+from tkinter import filedialog, messagebox
 
 class TickerAIAgent:
     def __init__(self, tickers, fields, model_type='lstm', parameters=None, connection=None):
@@ -19,24 +21,84 @@ class TickerAIAgent:
             'learning_rate': 0.001,
             'epochs': 100
         }
-        self.conn = connection
-        print("AI agent using database connection")
+        self.conn = connection or self.connect_to_db()
         self.model = self.build_model()
+
+    def connect_to_db(self):
+        """Connect to a DuckDB database, allowing user selection if needed"""
+        try:
+            # First, try to find existing DuckDB databases in the current directory
+            db_files = [f for f in os.listdir('.') if f.endswith('.db')]
+            
+            if not db_files:
+                messagebox.showinfo("Database Selection", 
+                    "No DuckDB database found in current directory. Please select a database file.")
+                db_path = filedialog.askopenfilename(
+                    title="Select DuckDB Database",
+                    filetypes=[("DuckDB files", "*.db"), ("All files", "*.*")]
+                )
+                if not db_path:
+                    raise FileNotFoundError("No database file selected.")
+            else:
+                # If multiple databases exist, let user choose
+                if len(db_files) > 1:
+                    db_path = filedialog.askopenfilename(
+                        title="Select DuckDB Database",
+                        filetypes=[("DuckDB files", "*.db")],
+                        initialdir='.'
+                    )
+                    if not db_path:
+                        db_path = db_files[0]  # Use first database as default
+                else:
+                    db_path = db_files[0]
+
+            print(f"Connecting to database: {db_path}")
+            connection = duckdb.connect(db_path)
+            
+            # List available tables
+            tables = connection.execute("SHOW TABLES").fetchall()
+            print("Available tables:", [table[0] for table in tables])
+            
+            return connection
+
+        except Exception as e:
+            print(f"Error connecting to database: {e}")
+            messagebox.showerror("Database Error", f"Failed to connect to database: {e}")
+            raise
 
     def prepare_data(self, ticker, field):
         """Prepare data for training"""
         try:
             print(f"\nPreparing data for {ticker} using {field}")
             
-            # Query data from database using DuckDB's execute method
+            # Get list of available tables
+            tables = self.conn.execute("SHOW TABLES").fetchall()
+            table_names = [table[0] for table in tables]
+            print(f"Available tables: {table_names}")
+            
+            # Find appropriate table for the data
+            if 'balance_sheets' in table_names:
+                table_name = 'balance_sheets'
+            elif 'historical_prices' in table_names:
+                table_name = 'historical_prices'
+            else:
+                # Let user select the table
+                table_name = table_names[0]  # Default to first table
+            
+            print(f"Using table: {table_name}")
+            
+            # Query data from database
             query = f"""
                 SELECT date, {field}
-                FROM balance_sheets
+                FROM {table_name}
                 WHERE symbol = ?
                 ORDER BY date
             """
-            # Use DuckDB's execute method and convert to DataFrame
+            print(f"Executing query: {query} with ticker: {ticker}")
             df = self.conn.execute(query, [ticker]).df()
+            
+            if df.empty:
+                raise ValueError(f"No data found for ticker {ticker} in table {table_name}")
             
             # Convert date to datetime
             df['date'] = pd.to_datetime(df['date'])
