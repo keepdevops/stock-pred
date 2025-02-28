@@ -1,14 +1,13 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import pandas as pd
 from datetime import datetime, timedelta
 import re
 import duckdb
-
-# Establish a connection to your DuckDB database
-conn = duckdb.connect('your_database.duckdb')  # Replace with your actual database file
+import os
+from matplotlib.figure import Figure
 
 def plot_data(df, x_column, y_column):
     if x_column not in df.columns:
@@ -23,13 +22,10 @@ def plot_data(df, x_column, y_column):
     plt.show()
 
 def fetch_data(connection, table_name, columns):
-    # Construct the SQL query to select the specified columns
     query = f"SELECT {', '.join(columns)} FROM {table_name}"
-    print(f"Executing query: {query}")  # Debug: Print the query being executed
-    
-    # Execute the query and fetch the results into a DataFrame
+    print(f"Executing query: {query}")
     df = connection.execute(query).fetchdf()
-    print(df.head())  # Debug: Print the first few rows to verify the data
+    print(df.head())
     return df
 
 table_fields = {
@@ -51,22 +47,57 @@ table_fields = {
 }
 
 class TickerPlotter:
-    def __init__(self, root, tickers, table, connection, fields):
-        self.root = root
-        self.tickers = tickers
-        self.table = table
-        self.connection = connection
-        self.fields = fields
-        self.ticker_column = self.detect_ticker_column()  # Set ticker_column here
+    def __init__(self, parent):
+        self.parent = parent
+        
+        # Create figure
+        self.fig = Figure(figsize=(10, 6))
+        self.ax = self.fig.add_subplot(111)
+        
+        # Create toolbar frame
+        self.toolbar_frame = ttk.Frame(parent)
+        self.toolbar_frame.grid(row=0, column=0, sticky="ew")
+        
+        # Create canvas
+        self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
+        self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+        
+        # Create toolbar with the toolbar frame as parent
+        self.toolbar = NavigationToolbar2Tk(self.canvas, self.toolbar_frame)
+        self.toolbar.grid(row=0, column=0, sticky="ew")
+        
+        # Configure grid weights
+        parent.grid_rowconfigure(1, weight=1)  # Canvas expands vertically
+        parent.grid_columnconfigure(0, weight=1)  # Canvas expands horizontally
+        self.toolbar_frame.grid_columnconfigure(0, weight=1)  # Toolbar expands horizontally
+        
+    def connect_to_db(self, db_path):
+        """Connect to the specified DuckDB database."""
+        if not os.path.exists(db_path):
+            messagebox.showinfo("Database Selection", "Database file does not exist. Please select an existing database.")
+            db_path = filedialog.askopenfilename(
+                title="Select DuckDB Database",
+                filetypes=[("DuckDB files", "*.db"), ("All files", "*.*")]
+            )
+            if not db_path:
+                raise FileNotFoundError("No database file selected.")
+        
+        try:
+            print(f"Connecting to DuckDB database at: {db_path}")
+            connection = duckdb.connect(db_path)
+            print("Connection successful.")
+            return connection
+        except Exception as e:
+            print(f"Error connecting to database: {e}")
+            messagebox.showerror("Database Error", f"Failed to connect to database: {e}")
+            raise
 
     def create_plot(self):
-        # Fetch data and plot
         data = self.fetch_data()
         for ticker, df in data.items():
             self.plot_data(df, ticker)
 
     def fetch_data(self):
-        # Fetch data from the database
         data = {}
         for ticker in self.tickers:
             query = f"SELECT {', '.join(self.fields)} FROM {self.table} WHERE {self.ticker_column} = ?"
@@ -75,24 +106,38 @@ class TickerPlotter:
         return data
 
     def plot_data(self, df, ticker):
-        plt.figure(figsize=(10, 6))
+        """Plot the selected data"""
+        self.ax.clear()
+        
+        # Convert date column to datetime if it's not already
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+            
+        # Plot each selected field
         for field in self.fields:
-            if field != 'date':
-                plt.plot(df['date'], df[field], label=field)
-        plt.title(f"Data for {ticker}")
-        plt.xlabel('Date')
-        plt.ylabel('Values')
-        plt.legend()
-        plt.show()
+            self.ax.plot(df['date'], df[field], label=field)
+            
+        # Customize the plot
+        self.ax.set_title(f'{ticker} Data')
+        self.ax.set_xlabel('Date')
+        self.ax.set_ylabel('Value')
+        self.ax.legend()
+        self.ax.grid(True)
+        
+        # Rotate x-axis labels for better readability
+        self.ax.tick_params(axis='x', rotation=45)
+        
+        # Adjust layout to prevent label cutoff
+        self.fig.tight_layout()
+        
+        # Redraw the canvas
+        self.canvas.draw()
 
     def detect_ticker_column(self):
-        """Detect the ticker column in the selected table"""
         try:
-            # Get column names
             columns = self.connection.execute(f"PRAGMA table_info({self.table})").df()['name'].values
             print(f"Available columns: {columns}")
             
-            # Look for common ticker column names
             if self.table == 'historical_forex' and 'pair' in columns:
                 print("Using 'pair' column for historical_forex table.")
                 return 'pair'
@@ -109,7 +154,6 @@ class TickerPlotter:
             raise
 
     def update_fields_and_refresh_ui(self, new_table):
-        """Update fields and refresh UI when table or sector changes"""
         if self.table != new_table:
             print(f"Switching from {self.table} to {new_table}")
             self.table = new_table
@@ -117,25 +161,19 @@ class TickerPlotter:
             self.create_metrics_selector()
 
     def create_metrics_selector(self):
-        """Create metrics selection frame"""
         print("Creating metrics selector for table:", self.table)
         
-        # Clear existing metrics frame if it exists
         if hasattr(self, 'metrics_frame'):
             self.metrics_frame.destroy()
         
-        # Create a new frame for metrics selection
         self.metrics_frame = ttk.Frame(self.main_frame)
         self.metrics_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        # Fetch available fields for the selected table
         available_fields = self.fields
-        
-        # Create a dictionary to hold the state of each metric checkbox
         self.metric_vars = {}
         
         for field in available_fields:
-            var = tk.BooleanVar(value=field in self.fields)  # Default to selected if in fields
+            var = tk.BooleanVar(value=field in self.fields)
             chk = ttk.Checkbutton(self.metrics_frame, text=field.replace('_', ' ').title(), variable=var)
             chk.pack(side=tk.LEFT, padx=5, pady=5)
             self.metric_vars[field] = var
