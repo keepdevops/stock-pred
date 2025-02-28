@@ -141,26 +141,79 @@ class AIAgent:
 
 class DataAdapter:
     def __init__(self, sequence_length=60, features=None):
-        """Initialize the data adapter"""
         self.sequence_length = sequence_length
-        self.features = features or ['Open', 'High', 'Low', 'Close', 'Volume', 'RSI']
+        # Update feature names to match the actual column names in lowercase
+        self.features = features or [
+            'open', 'high', 'low', 'close', 'volume',
+            'ma20', 'rsi', 'macd', 'ma50'  # Technical indicators
+        ]
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         
     def prepare_training_data(self, df):
-        """Prepare data for model training"""
         try:
             print("\nPreparing training data...")
+            if df is None or df.empty:
+                print("Error: DataFrame is empty")
+                return None
+
+            print("DataFrame columns:", df.columns.tolist())
+            print("DataFrame head:\n", df.head())
+
+            # Convert all column names to lowercase
+            df.columns = df.columns.str.lower()
             
-            # Validate input data
-            if not self._validate_dataframe(df):
-                return None, None
+            # Find date column
+            date_column = None
+            for col in df.columns:
+                if 'date' in col.lower():
+                    date_column = col
+                    print(f"Found date column: {col}")
+                    break
+
+            if date_column is None:
+                raise ValueError("No date column found")
+
+            # Set the date column as index
+            df.set_index(date_column, inplace=True)
+            print("Index before datetime conversion:", df.index)
             
+            # Convert index to datetime
+            print("Converting index to datetime...")
+            df.index = pd.to_datetime(df.index)
+            print("Index after datetime conversion:", df.index)
+
+            # Sort by date
+            df.sort_index(inplace=True)
+
+            # Calculate technical indicators
+            df = self.calculate_technical_indicators(df)
+            
+            # Verify all required features are present
+            required_features = ['open', 'high', 'low', 'close', 'volume', 'ma20', 'rsi', 'macd', 'ma50']
+            missing_features = [feat for feat in required_features if feat not in df.columns.str.lower()]
+            
+            if missing_features:
+                print(f"Error: Missing required features: {missing_features}")
+                print("Available columns:", df.columns.tolist())
+                return None
+
+            # Create feature matrix using lowercase column names
+            feature_data = df[required_features].values
+            
+            if len(feature_data) < self.sequence_length:
+                print(f"Error: Not enough data points. Need at least {self.sequence_length}")
+                return None
+
             # Scale features
-            scaled_data = self.scaler.fit_transform(df[self.features])
+            scaled_data = self.scaler.fit_transform(feature_data)
             
             # Create sequences
             X, y = self._create_sequences(scaled_data)
             
+            if len(X) == 0:
+                print("Error: No sequences created")
+                return None
+
             # Split into training and validation sets
             split_idx = int(len(X) * 0.8)
             X_train, X_val = X[:split_idx], X[split_idx:]
@@ -168,26 +221,62 @@ class DataAdapter:
             
             print(f"Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
             return (X_train, y_train), (X_val, y_val)
-            
+
         except Exception as e:
             print(f"Error preparing training data: {str(e)}")
             traceback.print_exc()
-            return None, None
+            return None
     
     def prepare_prediction_data(self, df):
         """Prepare data for prediction"""
         try:
-            # Validate input data
-            if not self._validate_dataframe(df):
+            print("\nPreparing prediction data...")
+            if df is None or df.empty:
+                print("Error: DataFrame is empty")
                 return None
+
+            print("Initial DataFrame shape:", df.shape)
+            print("DataFrame columns:", df.columns.tolist())
+
+            # Convert all column names to lowercase
+            df.columns = df.columns.str.lower()
             
-            # Scale the data using the fitted scaler
-            scaled_data = self.scaler.transform(df[self.features])
+            # Find and process date column
+            date_column = next((col for col in df.columns if 'date' in col.lower()), None)
+            if date_column:
+                df.set_index(date_column, inplace=True)
+                df.index = pd.to_datetime(df.index)
+                df.sort_index(inplace=True)
             
-            # Create sequence
-            X = scaled_data[-self.sequence_length:].reshape(1, self.sequence_length, len(self.features))
-            return X
+            # Calculate technical indicators
+            df = self.calculate_technical_indicators(df)
             
+            # Verify required features
+            required_features = ['open', 'high', 'low', 'close', 'volume', 'ma20', 'rsi', 'macd', 'ma50']
+            missing_features = [feat for feat in required_features if feat not in df.columns.str.lower()]
+            
+            if missing_features:
+                print(f"Error: Missing required features: {missing_features}")
+                return None
+
+            # Get the most recent sequence
+            feature_data = df[required_features].values
+            if len(feature_data) < self.sequence_length:
+                print(f"Error: Not enough data points. Need at least {self.sequence_length}")
+                return None
+
+            # Scale the features
+            scaled_data = self.scaler.fit_transform(feature_data)
+            
+            # Take the most recent sequence
+            recent_sequence = scaled_data[-self.sequence_length:]
+            
+            # Reshape for prediction
+            prediction_data = np.reshape(recent_sequence, (1, self.sequence_length, len(required_features)))
+            
+            print(f"Prediction data shape: {prediction_data.shape}")
+            return prediction_data
+
         except Exception as e:
             print(f"Error preparing prediction data: {str(e)}")
             traceback.print_exc()
@@ -229,6 +318,40 @@ class DataAdapter:
             y.append(data[i + self.sequence_length, 3])  # 3 is Close price index
         
         return np.array(X), np.array(y)
+
+    def calculate_technical_indicators(self, df):
+        """Calculate technical indicators"""
+        try:
+            # Ensure column names are lowercase
+            df.columns = df.columns.str.lower()
+            
+            # Calculate MA20
+            df['ma20'] = df['close'].rolling(window=20).mean()
+            
+            # Calculate RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['rsi'] = 100 - (100 / (1 + rs))
+            
+            # Calculate MACD
+            exp1 = df['close'].ewm(span=12, adjust=False).mean()
+            exp2 = df['close'].ewm(span=26, adjust=False).mean()
+            df['macd'] = exp1 - exp2
+            
+            # Calculate MA50
+            df['ma50'] = df['close'].rolling(window=50).mean()
+            
+            print("Technical indicators calculated successfully.")
+            print("DataFrame with technical indicators:\n", df.head())
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error calculating technical indicators: {str(e)}")
+            traceback.print_exc()
+            return df
 
 class StockAIAgent:
     def __init__(self):
@@ -364,7 +487,7 @@ class StockAIAgent:
     def predict(self, df):
         """Make predictions using trained model"""
         try:
-            print("\nMaking predictions...")
+            print("\n=== Starting Prediction ===")
             
             if self.model is None:
                 raise ValueError("Model not trained")
@@ -589,14 +712,14 @@ class StockAnalyzerGUI:
         try:
             print("\nInitializing plot area...")
             
-            # Create figure with subplots
-            print("Creating figure...")
-            self.figure = Figure(figsize=(10, 8), dpi=100)
-            self.figure.set_facecolor('#f0f0f0')
+            # Create figure and axis
+            self.fig = Figure(figsize=(10, 8), dpi=100)
+            self.ax = self.fig.add_subplot(111)  # Add this line to create the axis
+            self.fig.set_facecolor('#f0f0f0')
             
             # Create canvas
             print("Creating canvas...")
-            self.canvas = FigureCanvasTkAgg(self.figure, master=self.plot_panel)
+            self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_panel)
             self.canvas.draw()
             
             # Add toolbar
@@ -984,10 +1107,10 @@ class StockAnalyzerGUI:
         """Plot training history"""
         try:
             # Clear previous plots
-            self.figure.clear()
+            self.fig.clear()
             
             # Create subplot for loss
-            ax = self.figure.add_subplot(111)
+            ax = self.fig.add_subplot(111)
             ax.plot(history.history['loss'], label='Training Loss')
             ax.plot(history.history['val_loss'], label='Validation Loss')
             ax.set_title('Model Training History')
@@ -997,7 +1120,7 @@ class StockAnalyzerGUI:
             ax.grid(True)
             
             # Update canvas
-            self.figure.tight_layout()
+            self.fig.tight_layout()
             self.canvas.draw()
             
         except Exception as e:
@@ -1005,59 +1128,118 @@ class StockAnalyzerGUI:
             traceback.print_exc()
 
     def make_prediction(self):
-        """Make predictions using the trained model"""
+        """Make prediction using the trained model"""
         try:
             print("\n=== Starting Prediction ===")
             
             if self.ai_agent.model is None:
-                raise ValueError("Model not trained. Please train the model first.")
+                raise ValueError("Model not trained yet")
             
-            # Get historical data
-            df = self.get_historical_data()
-            if df is None or df.empty:
-                raise ValueError("No data available for prediction")
+            # Get current selections
+            current_db = self.db_combo.get()
+            current_table = self.table_var.get() if hasattr(self, 'table_var') else ""
+            current_ticker = self.ticker_var.get()
             
-            # Calculate technical indicators
-            df = self.calculate_technical_indicators(df)
-            if df is None:
-                raise ValueError("Failed to calculate technical indicators")
+            print(f"Making prediction for {current_ticker}")
             
-            # Prepare data for prediction
-            X = self.data_adapter.prepare_prediction_data(df)
-            if X is None:
-                raise ValueError("Failed to prepare prediction data")
+            # Connect to database
+            conn = create_connection(current_db)
+            if not conn:
+                raise ValueError("Failed to connect to database")
             
-            # Make prediction
-            predictions = self.ai_agent.model.predict(X)
-            
-            # Inverse transform predictions
-            predictions = self.data_adapter.inverse_transform_predictions(predictions)
-            
-            # Ensure index is datetime
-            if not isinstance(df.index, pd.DatetimeIndex):
-                print("Converting index to datetime...")
-                df.index = pd.to_datetime(df.index)
-            
-            # Store future predictions
-            last_date = df.index[-1]
-            self.future_dates = pd.date_range(
-                start=last_date + pd.Timedelta(days=1),
-                periods=len(predictions),
-                freq='D'
-            )
-            self.future_predictions = predictions
-            
-            # Update plot with predictions
-            self.update_plots_with_predictions(df, predictions)
-            self.loading_label.config(text="Predictions completed")
-            
+            try:
+                # Construct query
+                if current_table:
+                    query = f"""
+                        SELECT * FROM {current_table} 
+                        WHERE ticker = ? 
+                        ORDER BY date DESC 
+                        LIMIT {self.data_adapter.sequence_length + 10}
+                    """
+                else:
+                    query = f"""
+                        SELECT * FROM {current_ticker} 
+                        ORDER BY date DESC 
+                        LIMIT {self.data_adapter.sequence_length + 10}
+                    """
+                
+                print(f"Executing query: {query}")
+                df = conn.execute(query, (current_ticker,) if current_table else ()).fetchdf()
+                print(f"Retrieved {len(df)} rows of data")
+                
+                if df.empty:
+                    raise ValueError("No data retrieved for prediction")
+                
+                # Prepare data for prediction
+                prediction_data = self.data_adapter.prepare_prediction_data(df)
+                if prediction_data is None:
+                    raise ValueError("Failed to prepare prediction data")
+                
+                # Make prediction
+                prediction = self.ai_agent.model.predict(prediction_data)
+                
+                # Inverse transform the prediction
+                last_close = df['close'].iloc[-1]
+                predicted_change = prediction[0][0]  # Assuming single prediction
+                predicted_price = last_close * (1 + predicted_change)
+                
+                print(f"\nPrediction Results:")
+                print(f"Current Price: ${last_close:.2f}")
+                print(f"Predicted Price: ${predicted_price:.2f}")
+                print(f"Predicted Change: {predicted_change*100:.2f}%")
+                
+                # Update plot with prediction
+                self.update_plot_with_prediction(df, predicted_price)
+                
+                return predicted_price
+                
+            except Exception as e:
+                print(f"Error in prediction: {str(e)}")
+                traceback.print_exc()
+                return None
+                
+            finally:
+                conn.close()
+                
         except Exception as e:
             print("\n=== Error in Prediction ===")
             print(f"Error type: {type(e).__name__}")
             print(f"Error message: {str(e)}")
             print("\nTraceback:")
             traceback.print_exc()
-            self.loading_label.config(text=f"Prediction error: {str(e)}")
+            return None
+
+    def update_plot_with_prediction(self, df, predicted_price):
+        """Update plot with prediction"""
+        try:
+            self.ax.clear()
+            
+            # Plot historical data
+            dates = df.index[-30:]  # Last 30 days
+            prices = df['close'][-30:]
+            self.ax.plot(dates, prices, label='Historical')
+            
+            # Add prediction point
+            next_date = dates[-1] + pd.Timedelta(days=1)
+            self.ax.scatter(next_date, predicted_price, color='red', label='Prediction')
+            
+            # Customize plot
+            self.ax.set_title(f'Stock Price Prediction for {self.ticker_var.get()}')
+            self.ax.set_xlabel('Date')
+            self.ax.set_ylabel('Price')
+            self.ax.legend()
+            self.ax.grid(True)
+            
+            # Rotate x-axis labels
+            plt.xticks(rotation=45)
+            
+            # Adjust layout and redraw
+            self.fig.tight_layout()
+            self.canvas.draw()
+            
+        except Exception as e:
+            print(f"Error updating plot: {str(e)}")
+            traceback.print_exc()
 
     def on_database_change(self, event=None):
         """Handle database selection change"""
@@ -1135,7 +1317,7 @@ class StockAnalyzerGUI:
                 # Update sector combobox
                 self.sector_combo['values'] = sectors
                 if sectors:
-                    self.sector_combo.set(sectors[0])  # Set the first sector as default
+                    self.sector_combo.set(sectors[0])
                     print(f"Set initial sector to: {sectors[0]}")
                     self.sector_combo.bind('<<ComboboxSelected>>', self.on_sector_change)
                 else:
