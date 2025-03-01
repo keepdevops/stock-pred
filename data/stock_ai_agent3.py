@@ -380,13 +380,13 @@ class StockAIAgent:
         try:
             print("\nInitializing AI Agent...")
             self.model = None
+            self.sequence_length = 60  # Number of time steps to look back
+            self.features = ['Open', 'High', 'Low', 'Close', 'Volume', 'RSI']
             self.data_adapter = DataAdapter(
                 sequence_length=self.sequence_length,
                 features=['open', 'high', 'low', 'close', 'volume', 'rsi', 'ma20', 'ma50', 'macd']
             )
             self.scaler = MinMaxScaler(feature_range=(0, 1))
-            self.sequence_length = 60  # Number of time steps to look back
-            self.features = ['Open', 'High', 'Low', 'Close', 'Volume', 'RSI']
             print("AI Agent initialized successfully")
             
         except Exception as e:
@@ -1050,33 +1050,30 @@ class StockAnalyzerGUI:
             # Validate selections
             if not current_db or current_db == 'No databases available':
                 print("No valid database selected")
+                self.loading_label.config(text="Training error: No valid database selected")
                 return
             
             # Connect to the DuckDB database
             conn = create_connection(current_db)
             if conn is None:
                 print("Failed to connect to the database")
+                self.loading_label.config(text="Training error: Failed to connect to database")
+                return
+            
+            # First check if the ticker exists in the table
+            check_query = f"SELECT COUNT(*) FROM {current_table} WHERE ticker = ?"
+            count = conn.execute(check_query, (current_ticker,)).fetchone()[0]
+            
+            if count == 0:
+                print(f"Error: Ticker '{current_ticker}' not found in table '{current_table}'")
+                self.loading_label.config(text=f"Training error: Ticker '{current_ticker}' not found in table '{current_table}'")
                 return
             
             # Construct query with selected fields
-            fields_str = ', '.join(selected_fields)
+            fields_str = ', '.join(selected_fields) if selected_fields else '*'
             query = f"SELECT {fields_str} FROM {current_table} WHERE ticker = ?"
             df = conn.execute(query, (current_ticker,)).fetchdf()
             print(f"Retrieved {len(df)} rows of data")
-            
-            # Check for required columns
-            required_columns = ['close', 'open', 'high', 'low', 'volume']
-            missing_columns = [col for col in required_columns if col not in df.columns]
-            if missing_columns:
-                print(f"Error: Missing required columns: {missing_columns}")
-                print("Skipping model training due to missing technical indicators.")
-                return
-            
-            # Proceed with technical indicator calculations and model training
-            df = self.calculate_technical_indicators(df)
-            if df is None:
-                print("Skipping model training due to missing technical indicators.")
-                return
             
             # Check if data is retrieved
             if df is None or df.empty:
@@ -1084,33 +1081,49 @@ class StockAnalyzerGUI:
                 self.loading_label.config(text="Training error: No data retrieved")
                 return
             
+            # Check for required columns
+            required_columns = ['close', 'open', 'high', 'low', 'volume']
+            missing_columns = [col for col in required_columns if col.lower() not in df.columns.str.lower()]
+            if missing_columns:
+                print(f"Error: Missing required columns: {missing_columns}")
+                self.loading_label.config(text=f"Training error: Missing required columns: {missing_columns}")
+                return
+            
+            # Proceed with technical indicator calculations and model training
+            df = self.calculate_technical_indicators(df)
+            if df is None:
+                print("Skipping model training due to missing technical indicators.")
+                self.loading_label.config(text="Training error: Failed to calculate technical indicators")
+                return
+            
             # Proceed with model training using the prepared data
-            if df is not None:
-                # Initialize AI agent if not already done
-                if self.ai_agent.model is None:
-                    input_shape = (self.sequence_length, len(selected_fields))
-                    self.ai_agent.build_model(input_shape)
-                
-                # Prepare data using the data adapter
-                data = self.data_adapter.prepare_training_data(df)
-                if data is None:
-                    print("Data preparation failed. Please check your data and try again.")
-                    self.loading_label.config(text="Training error: Data preparation failed")
-                    return
-                
-                (X_train, y_train), (X_val, y_val) = data
-                
-                # Train the model
-                history = self.ai_agent.train(X_train, y_train, X_val, y_val, 
-                                              epochs=int(self.epochs_var.get()), 
-                                              batch_size=int(self.batch_size_var.get()))
-                
-                if history is not None:
-                    print("Model training completed successfully")
-                    self.ai_status.config(text="AI Status: Trained")
-                else:
-                    print("Model training failed")
-                    self.ai_status.config(text="AI Status: Training failed")
+            # Initialize AI agent if not already done
+            if self.ai_agent.model is None:
+                input_shape = (self.sequence_length, len(selected_fields))
+                self.ai_agent.build_model(input_shape)
+            
+            # Prepare data using the data adapter
+            data = self.data_adapter.prepare_training_data(df)
+            if data is None:
+                print("Data preparation failed. Please check your data and try again.")
+                self.loading_label.config(text="Training error: Data preparation failed")
+                return
+            
+            (X_train, y_train), (X_val, y_val) = data
+            
+            # Train the model
+            history = self.ai_agent.train(X_train, y_train, X_val, y_val, 
+                                          epochs=int(self.epochs_var.get()), 
+                                          batch_size=int(self.batch_size_var.get()))
+            
+            if history is not None:
+                print("Model training completed successfully")
+                self.ai_status.config(text="AI Status: Trained")
+                self.loading_label.config(text="Training completed successfully")
+            else:
+                print("Model training failed")
+                self.ai_status.config(text="AI Status: Training failed")
+                self.loading_label.config(text="Training failed")
             
         except Exception as e:
             print("\n=== Error in Training ===")
@@ -1326,11 +1339,35 @@ class StockAnalyzerGUI:
                 chk.pack(anchor='w')
                 self.field_vars[column] = var
             
+            # Check if table has ticker column
+            if 'ticker' in [col.lower() for col in column_names]:
+                print("Found ticker column, retrieving unique tickers...")
+                ticker_col = next(col for col in column_names if col.lower() == 'ticker')
+                tickers = self.db_conn.execute(
+                    f"SELECT DISTINCT {ticker_col} FROM {table} ORDER BY {ticker_col}"
+                ).fetchall()
+                tickers = [t[0] for t in tickers]
+                print(f"Found {len(tickers)} tickers")
+                
+                # Update ticker combobox
+                self.ticker_combo['values'] = tickers
+                if tickers:
+                    self.ticker_combo.set(tickers[0])
+                    
+                # Update ticker listbox
+                self.ticker_listbox.delete(0, tk.END)
+                for ticker in tickers:
+                    self.ticker_listbox.insert(tk.END, ticker)
+            else:
+                print("No ticker column found in table")
+                self.clear_ticker_selection()
+            
             # Check if table has sector column
-            if 'sector' in column_names:
+            if 'sector' in [col.lower() for col in column_names]:
                 print("Found sector column, retrieving unique sectors...")
+                sector_col = next(col for col in column_names if col.lower() == 'sector')
                 sectors = self.db_conn.execute(
-                    f"SELECT DISTINCT sector FROM {table} ORDER BY sector"
+                    f"SELECT DISTINCT {sector_col} FROM {table} ORDER BY {sector_col}"
                 ).fetchall()
                 sectors = [s[0] for s in sectors]
                 print(f"Found {len(sectors)} sectors")
@@ -1347,51 +1384,9 @@ class StockAnalyzerGUI:
             else:
                 print("No sector column found in table")
                 self.clear_sector_selection()
-                
-                # Update tickers directly if no sector column
-                if 'ticker' in column_names:
-                    print("Updating tickers directly from table...")
-                    tickers = self.db_conn.execute(
-                        f"SELECT DISTINCT ticker FROM {table} ORDER BY ticker"
-                    ).fetchall()
-                    tickers = [t[0] for t in tickers]
-                    self.ticker_combo['values'] = tickers
-                    if tickers:
-                        self.ticker_combo.set(tickers[0])
-                    else:
-                        self.clear_ticker_selection()
-                else:
-                    self.clear_ticker_selection()
-            
-            # Update tickers, symbols, and pairs
-            self.update_tickers_symbols_pairs(table, column_names)
             
         except Exception as e:
             print(f"Error in table change handler: {str(e)}")
-            traceback.print_exc()
-            self.clear_all_selections()
-
-    def update_tickers_symbols_pairs(self, table, column_names):
-        """Update tickers and symbols based on the current table"""
-        try:
-            # Update tickers
-            if 'ticker' in column_names:
-                print("Found ticker column, retrieving unique tickers...")
-                tickers = self.db_conn.execute(
-                    f"SELECT DISTINCT ticker FROM {table} ORDER BY ticker"
-                ).fetchall()
-                tickers = [t[0] for t in tickers]
-                print(f"Found {len(tickers)} tickers")
-                self.ticker_combo['values'] = tickers
-                if tickers:
-                    self.ticker_combo.set(tickers[0])
-                else:
-                    self.clear_ticker_selection()
-            else:
-                self.clear_ticker_selection()
-            
-        except Exception as e:
-            print(f"Error updating tickers and symbols: {str(e)}")
             traceback.print_exc()
             self.clear_all_selections()
 
@@ -1406,27 +1401,40 @@ class StockAnalyzerGUI:
                 self.clear_ticker_selection()
                 return
             
-            # Check if the sector column exists
+            # Check if the sector and ticker columns exist
             columns = self.db_conn.execute(f"SELECT * FROM {table} LIMIT 0").description
             column_names = [col[0] for col in columns]
+            column_names_lower = [col.lower() for col in column_names]
             
-            if 'sector' in column_names and 'ticker' in column_names:
+            if 'sector' in column_names_lower and 'ticker' in column_names_lower:
+                # Get the actual column names (preserve case)
+                sector_col = next(col for col in column_names if col.lower() == 'sector')
+                ticker_col = next(col for col in column_names if col.lower() == 'ticker')
+                
                 # Query to get tickers for the selected sector
                 tickers = self.db_conn.execute(
-                    f"SELECT DISTINCT ticker FROM {table} WHERE sector = ? ORDER BY ticker", 
+                    f"SELECT DISTINCT {ticker_col} FROM {table} WHERE {sector_col} = ? ORDER BY {ticker_col}", 
                     (selected_sector,)
                 ).fetchall()
                 tickers = [t[0] for t in tickers]
-                self.ticker_combo['values'] = tickers
                 
+                # Update ticker combobox
+                self.ticker_combo['values'] = tickers
                 if tickers:
                     self.ticker_combo.set(tickers[0])
                 else:
                     self.clear_ticker_selection()
+                    
+                # Update ticker listbox
+                self.ticker_listbox.delete(0, tk.END)
+                for ticker in tickers:
+                    self.ticker_listbox.insert(tk.END, ticker)
+                    
+                print(f"Updated tickers based on sector '{selected_sector}': {len(tickers)} tickers found")
             else:
                 self.clear_ticker_selection()
+                print("Sector or ticker column not found in table")
             
-            print("Tickers updated based on sector selection")
         except Exception as e:
             print(f"Error updating tickers on sector change: {str(e)}")
             traceback.print_exc()
@@ -1435,6 +1443,8 @@ class StockAnalyzerGUI:
         """Clear ticker selection when no valid sector/database is selected"""
         self.ticker_combo['values'] = ['No tickers available']
         self.ticker_combo.set('No tickers available')
+        self.ticker_listbox.delete(0, tk.END)
+        self.ticker_listbox.insert(tk.END, 'No tickers available')
 
     def clear_all_selections(self):
         """Clear all selections when no valid table/database is selected"""
