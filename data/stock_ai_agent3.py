@@ -1565,8 +1565,35 @@ def initialize_control_panel(main_frame, databases):
                 status_var.set(error_msg)
                 return
             
+            # Get data columns - adapt to the table schema
+            print(f"Available columns: {df.columns.tolist()}")
+            
+            # Check table schema and adapt
+            if 'close' in df.columns:
+                # Stock price data with OHLC columns
+                price_column = 'close'
+            elif 'value' in df.columns:
+                # Balance sheet or other data with value column
+                price_column = 'value'
+                # For tables with multiple metrics per ticker, filter to just one metric
+                if 'metric' in df.columns:
+                    metrics = df['metric'].unique().tolist()
+                    print(f"Available metrics: {metrics}")
+                    if len(metrics) > 0:
+                        selected_metric = metrics[0]
+                        print(f"Using metric: {selected_metric}")
+                        df = df[df['metric'] == selected_metric]
+            else:
+                # No suitable column found
+                error_msg = f"No suitable price data found in table {table_name}"
+                print(error_msg)
+                status_var.set(error_msg)
+                return
+            
             # Prepare data for prediction
-            latest_date = pd.to_datetime(df['date'].iloc[-1])
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date')
+            latest_date = df['date'].iloc[-1]
             print(f"Last date in data: {latest_date}")
             
             # Plot the results
@@ -1583,33 +1610,34 @@ def initialize_control_panel(main_frame, databases):
                 ax.spines["left"].set_color("white")
                 ax.spines["right"].set_color("white")
                 
-                # Get historical data for plotting
-                historical_dates = pd.to_datetime(df['date']).tolist()[-30:]  # Last 30 days
-                historical_prices = df['close'].tolist()[-30:]
+                # Get historical data for plotting (last 30 points)
+                historical_dates = df['date'].tolist()[-30:]
+                historical_values = df[price_column].tolist()[-30:]
                 
                 # Generate future dates
                 future_dates = [latest_date + timedelta(days=i+1) for i in range(days)]
                 
                 # Generate simple random prediction for demo
-                last_price = historical_prices[-1]
-                future_prices = []
+                last_value = historical_values[-1]
+                future_values = []
                 for i in range(days):
                     # Add some randomness
                     random_factor = np.random.normal(0, 1) * 0.01
-                    next_price = last_price * (1 + random_factor)
-                    future_prices.append(next_price)
-                    last_price = next_price
+                    next_value = last_value * (1 + random_factor)
+                    future_values.append(next_value)
+                    last_value = next_value
                 
                 # Plot historical data
-                ax.plot(historical_dates, historical_prices, 'b-', label='Historical')
+                ax.plot(historical_dates, historical_values, 'b-', label='Historical')
                 
                 # Plot prediction
-                ax.plot(future_dates, future_prices, 'r-', label='Prediction')
+                ax.plot(future_dates, future_values, 'r-', label='Prediction')
                 
                 # Set title and labels
-                ax.set_title(f"{ticker} Stock Price Prediction", color="white")
+                metric_label = f" ({df['metric'].iloc[0]})" if 'metric' in df.columns else ""
+                ax.set_title(f"{ticker}{metric_label} Prediction", color="white")
                 ax.set_xlabel("Date", color="white")
-                ax.set_ylabel("Price", color="white")
+                ax.set_ylabel("Value", color="white")
                 
                 # Add legend
                 ax.legend()
