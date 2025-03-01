@@ -33,6 +33,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.losses import Huber
 
 matplotlib.use('TkAgg')
 
@@ -79,51 +80,61 @@ def process_data_safely(func):
     return wrapper
 
 class AIAgent:
-    def __init__(self):
-        """Initialize the AI agent"""
+    """AI agent for stock price prediction."""
+    
+    def __init__(self, db_conn=None):
+        """Initialize the AI agent."""
+        self.db_conn = db_conn
         self.model = None
+        self.history = None
+        self.scaler = None
+        self.prediction = None
+        self.learning_rate = 0.001  # Add default learning rate
+        self.batch_size = 32
+        self.epochs = 50
+        self.sequence_length = 10
         
     def build_model(self, input_shape):
-        """Build the LSTM model"""
+        """Build and compile the LSTM model."""
         try:
             print(f"Building model with input shape: {input_shape}")
-            model = Sequential([
-                # First LSTM layer with input_shape=(sequence_length, n_features)
-                LSTM(50, return_sequences=True, input_shape=input_shape),
-                BatchNormalization(),
-                Dropout(0.2),
-                
-                # Second LSTM layer
-                LSTM(50, return_sequences=True),
-                BatchNormalization(),
-                Dropout(0.2),
-                
-                # Third LSTM layer
-                LSTM(50),
-                BatchNormalization(),
-                Dropout(0.2),
-                
-                # Dense layers for prediction
-                Dense(25, activation='relu'),
-                Dense(1)
-            ])
+            model = Sequential()
             
-            # Compile model with Adam optimizer and MSE loss
-            model.compile(
-                optimizer=Adam(learning_rate=0.001),
-                loss='mse',
-                metrics=['mae']  # Adding mean absolute error as a metric
-            )
+            # First LSTM layer
+            model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.2))
             
-            self.model = model
+            # Second LSTM layer
+            model.add(LSTM(50, return_sequences=True))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.2))
+            
+            # Third LSTM layer
+            model.add(LSTM(50, return_sequences=False))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.2))
+            
+            # Dense output layers
+            model.add(Dense(25, activation='relu'))
+            model.add(Dense(1))
+            
+            # Use the Huber() class instead of the string 'huber_loss'
+            model.compile(optimizer=Adam(learning_rate=self.learning_rate), 
+                         loss=Huber(), 
+                         metrics=['mae'])
+            
             print("Model built successfully")
-            model.summary()  # Print model architecture
-            return True
+            model.summary()
             
+            # This is the critical fix - assign the model to self.model
+            self.model = model
+            
+            return model
         except Exception as e:
-            print(f"Error building model: {str(e)}")
+            print(f"Error building model: {e}")
             traceback.print_exc()
-            return False
+            return None
 
     def train(self, X_train, y_train, X_val, y_val, epochs=50, batch_size=32):
         """Train the LSTM model"""
@@ -171,135 +182,162 @@ class DataAdapter:
         ]
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         
-    def prepare_training_data(self, df):
+    def prepare_training_data(self, data, sequence_length=10):
+        """Prepare data for training by creating sequences."""
         try:
             print("\nPreparing training data...")
-            if df is None or df.empty:
-                print("Error: DataFrame is empty")
-                return None
-
-            print("DataFrame columns:", df.columns.tolist())
-            print("DataFrame head:\n", df.head())
-
-            # Convert all column names to lowercase
-            df.columns = df.columns.str.lower()
+            print(f"DataFrame columns: {data.columns.tolist()}")
+            print("DataFrame head:")
+            print(data.head())
             
-            # Find date column
-            date_column = None
-            for col in df.columns:
-                if 'date' in col.lower():
-                    date_column = col
-                    print(f"Found date column: {col}")
+            # Check if we have a date column
+            date_col = None
+            for col in data.columns:
+                if col.lower() in ['date', 'datetime', 'time']:
+                    date_col = col
+                    print(f"Found date column: {date_col}")
                     break
-
-            if date_column is None:
-                raise ValueError("No date column found")
-
-            # Set the date column as index
-            df.set_index(date_column, inplace=True)
             
-            # Convert index to datetime
-            print("Index before datetime conversion:", df.index)
-            df.index = pd.to_datetime(df.index)
-            print("Converting index to datetime...")
-            print("Index after datetime conversion:", df.index)
-            df.sort_index(inplace=True)
-
-            # Calculate technical indicators
-            df = self.calculate_technical_indicators(df)
+            # If we found a date column, set it as index
+            if date_col:
+                # Convert to datetime if not already
+                if not pd.api.types.is_datetime64_any_dtype(data[date_col]):
+                    data[date_col] = pd.to_datetime(data[date_col])
+                
+                # Set as index
+                data = data.set_index(date_col)
+                print(f"Index before datetime conversion: {data.index}")
+                
+                # Ensure index is datetime
+                data.index = pd.to_datetime(data.index)
+                print(f"Index after datetime conversion: {data.index}")
+                
+                # Sort by date
+                data = data.sort_index()
             
-            # Verify all required features are present (case-insensitive)
-            df_cols_lower = df.columns.str.lower()
-            missing_features = [feat for feat in self.features if feat not in df_cols_lower]
+            # Calculate technical indicators again (on clean data)
+            data = self.calculate_technical_indicators(data)
+            print("Technical indicators calculated successfully.")
+            print("DataFrame with technical indicators:")
+            print(data.head())
             
-            if missing_features:
-                print(f"Error: Missing required features: {missing_features}")
-                print("Available columns:", df.columns.tolist())
-                return None
-
-            # Create feature matrix using only the specified features (case-insensitive)
-            feature_data = df[[col for col in df.columns if col.lower() in self.features]].values
+            # Remove non-numeric columns
+            numeric_cols = data.select_dtypes(include=['int64', 'float64']).columns
+            data = data[numeric_cols]
             
-            if len(feature_data) < self.sequence_length:
-                print(f"Error: Not enough data points. Need at least {self.sequence_length}")
-                return None
-
-            # Scale features
-            scaled_data = self.scaler.fit_transform(feature_data)
+            # Handle any remaining NaN values
+            data = data.fillna(method='ffill').fillna(method='bfill').fillna(0)
             
-            # Create sequences
-            X, y = self._create_sequences(scaled_data)
+            # Normalize the data
+            scaler = MinMaxScaler(feature_range=(0, 1))
+            scaled_data = scaler.fit_transform(data)
+            self.scaler = scaler
             
-            if len(X) == 0:
-                print("Error: No sequences created")
-                return None
-
+            # Create sequences for LSTM
+            X, y = [], []
+            for i in range(len(scaled_data) - sequence_length):
+                X.append(scaled_data[i:i + sequence_length])
+                y.append(scaled_data[i + sequence_length, data.columns.get_loc('close')])
+            
+            X, y = np.array(X), np.array(y)
+            
             # Split into training and validation sets
-            split_idx = int(len(X) * 0.8)
-            X_train, X_val = X[:split_idx], X[split_idx:]
-            y_train, y_val = y[:split_idx], y[split_idx:]
+            train_size = int(len(X) * 0.8)
+            X_train, X_val = X[:train_size], X[train_size:]
+            y_train, y_val = y[:train_size], y[train_size:]
             
             print(f"Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
             print(f"Feature shape: X_train={X_train.shape}, X_val={X_val.shape}")
-            return (X_train, y_train), (X_val, y_val)
-
-        except Exception as e:
-            print(f"Error preparing training data: {str(e)}")
-            traceback.print_exc()
-            return None
-    
-    def prepare_prediction_data(self, df):
-        """Prepare data for prediction"""
-        try:
-            print("\nPreparing prediction data...")
-            if df is None or df.empty:
-                print("Error: DataFrame is empty")
-                return None
-
-            print("Initial DataFrame shape:", df.shape)
-            print("DataFrame columns:", df.columns.tolist())
-
-            # Convert all column names to lowercase
-            df.columns = df.columns.str.lower()
             
-            # Find and process date column
-            date_column = next((col for col in df.columns if 'date' in col.lower()), None)
-            if date_column:
-                df.set_index(date_column, inplace=True)
-                df.index = pd.to_datetime(df.index)
-                df.sort_index(inplace=True)
+            return X_train, X_val, y_train, y_val
+        except Exception as e:
+            print(f"Error preparing training data: {e}")
+            traceback.print_exc()
+            return None, None, None, None
+    
+    def prepare_prediction_data(self, data):
+        """Prepare data for prediction."""
+        try:
+            print("Preparing prediction data...")
+            print(f"Initial DataFrame shape: {data.shape}")
+            print(f"DataFrame columns: {list(data.columns)}")
             
             # Calculate technical indicators
-            df = self.calculate_technical_indicators(df)
+            df = self.calculate_technical_indicators(data.copy())
             
-            # Verify required features
-            required_features = ['open', 'high', 'low', 'close', 'volume', 'ma20', 'rsi', 'macd', 'ma50']
-            missing_features = [feat for feat in required_features if feat not in df.columns.str.lower()]
+            # Important: Save the original scaler feature names
+            if hasattr(self, 'scaler') and hasattr(self.scaler, 'feature_names_in_'):
+                print(f"Scaler was fitted with these features: {self.scaler.feature_names_in_}")
+                feature_columns = list(self.scaler.feature_names_in_)
+            else:
+                # Fall back to default feature columns
+                feature_columns = ['open', 'high', 'low', 'close', 'volume', 'MA20', 'ma50', 'rsi', 'macd', 'prediction']
             
-            if missing_features:
-                print(f"Error: Missing required features: {missing_features}")
-                return None
-
-            # Get the most recent sequence
-            feature_data = df[required_features].values
-            if len(feature_data) < self.sequence_length:
-                print(f"Error: Not enough data points. Need at least {self.sequence_length}")
-                return None
-
+            # Check if MA20 exists in dataframe (case matters!)
+            if 'MA20' in df.columns:
+                # If we need ma20 (lowercase) and only have MA20, create it
+                if 'MA20' in feature_columns and 'ma20' not in df.columns:
+                    df['ma20'] = df['MA20']
+            elif 'ma20' in df.columns:
+                # If we need MA20 (uppercase) and only have ma20, create it
+                if 'MA20' in feature_columns and 'MA20' not in df.columns:
+                    df['MA20'] = df['ma20']
+                
+            # Do the same for ma50/MA50
+            if 'MA50' in df.columns and 'ma50' not in df.columns:
+                df['ma50'] = df['MA50']
+            elif 'ma50' in df.columns and 'MA50' not in df.columns:
+                df['MA50'] = df['ma50']
+            
+            # Ensure all required columns exist
+            for col in feature_columns:
+                if col not in df.columns:
+                    print(f"Adding missing column: {col}")
+                    df[col] = 0  # Add missing columns with default values
+            
+            # Select only the necessary features in the same order as during training
+            df = df[feature_columns]
+            
+            print(f"Final prediction features: {list(df.columns)}")
+            
             # Scale the features
-            scaled_data = self.scaler.fit_transform(feature_data)
+            if hasattr(self, 'scaler'):
+                print("Using fitted scaler for prediction data")
+                # Important: Use the same column order as during training
+                df_scaled = pd.DataFrame(self.scaler.transform(df),
+                                       columns=df.columns,
+                                       index=df.index)
+            else:
+                print("Warning: No scaler found, using raw features")
+                df_scaled = df
             
-            # Take the most recent sequence
-            recent_sequence = scaled_data[-self.sequence_length:]
+            # Create sequences for LSTM (same window size as training)
+            X_samples = []
+            for i in range(df_scaled.shape[0] - 9):
+                X_samples.append(df_scaled.values[i:i+10])
             
-            # Reshape for prediction
-            prediction_data = np.reshape(recent_sequence, (1, self.sequence_length, len(required_features)))
+            if not X_samples:
+                print("Warning: Not enough data points for a prediction window")
+                # If we don't have enough data for a full window, use what we have
+                if df_scaled.shape[0] > 0:
+                    # Pad with zeros if needed
+                    pad_size = 10 - df_scaled.shape[0]
+                    if pad_size > 0:
+                        padding = np.zeros((pad_size, df_scaled.shape[1]))
+                        padded_data = np.vstack((padding, df_scaled.values))
+                    else:
+                        padded_data = df_scaled.values
+                    X_samples.append(padded_data[-10:])
             
-            print(f"Prediction data shape: {prediction_data.shape}")
-            return prediction_data
-
+            if X_samples:
+                prediction_data = np.array(X_samples)
+                print(f"Prediction data shape: {prediction_data.shape}")
+                return prediction_data
+            else:
+                print("Error: Could not create prediction data")
+                return None
         except Exception as e:
-            print(f"Error preparing prediction data: {str(e)}")
+            print(f"Error preparing prediction data: {e}")
             traceback.print_exc()
             return None
     
@@ -340,39 +378,44 @@ class DataAdapter:
         
         return np.array(X), np.array(y)
 
-    def calculate_technical_indicators(self, df):
-        """Calculate technical indicators"""
+    def calculate_technical_indicators(self, data):
+        """Calculate technical indicators for stock data."""
         try:
-            # Ensure column names are lowercase
-            df.columns = df.columns.str.lower()
+            # Create a working copy
+            df = data.copy()
             
-            # Calculate MA20
-            df['ma20'] = df['close'].rolling(window=20).mean()
+            # Handle any missing values in the input data
+            df = df.fillna(method='ffill').fillna(method='bfill')
             
-            # Calculate RSI
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            df['rsi'] = 100 - (100 / (1 + rs))
-            
-            # Calculate MACD
-            exp1 = df['close'].ewm(span=12, adjust=False).mean()
-            exp2 = df['close'].ewm(span=26, adjust=False).mean()
-            df['macd'] = exp1 - exp2
-            
-            # Calculate MA50
-            df['ma50'] = df['close'].rolling(window=50).mean()
+            # Create a DataFrame with technical indicators
+            if 'close' in df.columns:
+                # Moving Averages
+                df['ma20'] = df['close'].rolling(window=20).mean()
+                df['ma50'] = df['close'].rolling(window=50).mean()
+                
+                # RSI - Relative Strength Index
+                delta = df['close'].diff()
+                gain = delta.where(delta > 0, 0)
+                loss = -delta.where(delta < 0, 0)
+                avg_gain = gain.rolling(window=14).mean()
+                avg_loss = loss.rolling(window=14).mean()
+                rs = avg_gain / avg_loss.replace(0, 0.001)  # Avoid division by zero
+                df['rsi'] = 100 - (100 / (1 + rs))
+                
+                # MACD - Moving Average Convergence Divergence
+                ema12 = df['close'].ewm(span=12, adjust=False).mean()
+                ema26 = df['close'].ewm(span=26, adjust=False).mean()
+                df['macd'] = ema12 - ema26
             
             print("Technical indicators calculated successfully.")
-            print("DataFrame with technical indicators:\n", df.head())
+            # Handle NaN values for all technical indicators
+            df = df.fillna(method='ffill').fillna(method='bfill').fillna(0)
             
             return df
-            
         except Exception as e:
-            print(f"Error calculating technical indicators: {str(e)}")
+            print(f"Error calculating technical indicators: {e}")
             traceback.print_exc()
-            return df
+            return data
 
 class StockAIAgent:
     def __init__(self):
@@ -394,29 +437,44 @@ class StockAIAgent:
             traceback.print_exc()
 
     def build_model(self, input_shape):
-        """Build LSTM model architecture"""
+        """Build and compile the LSTM model."""
         try:
-            print("\nBuilding LSTM model...")
-            model = Sequential([
-                LSTM(units=50, return_sequences=True, input_shape=input_shape),
-                Dropout(0.2),
-                LSTM(units=50, return_sequences=True),
-                Dropout(0.2),
-                LSTM(units=50),
-                Dropout(0.2),
-                Dense(units=1)
-            ])
+            print(f"Building model with input shape: {input_shape}")
+            model = Sequential()
             
-            model.compile(optimizer=Adam(learning_rate=0.001),
-                         loss='mean_squared_error')
+            # First LSTM layer
+            model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.2))
             
-            print("Model architecture:")
-            model.summary()
+            # Second LSTM layer
+            model.add(LSTM(50, return_sequences=True))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.2))
+            
+            # Third LSTM layer
+            model.add(LSTM(50, return_sequences=False))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.2))
+            
+            # Dense output layers
+            model.add(Dense(25, activation='relu'))
+            model.add(Dense(1))
+            
+            # Use the Huber() class instead of the string 'huber_loss'
+            model.compile(optimizer=Adam(learning_rate=self.learning_rate), 
+                         loss=Huber(), 
+                         metrics=['mae'])
+            
             print("Model built successfully")
-            return model
+            model.summary()
             
+            # This is the critical fix - assign the model to self.model
+            self.model = model
+            
+            return model
         except Exception as e:
-            print(f"Error building model: {str(e)}")
+            print(f"Error building model: {e}")
             traceback.print_exc()
             return None
 
@@ -470,7 +528,7 @@ class StockAIAgent:
             if data is None:
                 raise ValueError("Data preparation failed")
                 
-            (X_train, y_train), (X_val, y_val) = data
+            (X_train, X_val, y_train, y_val) = data
             
             # Build model if not exists
             if self.model is None:
@@ -530,749 +588,62 @@ class StockAIAgent:
             print(f"Error making predictions: {str(e)}")
             traceback.print_exc()
             return None
-
-    def calculate_rsi(self, prices, periods=14):
-        """Calculate Relative Strength Index"""
-        try:
-            deltas = np.diff(prices)
-            seed = deltas[:periods+1]
-            up = seed[seed >= 0].sum()/periods
-            down = -seed[seed < 0].sum()/periods
-            rs = up/down
-            rsi = np.zeros_like(prices)
-            rsi[:periods] = 100. - 100./(1.+rs)
-
-            for i in range(periods, len(prices)):
-                delta = deltas[i - 1]
-                if delta > 0:
-                    upval = delta
-                    downval = 0.
-                else:
-                    upval = 0.
-                    downval = -delta
-
-                up = (up*(periods-1) + upval)/periods
-                down = (down*(periods-1) + downval)/periods
-                rs = up/down
-                rsi[i] = 100. - 100./(1.+rs)
-
-            return rsi
-
-        except Exception as e:
-            print(f"Error calculating RSI: {str(e)}")
-            traceback.print_exc()
-            return np.zeros_like(prices)
-
-    def calculate_technical_indicators(self, df):
-        """Calculate technical indicators for the dataset"""
-        try:
-            print("Starting technical indicator calculations...")
-            if df is None or df.empty:
-                print("Error: Input DataFrame is None or empty")
-                return None
-
-            # Check for required columns
-            # Adjust the column name if 'Close' is named differently
-            close_column = 'Close'  # Change this to the correct column name if needed
-            if close_column not in df.columns:
-                # Attempt to create a 'Close' column if possible
-                if 'close_price' in df.columns:
-                    close_column = 'close_price'
-                elif 'closing_value' in df.columns:
-                    close_column = 'closing_value'
-                else:
-                    print(f"Error: Missing required columns: [{close_column}]")
-                    return None
-
-            # Create a copy to avoid modifying original
-            df = df.copy()
                 
-            # Calculate moving averages
-            df['MA20'] = df[close_column].rolling(window=20).mean()
-            df['MA50'] = df[close_column].rolling(window=50).mean()
-            
-            # Calculate RSI
-            delta = df[close_column].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            df['RSI'] = 100 - (100 / (1 + rs))
-            
-            # Calculate MACD
-            exp1 = df[close_column].ewm(span=12, adjust=False).mean()
-            exp2 = df[close_column].ewm(span=26, adjust=False).mean()
-            df['MACD'] = exp1 - exp2
-            df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
-            
-            # Calculate Bollinger Bands
-            df['BB_middle'] = df[close_column].rolling(window=20).mean()
-            df['BB_upper'] = df['BB_middle'] + 2 * df[close_column].rolling(window=20).std()
-            df['BB_lower'] = df['BB_middle'] - 2 * df[close_column].rolling(window=20).std()
-            
-            # Handle NaN values
-            df = df.fillna(method='ffill').fillna(method='bfill')
-            
-            print("Technical indicators calculated successfully")
-            print(f"DataFrame shape after calculations: {df.shape}")
-            print("Retrieved columns:", df.columns)
-            return df
-            
-        except Exception as e:
-            print(f"Error calculating technical indicators: {str(e)}")
-            traceback.print_exc()
-            return None
-            
-    def validate_data(self, df):
-        """Validate the input data"""
+    def update_plot_with_prediction(self, dates, prices, predicted_price):
+        """Update the plot with predicted price."""
         try:
-            print("\nStarting validate_data...")
-            print("Validating input data...")
-            
-            if df is None or df.empty:
-                print("Error: DataFrame is None or empty")
-                return None
-                
-            required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-            if not all(col in df.columns for col in required_columns):
-                print("Error: Missing required columns")
-                return None
-                
-            print("Data validation complete")
-            print(f"Final shape: {df.shape}")
-            print("Successfully completed validate_data")
-            return df
-            
-        except Exception as e:
-            print(f"Error in data validation: {str(e)}")
-            traceback.print_exc()
-            return None
-
-class StockAnalyzerGUI:
-    def __init__(self, available_dbs):
-        """Initialize the GUI"""
-        try:
-            print("\nStarting initialize_gui...")
-            print("Initializing GUI...")
-            
-            # Initialize basic attributes
-            self.available_dbs = available_dbs
-            self.root = tk.Tk()
-            self.current_db = None
-            self.tables = []
-            self.tickers = []
-            
-            # Initialize technical analysis attributes
-            self.scaler = None
-            self.sequence_length = 10
-            
-            # Initialize AI agent and data adapter
-            self.ai_agent = AIAgent()
-            self.data_adapter = DataAdapter(
-                sequence_length=self.sequence_length,
-                features=['open', 'high', 'low', 'close', 'volume', 'rsi', 'ma20', 'ma50', 'macd']
-            )
-            
-            # Create GUI elements
-            self.create_gui_elements()
-            
-            # Call initialization methods
-            self.initialize_gui()
-            
-        except Exception as e:
-            print(f"Error in initialization: {str(e)}")
-            traceback.print_exc()
-
-    def create_gui_elements(self):
-        """Create GUI elements"""
-        try:
-            # Create main container
-            self.main_container = ttk.Frame(self.root)
-            self.main_container.pack(fill=tk.BOTH, expand=True)
-
-            # Create status bar
-            self.status_frame = ttk.Frame(self.main_container)
-            self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
-            
-            # Create loading label
-            self.loading_label = ttk.Label(self.status_frame, text="Ready")
-            self.loading_label.pack(side=tk.LEFT, padx=5)
-            
-            # Create ticker description
-            self.ticker_desc = ttk.Label(self.status_frame, text="")
-            self.ticker_desc.pack(side=tk.RIGHT, padx=5)
-            
-            # Create control panel
-            self.control_panel = ttk.Frame(self.main_container)
-            self.control_panel.pack(side=tk.LEFT, fill=tk.Y)
-            
-            # Create plot panel
-            self.plot_panel = ttk.Frame(self.main_container)
-            self.plot_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-            
-        except Exception as e:
-            print(f"Error creating GUI elements: {str(e)}")
-            traceback.print_exc()
-
-    def initialize_gui(self):
-        """Initialize the GUI components"""
-        try:
-            print("Setting window dimensions...")
-            self.root.title("Stock Market Analyzer")
-            self.root.geometry("1200x800")
-            
-            # Initialize components
-            self.initialize_plot_area()
-            self.initialize_control_panel()
-            
-        except Exception as e:
-            print(f"Error in GUI initialization: {str(e)}")
-            traceback.print_exc()
-
-    def initialize_plot_area(self):
-        """Initialize the plotting area with proper configuration"""
-        try:
-            print("\nInitializing plot area...")
-            
-            # Create figure and axis
-            self.fig = Figure(figsize=(10, 8), dpi=100)
-            self.ax = self.fig.add_subplot(111)  # Add this line to create the axis
-            self.fig.set_facecolor('#f0f0f0')
-            
-            # Create canvas
-            print("Creating canvas...")
-            self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_panel)
-            self.canvas.draw()
-            
-            # Add toolbar
-            print("Adding toolbar...")
-            toolbar_frame = ttk.Frame(self.plot_panel)
-            toolbar_frame.grid(row=0, column=0, sticky="ew")
-            self.toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
-            
-            # Grid canvas
-            print("Positioning canvas...")
-            self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
-            
-            # Configure grid weights
-            self.plot_panel.grid_rowconfigure(1, weight=1)
-            self.plot_panel.grid_columnconfigure(0, weight=1)
-            
-            print("Plot area initialization complete")
-            
-        except Exception as e:
-            print(f"Error creating plot area: {str(e)}")
-            traceback.print_exc()
-
-    def initialize_control_panel(self):
-        """Initialize the control panel"""
-        try:
-            print("\nInitializing control panel...")
-            
-            # Create control panel
-            self.create_control_panel()
-            
-        except Exception as e:
-            print(f"Error initializing control panel: {str(e)}")
-            traceback.print_exc()
-
-    def create_control_panel(self):
-        """Create main control panel with proper layout"""
-        try:
-            print("\nCreating control panel...")
-            
-            # Configure control panel grid
-            self.control_panel.grid_columnconfigure(0, weight=1)
-            
-            # Create database selection
-            print("Creating database controls...")
-            self.create_database_controls()
-            
-            # Create table selection
-            print("Creating table controls...")
-            self.create_table_controls()
-            
-            # Create ticker selection
-            print("Creating ticker controls...")
-            self.create_ticker_controls()
-            
-            # Create duration selection
-            print("Creating duration controls...")
-            self.create_duration_controls()
-            
-            # Add AI controls
-            print("Adding AI controls...")
-            self.add_ai_controls()
-            
-            print("Control panel creation complete")
-            
-        except Exception as e:
-            print(f"Error creating control panel: {str(e)}")
-            traceback.print_exc()
-
-    def create_database_controls(self):
-        """Create database selection controls"""
-        try:
-            print("Creating database selection frame...")
-            # Database selection
-            db_frame = ttk.LabelFrame(self.control_panel, text="Database Selection", padding="5")
-            db_frame.pack(fill="x", padx=5, pady=5)
-            
-            ttk.Label(db_frame, text="Database:").pack(side="left", padx=5)
-            self.db_combo = ttk.Combobox(db_frame, state="readonly")
-            self.db_combo.pack(side="left", fill="x", expand=True, padx=5)
-            
-            if self.available_dbs:
-                self.db_combo['values'] = self.available_dbs
-                if not self.current_db:
-                    self.current_db = self.available_dbs[0]
-                self.db_combo.set(self.current_db)
-                self.db_combo.bind('<<ComboboxSelected>>', self.on_database_change)
-            
-            # Refresh button
-            ttk.Button(db_frame, text="🔄", width=3,
-                      command=self.refresh_databases).pack(side="left", padx=5)
-            
-        except Exception as e:
-            print(f"Error creating database controls: {str(e)}")
-            traceback.print_exc()
-
-    def create_table_controls(self):
-        """Create table selection controls"""
-        try:
-            print("Creating table selection frame...")
-            # Table selection
-            table_frame = ttk.LabelFrame(self.control_panel, text="Table Selection", padding="5")
-            table_frame.pack(fill="x", padx=5, pady=5)
-            
-            ttk.Label(table_frame, text="Table:").pack(side="left", padx=5)
-            self.table_var = tk.StringVar()
-            self.table_combo = ttk.Combobox(table_frame, textvariable=self.table_var)
-            self.table_combo.pack(side="left", fill="x", expand=True, padx=5)
-            
-            if self.tables:
-                self.table_combo['values'] = self.tables
-                self.table_combo.set(self.tables[0])
-                self.table_combo.bind('<<ComboboxSelected>>', self.on_table_change)
-            
-            # Add an update button to refresh the table list
-            ttk.Button(table_frame, text="Update", command=self.refresh_tables).pack(side="left", padx=5)
-            
-            # Sector selection frame
-            self.sector_frame = ttk.LabelFrame(self.control_panel, text="Sector Selection", padding="5")
-            self.sector_frame.pack(fill="x", padx=5, pady=5)
-            
-            ttk.Label(self.sector_frame, text="Sector:").pack(side="left", padx=5)
-            self.sector_var = tk.StringVar()
-            self.sector_combo = ttk.Combobox(self.sector_frame, textvariable=self.sector_var)
-            self.sector_combo.pack(side="left", fill="x", expand=True, padx=5)
-            
-            # Add an update button to refresh the sector list
-            ttk.Button(self.sector_frame, text="Update", command=self.refresh_sectors).pack(side="left", padx=5)
-            
-            # Field selection frame
-            self.field_frame = ttk.LabelFrame(self.control_panel, text="Field Selection", padding="5")
-            self.field_frame.pack(fill="x", padx=5, pady=5)
-            
-            # Initialize field_vars to store checkbox variables
-            self.field_vars = {
-                'Close': tk.BooleanVar(),
-                'Open': tk.BooleanVar(),
-                'High': tk.BooleanVar(),
-                'Low': tk.BooleanVar(),
-                'Volume': tk.BooleanVar()
-            }
-
-            # Create checkboxes for field selection
-            for i, (field, var) in enumerate(self.field_vars.items()):
-                checkbox = ttk.Checkbutton(self.field_frame, text=field, variable=var)
-                checkbox.grid(row=i // 2, column=i % 2, sticky="w", padx=5, pady=5)
-            
-        except Exception as e:
-            print(f"Error creating table controls: {str(e)}")
-            traceback.print_exc()
-
-    def create_ticker_controls(self):
-        """Create ticker selection controls"""
-        try:
-            print("Creating ticker selection frame...")
-            # Ticker selection
-            ticker_frame = ttk.LabelFrame(self.control_panel, text="Stock Selection", padding="5")
-            ticker_frame.pack(fill="x", padx=5, pady=5)
-            
-            ttk.Label(ticker_frame, text="Ticker:").pack(side="left", padx=5)
-            self.ticker_var = tk.StringVar()
-            self.ticker_combo = ttk.Combobox(ticker_frame, textvariable=self.ticker_var)
-            self.ticker_combo.pack(fill="x", padx=5, pady=2)
-            
-            # Initialize ticker listbox
-            self.ticker_listbox = tk.Listbox(ticker_frame, selectmode=tk.MULTIPLE)
-            self.ticker_listbox.pack(fill="x", padx=5, pady=2)
-            
-            # Add "Clear All" and "Select All" buttons
-            clear_all_button = ttk.Button(ticker_frame, text="Clear All", command=self.clear_all_tickers)
-            clear_all_button.pack(side="left", padx=5, pady=5)
-
-            select_all_button = ttk.Button(ticker_frame, text="Select All", command=self.select_all_tickers)
-            select_all_button.pack(side="left", padx=5, pady=5)
-            
-        except Exception as e:
-            print(f"Error creating ticker controls: {str(e)}")
-            traceback.print_exc()
-
-    def create_duration_controls(self):
-        """Create duration selection controls"""
-        try:
-            duration_frame = ttk.LabelFrame(self.control_panel, text="Duration")
-            duration_frame.pack(fill="x", padx=5, pady=5)
-            
-            durations = [("1 Day", "1d"), ("1 Month", "1mo"), 
-                        ("3 Months", "3mo"), ("6 Months", "6mo"),
-                        ("1 Year", "1y")]
-            
-            self.duration_var = tk.StringVar(value="1mo")
-            for i, (text, value) in enumerate(durations):
-                ttk.Radiobutton(duration_frame, text=text, value=value,
-                              variable=self.duration_var).pack(side="left", padx=5)
-                duration_frame.grid_columnconfigure(i, weight=1)
-            
-        except Exception as e:
-            print(f"Error creating duration controls: {str(e)}")
-            traceback.print_exc()
-
-    def add_ai_controls(self):
-        """Add AI control panel with pack layout"""
-        try:
-            print("\nAdding AI controls...")
-            
-            # Create main AI frame
-            ai_frame = ttk.LabelFrame(self.control_panel, text="AI Analysis")
-            ai_frame.pack(fill="x", padx=5, pady=5)
-            
-            # Training parameters frame
-            print("Adding training parameters...")
-            param_frame = ttk.LabelFrame(ai_frame, text="Training Parameters")
-            param_frame.pack(fill="x", padx=5, pady=5)
-            
-            # Parameters container
-            params_container = ttk.Frame(param_frame)
-            params_container.pack(fill="x", padx=5, pady=2)
-            
-            # Epochs
-            epochs_frame = ttk.Frame(params_container)
-            epochs_frame.pack(fill="x", padx=5, pady=2)
-            ttk.Label(epochs_frame, text="Epochs:").pack(side="left")
-            self.epochs_var = tk.StringVar(value="50")
-            ttk.Entry(epochs_frame, textvariable=self.epochs_var, width=10).pack(side="left", padx=5)
-            
-            # Batch Size
-            batch_frame = ttk.Frame(params_container)
-            batch_frame.pack(fill="x", padx=5, pady=2)
-            ttk.Label(batch_frame, text="Batch Size:").pack(side="left")
-            self.batch_size_var = tk.StringVar(value="32")
-            ttk.Entry(batch_frame, textvariable=self.batch_size_var, width=10).pack(side="left", padx=5)
-            
-            # Learning Rate
-            lr_frame = ttk.Frame(params_container)
-            lr_frame.pack(fill="x", padx=5, pady=2)
-            ttk.Label(lr_frame, text="Learning Rate:").pack(side="left")
-            self.learning_rate_var = tk.StringVar(value="0.001")
-            ttk.Entry(lr_frame, textvariable=self.learning_rate_var, width=10).pack(side="left", padx=5)
-            
-            # Control buttons frame
-            button_frame = ttk.Frame(ai_frame)
-            button_frame.pack(fill="x", padx=5, pady=5)
-            
-            # Train button
-            ttk.Button(button_frame, text="Train Model", 
-                      command=self.train_model).pack(side="left", expand=True, padx=5)
-            
-            # Predict button
-            ttk.Button(button_frame, text="Make Prediction",
-                      command=self.make_prediction).pack(side="left", expand=True, padx=5)
-            
-            # Add AI status
-            self.ai_status = ttk.Label(ai_frame, text="AI Status: Not trained")
-            self.ai_status.pack(fill="x", padx=5, pady=5)
-            
-            print("AI controls setup complete")
-            
-        except Exception as e:
-            print(f"Error adding AI controls: {str(e)}")
-            traceback.print_exc()
-
-    def get_historical_data(self):
-        """Retrieve historical data from the selected table"""
-        try:
-            print("Retrieving historical data...")
-            
-            if not hasattr(self, 'db_conn') or not self.db_conn:
-                raise ValueError("No database connection available")
-            
-            table = self.table_var.get()
-            if not table or table == 'No tables available':
-                raise ValueError("No valid table selected")
-            
-            # Construct query to fetch data
-            query = f"SELECT * FROM {table}"
-            print(f"Executing query: {query}")
-            df = self.db_conn.execute(query).fetchdf()
-            
-            if df.empty:
-                raise ValueError("No data retrieved from the table")
-            
-            print(f"Retrieved {len(df)} rows of data")
-            print("Retrieved columns:", df.columns)
-            return df
-            
-        except Exception as e:
-            print(f"Error retrieving historical data: {str(e)}")
-            traceback.print_exc()
-            return None
-
-    def train_model(self):
-        """Train the AI model using the selected database, table, sector, fields, and stock"""
-        try:
-            print("\n=== Starting Model Training ===")
-            
-            # Get current selections
-            current_db = self.db_combo.get()
-            current_table = self.table_var.get()
-            current_sector = self.sector_var.get()
-            current_ticker = self.ticker_combo.get()
-            selected_fields = self.get_selected_fields()  # Method to get selected fields from checkboxes
-            
-            print(f"Current Database: {current_db}")
-            print(f"Selected Table: {current_table}")
-            print(f"Selected Sector: {current_sector}")
-            print(f"Selected Ticker: {current_ticker}")
-            print(f"Selected Fields: {selected_fields}")
-            
-            # Validate selections
-            if not current_db or current_db == 'No databases available':
-                print("No valid database selected")
-                self.loading_label.config(text="Training error: No valid database selected")
+            if not dates or not prices:
+                print("No data to plot")
                 return
             
-            # Connect to the DuckDB database
-            conn = create_connection(current_db)
-            if conn is None:
-                print("Failed to connect to the database")
-                self.loading_label.config(text="Training error: Failed to connect to database")
-                return
+            # Make sure dates is a list of datetime objects, not integers
+            if isinstance(dates[-1], (int, float)):
+                print(f"Converting date from numeric: {dates[-1]}")
+                # If it's an integer timestamp, convert to datetime
+                try:
+                    # Attempt to convert from milliseconds timestamp
+                    last_date = pd.to_datetime(dates[-1], unit='ms')
+                except:
+                    # If that fails, try using the last date with an incremental day
+                    if len(dates) > 1 and isinstance(dates[-2], pd.Timestamp):
+                        last_date = dates[-2] + pd.Timedelta(days=1)
+                    else:
+                        # Last resort: use current date
+                        last_date = pd.Timestamp.now()
+                dates[-1] = last_date
             
-            # First check if the ticker exists in the table
-            check_query = f"SELECT COUNT(*) FROM {current_table} WHERE ticker = ?"
-            count = conn.execute(check_query, (current_ticker,)).fetchone()[0]
+            # Now we can safely add a timedelta
+            next_date = dates[-1] + pd.Timedelta(days=1)
             
-            if count == 0:
-                print(f"Error: Ticker '{current_ticker}' not found in table '{current_table}'")
-                self.loading_label.config(text=f"Training error: Ticker '{current_ticker}' not found in table '{current_table}'")
-                return
+            # The rest of the plotting code continues as before
+            dates_with_prediction = list(dates) + [next_date]
+            prices_with_prediction = list(prices) + [predicted_price]
             
-            # Construct query with selected fields
-            fields_str = ', '.join(selected_fields) if selected_fields else '*'
-            query = f"SELECT {fields_str} FROM {current_table} WHERE ticker = ?"
-            df = conn.execute(query, (current_ticker,)).fetchdf()
-            print(f"Retrieved {len(df)} rows of data")
-            
-            # Check if data is retrieved
-            if df is None or df.empty:
-                print("No data retrieved from the table. Please check your query and selections.")
-                self.loading_label.config(text="Training error: No data retrieved")
-                return
-            
-            # Check for required columns
-            required_columns = ['close', 'open', 'high', 'low', 'volume']
-            missing_columns = [col for col in required_columns if col.lower() not in df.columns.str.lower()]
-            if missing_columns:
-                print(f"Error: Missing required columns: {missing_columns}")
-                self.loading_label.config(text=f"Training error: Missing required columns: {missing_columns}")
-                return
-            
-            # Proceed with technical indicator calculations and model training
-            df = self.calculate_technical_indicators(df)
-            if df is None:
-                print("Skipping model training due to missing technical indicators.")
-                self.loading_label.config(text="Training error: Failed to calculate technical indicators")
-                return
-            
-            # Proceed with model training using the prepared data
-            # Initialize AI agent if not already done
-            if self.ai_agent.model is None:
-                input_shape = (self.sequence_length, len(selected_fields))
-                self.ai_agent.build_model(input_shape)
-            
-            # Prepare data using the data adapter
-            data = self.data_adapter.prepare_training_data(df)
-            if data is None:
-                print("Data preparation failed. Please check your data and try again.")
-                self.loading_label.config(text="Training error: Data preparation failed")
-                return
-            
-            (X_train, y_train), (X_val, y_val) = data
-            
-            # Train the model
-            history = self.ai_agent.train(X_train, y_train, X_val, y_val, 
-                                          epochs=int(self.epochs_var.get()), 
-                                          batch_size=int(self.batch_size_var.get()))
-            
-            if history is not None:
-                print("Model training completed successfully")
-                self.ai_status.config(text="AI Status: Trained")
-                self.loading_label.config(text="Training completed successfully")
-            else:
-                print("Model training failed")
-                self.ai_status.config(text="AI Status: Training failed")
-                self.loading_label.config(text="Training failed")
-            
-        except Exception as e:
-            print("\n=== Error in Training ===")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error message: {str(e)}")
-            print("\nTraceback:")
-            traceback.print_exc()
-            self.loading_label.config(text=f"Training error: {str(e)}")
-
-    def get_selected_fields(self):
-        """Retrieve the list of selected fields from checkboxes."""
-        return [field for field, var in self.field_vars.items() if var.get()]
-
-    def plot_training_history(self, history):
-        """Plot training history"""
-        try:
-            # Clear previous plots
-            self.fig.clear()
-            
-            # Create subplot for loss
-            ax = self.fig.add_subplot(111)
-            ax.plot(history.history['loss'], label='Training Loss')
-            ax.plot(history.history['val_loss'], label='Validation Loss')
-            ax.set_title('Model Training History')
-            ax.set_xlabel('Epoch')
-            ax.set_ylabel('Loss')
-            ax.legend()
-            ax.grid(True)
-            
-            # Update canvas
-            self.fig.tight_layout()
-            self.canvas.draw()
-            
-        except Exception as e:
-            print(f"Error plotting training history: {str(e)}")
-            traceback.print_exc()
-
-    def make_prediction(self):
-        """Make prediction using the trained model"""
-        try:
-            print("\n=== Starting Prediction ===")
-            
-            if self.ai_agent.model is None:
-                raise ValueError("Model not trained yet")
-            
-            # Get current selections
-            current_db = self.db_combo.get()
-            current_table = self.table_var.get() if hasattr(self, 'table_var') else ""
-            current_ticker = self.ticker_var.get()
-            
-            print(f"Making prediction for {current_ticker}")
-            
-            # Connect to database
-            conn = create_connection(current_db)
-            if not conn:
-                raise ValueError("Failed to connect to database")
-            
-            try:
-                # Construct query
-                if current_table:
-                    query = f"""
-                        SELECT * FROM {current_table} 
-                        WHERE ticker = ? 
-                        ORDER BY date DESC 
-                        LIMIT {self.data_adapter.sequence_length + 10}
-                    """
-                else:
-                    query = f"""
-                        SELECT * FROM {current_ticker} 
-                        ORDER BY date DESC 
-                        LIMIT {self.data_adapter.sequence_length + 10}
-                    """
-                
-                print(f"Executing query: {query}")
-                df = conn.execute(query, (current_ticker,) if current_table else ()).fetchdf()
-                print(f"Retrieved {len(df)} rows of data")
-                
-                if df.empty:
-                    raise ValueError("No data retrieved for prediction")
-                
-                # Prepare data for prediction
-                prediction_data = self.data_adapter.prepare_prediction_data(df)
-                if prediction_data is None:
-                    raise ValueError("Failed to prepare prediction data")
-                
-                # Make prediction
-                prediction = self.ai_agent.model.predict(prediction_data)
-                
-                # Inverse transform the prediction
-                last_close = df['close'].iloc[-1]
-                predicted_change = prediction[0][0]  # Assuming single prediction
-                predicted_price = last_close * (1 + predicted_change)
-                
-                print(f"\nPrediction Results:")
-                print(f"Current Price: ${last_close:.2f}")
-                print(f"Predicted Price: ${predicted_price:.2f}")
-                print(f"Predicted Change: {predicted_change*100:.2f}%")
-                
-                # Update plot with prediction
-                self.update_plot_with_prediction(df, predicted_price)
-                
-                return predicted_price
-                
-            except Exception as e:
-                print(f"Error in prediction: {str(e)}")
-                traceback.print_exc()
-                return None
-                
-            finally:
-                conn.close()
-                
-        except Exception as e:
-            print("\n=== Error in Prediction ===")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error message: {str(e)}")
-            print("\nTraceback:")
-            traceback.print_exc()
-            return None
-
-    def update_plot_with_prediction(self, df, predicted_price):
-        """Update plot with prediction"""
-        try:
+            # Clear the plot
             self.ax.clear()
             
-            # Plot historical data
-            dates = df.index[-30:]  # Last 30 days
-            prices = df['close'][-30:]
-            self.ax.plot(dates, prices, label='Historical')
+            # Plot the historical data
+            self.ax.plot(dates, prices, label='Historical Prices')
             
-            # Add prediction point
-            next_date = dates[-1] + pd.Timedelta(days=1)
-            self.ax.scatter(next_date, predicted_price, color='red', label='Prediction')
+            # Highlight the prediction
+            self.ax.plot([dates[-1], next_date], [prices[-1], predicted_price], 'r-', linewidth=2, label='Prediction')
+            self.ax.scatter([next_date], [predicted_price], color='red', s=50)
             
-            # Customize plot
-            self.ax.set_title(f'Stock Price Prediction for {self.ticker_var.get()}')
+            # Add labels and legend
             self.ax.set_xlabel('Date')
             self.ax.set_ylabel('Price')
+            self.ax.set_title(f'Price Prediction')
             self.ax.legend()
-            self.ax.grid(True)
             
-            # Rotate x-axis labels
+            # Format x-axis to show dates nicely
+            self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            self.ax.xaxis.set_major_locator(mdates.AutoDateLocator())
             plt.xticks(rotation=45)
             
-            # Adjust layout and redraw
-            self.fig.tight_layout()
+            # Redraw the plot
             self.canvas.draw()
-            
         except Exception as e:
-            print(f"Error updating plot: {str(e)}")
+            print(f"Error updating plot: {e}")
             traceback.print_exc()
 
     def on_database_change(self, event=None):
@@ -1503,14 +874,15 @@ class StockAnalyzerGUI:
             column_names = [col[0] for col in columns]
             
             # Update sector selection if sector column exists
-            if 'sector' in column_names:
+            if 'sector' in [col.lower() for col in column_names]:
                 sectors = self.db_conn.execute(
                     f"SELECT DISTINCT sector FROM {table} ORDER BY sector"
                 ).fetchall()
-                sectors = [s[0] for s in sectors]
+                sectors = [s[0] for s in sectors if s[0] is not None]  # Filter out None values
                 self.sector_combo['values'] = sectors
                 if sectors:
-                    self.sector_combo.set(sectors[0])
+                    # Use textvariable instead of direct set
+                    self.sector_var.set(sectors[0])
                 else:
                     self.clear_sector_selection()
             else:
@@ -1604,14 +976,16 @@ class StockAnalyzerGUI:
                 sectors = self.db_conn.execute(
                     f"SELECT DISTINCT sector FROM {table} ORDER BY sector"
                 ).fetchall()
-                sectors = [s[0] for s in sectors]
+                sectors = [s[0] for s in sectors if s[0] is not None]  # Filter out None values
                 self.sector_combo['values'] = sectors
                 
                 # Reapply the previous selection if it still exists
                 if current_selection in sectors:
-                    self.sector_combo.set(current_selection)
+                    self.sector_var.set(current_selection)
                 elif sectors:
-                    self.sector_combo.set(sectors[0])
+                    self.sector_var.set(sectors[0])
+                    print(f"Set initial sector to: {sectors[0]}")
+                    self.sector_combo.bind('<<ComboboxSelected>>', self.on_sector_change)
                 else:
                     self.clear_sector_selection()
             else:
@@ -1658,10 +1032,473 @@ class StockAnalyzerGUI:
         """Select all items in the ticker listbox"""
         self.ticker_listbox.selection_set(0, tk.END)
 
-@process_data_safely
-def initialize_gui(databases):
-    app = StockAnalyzerGUI(databases)
-    return app
+def initialize_control_panel(root, databases):
+    """Initialize the control panel section of the GUI."""
+    try:
+        print("\nInitializing control panel...")
+        
+        # Create a frame for the control panel - now it will be on the left
+        control_frame = tk.Frame(root)
+        control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+        
+        print("Creating control panel...")
+        
+        # Database selection section
+        print("Creating database controls...")
+        db_frame = tk.LabelFrame(control_frame, text="Database Selection")
+        db_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        print("Creating database selection frame...")
+        db_var = tk.StringVar(value=databases[0] if databases else "")
+        db_dropdown = ttk.Combobox(db_frame, textvariable=db_var, values=databases)
+        db_dropdown.pack(padx=5, pady=5, fill=tk.X)
+        
+        # Table selection section
+        print("Creating table controls...")
+        table_frame = tk.LabelFrame(control_frame, text="Table Selection")
+        table_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        print("Creating table selection frame...")
+        table_var = tk.StringVar()
+        table_dropdown = ttk.Combobox(table_frame, textvariable=table_var)
+        table_dropdown.pack(padx=5, pady=5, fill=tk.X)
+        
+        # Ticker selection section
+        print("Creating ticker controls...")
+        ticker_frame = tk.LabelFrame(control_frame, text="Ticker Selection")
+        ticker_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        print("Creating ticker selection frame...")
+        ticker_var = tk.StringVar()
+        ticker_dropdown = ttk.Combobox(ticker_frame, textvariable=ticker_var)
+        ticker_dropdown.pack(padx=5, pady=5, fill=tk.X)
+        
+        # Duration selection
+        print("Creating duration controls...")
+        duration_frame = tk.LabelFrame(control_frame, text="Duration")
+        duration_frame.pack(fill=tk.X, padx=5, pady=5)
+        duration_var = tk.StringVar(value="1 Year")
+        duration_dropdown = ttk.Combobox(duration_frame, textvariable=duration_var, 
+                                        values=["1 Week", "1 Month", "3 Months", "6 Months", "1 Year", "All"])
+        duration_dropdown.pack(padx=5, pady=5, fill=tk.X)
+        
+        # AI controls section
+        print("Adding AI controls...")
+        ai_frame = tk.LabelFrame(control_frame, text="AI Controls")
+        ai_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        print("Adding training parameters...")
+        # Add AI model parameters
+        epochs_var = tk.IntVar(value=50)
+        epochs_label = tk.Label(ai_frame, text="Epochs:")
+        epochs_label.pack(anchor=tk.W, padx=5, pady=2)
+        epochs_entry = tk.Entry(ai_frame, textvariable=epochs_var, width=10)
+        epochs_entry.pack(anchor=tk.W, padx=5, pady=2)
+        
+        batch_size_var = tk.IntVar(value=32)
+        batch_size_label = tk.Label(ai_frame, text="Batch Size:")
+        batch_size_label.pack(anchor=tk.W, padx=5, pady=2)
+        batch_size_entry = tk.Entry(ai_frame, textvariable=batch_size_var, width=10)
+        batch_size_entry.pack(anchor=tk.W, padx=5, pady=2)
+        
+        # Status label
+        status_var = tk.StringVar(value="Ready")
+        status_label = tk.Label(control_frame, textvariable=status_var, anchor=tk.W)
+        status_label.pack(fill=tk.X, padx=5, pady=10)
+        
+        # Train and predict buttons
+        train_button = tk.Button(ai_frame, text="Train Model", 
+                                command=lambda: train_model(db_var.get(), table_var.get(), ticker_var.get(), 
+                                                         epochs_var.get(), batch_size_var.get(), status_var))
+        train_button.pack(padx=5, pady=5, fill=tk.X)
+        
+        predict_button = tk.Button(ai_frame, text="Make Prediction", 
+                                 command=lambda: make_prediction(db_var.get(), table_var.get(), ticker_var.get(), status_var))
+        predict_button.pack(padx=5, pady=5, fill=tk.X)
+        
+        print("AI controls setup complete")
+        
+        # Create a refresh button for database list
+        refresh_button = tk.Button(db_frame, text="Refresh", 
+                                 command=lambda: refresh_databases(db_dropdown, db_var))
+        refresh_button.pack(padx=5, pady=5, fill=tk.X)
+        
+        # Configure dropdown events
+        db_dropdown.bind("<<ComboboxSelected>>", lambda event: update_tables(db_var.get(), table_dropdown, table_var))
+        table_dropdown.bind("<<ComboboxSelected>>", lambda event: update_tickers(db_var.get(), table_var.get(), ticker_dropdown, ticker_var))
+        
+        # Store references to UI elements in globals to access later
+        global ui_elements
+        ui_elements = {
+            'db_var': db_var,
+            'db_dropdown': db_dropdown,
+            'table_var': table_var,
+            'table_dropdown': table_dropdown,
+            'ticker_var': ticker_var,
+            'ticker_dropdown': ticker_dropdown,
+            'duration_var': duration_var,
+            'duration_dropdown': duration_dropdown,
+            'epochs_var': epochs_var,
+            'batch_size_var': batch_size_var,
+            'status_var': status_var,
+            'train_button': train_button,
+            'predict_button': predict_button,
+            'root': root
+        }
+        
+        # Initial population of tables if a database is selected
+        if db_var.get():
+            update_tables(db_var.get(), table_dropdown, table_var)
+        
+        print("Control panel creation complete")
+        return control_frame
+        
+    except Exception as e:
+        print(f"Error initializing control panel: {e}")
+        traceback.print_exc()
+        return None
+
+# Functions for UI events
+def refresh_databases(db_dropdown, db_var):
+    """Refresh the list of available databases"""
+    try:
+        print("Refreshing database list...")
+        db_files = glob.glob('*.db')
+        print(f"Found databases: {db_files}")
+        db_dropdown['values'] = db_files
+        if db_files and not db_var.get() in db_files:
+            db_var.set(db_files[0])
+        print("Database list refreshed")
+    except Exception as e:
+        print(f"Error refreshing database list: {e}")
+        traceback.print_exc()
+
+def update_tables(db_name, table_dropdown, table_var):
+    """Update the list of tables in the selected database"""
+    try:
+        if not db_name:
+            return
+            
+        print(f"Connecting to database: {db_name}")
+        conn = create_connection(db_name)
+        if conn:
+            # Get list of tables
+            query = "SELECT name FROM sqlite_master WHERE type='table'"
+            tables = conn.execute(query).fetchall()
+            table_list = [t[0] for t in tables]
+            print(f"Retrieved tables: {table_list}")
+            
+            # Update the dropdown
+            table_dropdown['values'] = table_list
+            if table_list and (not table_var.get() or table_var.get() not in table_list):
+                table_var.set(table_list[0])
+                
+            print("Table list refreshed")
+            conn.close()
+            print(f"Found tables: {table_list}")
+            return table_list
+    except Exception as e:
+        print(f"Error updating tables: {e}")
+        traceback.print_exc()
+    return []
+
+def update_tickers(db_name, table_name, ticker_dropdown, ticker_var):
+    """Update the list of tickers in the selected table"""
+    try:
+        if not db_name or not table_name:
+            return
+            
+        print(f"Getting columns for table: {table_name}")
+        conn = create_connection(db_name)
+        if conn:
+            # Get column info
+            query = f"PRAGMA table_info({table_name})"
+            columns = conn.execute(query).fetchall()
+            column_names = [col[1] for col in columns]
+            print(f"Available columns: {column_names}")
+            
+            ticker_column = None
+            sector_column = None
+            
+            # Find ticker and sector columns
+            for col in column_names:
+                if col.lower() == 'ticker':
+                    ticker_column = col
+                    print(f"Found ticker column, retrieving unique tickers...")
+                if col.lower() == 'sector':
+                    sector_column = col
+                    print(f"Found sector column, retrieving unique sectors...")
+            
+            # Get unique tickers
+            if ticker_column:
+                query = f"SELECT DISTINCT {ticker_column} FROM {table_name}"
+                tickers = conn.execute(query).fetchall()
+                ticker_list = [t[0] for t in tickers]
+                print(f"Found {len(ticker_list)} tickers")
+                
+                # Update the dropdown
+                ticker_dropdown['values'] = ticker_list
+                if ticker_list and (not ticker_var.get() or ticker_var.get() not in ticker_list):
+                    ticker_var.set(ticker_list[0])
+            
+            conn.close()
+    except Exception as e:
+        print(f"Error updating tickers: {e}")
+        traceback.print_exc()
+
+def train_model(db_name, table_name, ticker, epochs, batch_size, status_var):
+    """Train the AI model with selected parameters"""
+    try:
+        print("\n=== Starting Model Training ===")
+        print(f"Current Database: {db_name}")
+        print(f"Selected Table: {table_name}")
+        print(f"Selected Ticker: {ticker}")
+        
+        status_var.set("Training model...")
+        
+        # Get the data
+        conn = create_connection(db_name)
+        if conn:
+            # Check if ticker exists in table
+            query = f"SELECT COUNT(*) FROM {table_name} WHERE ticker = ?"
+            count = conn.execute(query, (ticker,)).fetchone()[0]
+            if count == 0:
+                error_msg = f"Error: Ticker '{ticker}' not found in table '{table_name}'"
+                print(error_msg)
+                status_var.set(error_msg)
+                return
+                
+            # Get column info
+            query = f"PRAGMA table_info({table_name})"
+            columns = conn.execute(query).fetchall()
+            column_names = [col[1] for col in columns]
+            print(f"Available columns in {table_name}: {column_names}")
+            
+            # Select required fields
+            fields = []
+            for field in ['ticker', 'date', 'open', 'high', 'low', 'close', 'volume']:
+                if field in column_names:
+                    fields.append(field)
+            
+            print(f"Selected Fields: {fields}")
+            
+            # Execute query to get data
+            query = f"SELECT {', '.join(fields)} FROM {table_name} WHERE ticker = ?"
+            df = pd.read_sql_query(query, conn, params=(ticker,))
+            print(f"Retrieved {len(df)} rows of data")
+            
+            # Create and train the model
+            agent = AIAgent()
+            
+            # Prepare data
+            data_adapter = DataAdapter()
+            X_train, X_val, y_train, y_val = data_adapter.prepare_training_data(df)
+            
+            if X_train is not None:
+                # Build model
+                input_shape = (X_train.shape[1], X_train.shape[2])  # (sequence_length, features)
+                agent.build_model(input_shape)
+                
+                # Train model
+                agent.train(X_train, y_train, X_val, y_val, epochs=epochs, batch_size=batch_size)
+                
+                # Save the trained model and scaler in global variables
+                global trained_model, trained_scaler
+                trained_model = agent.model
+                trained_scaler = data_adapter.scaler
+                
+                status_var.set("Model training completed successfully")
+                print("Model training completed successfully")
+            else:
+                status_var.set("Failed to prepare training data")
+            
+            conn.close()
+    except Exception as e:
+        error_msg = f"Error training model: {str(e)}"
+        print(error_msg)
+        traceback.print_exc()
+        status_var.set(error_msg)
+
+def make_prediction(db_name, table_name, ticker, status_var):
+    """Make predictions using the trained model"""
+    global trained_model, trained_scaler, ui_elements, ax, canvas
+    
+    try:
+        print("\n=== Starting Prediction ===")
+        print(f"Making prediction for {ticker}")
+        
+        if trained_model is None:
+            status_var.set("Error: Model not trained yet")
+            return
+            
+        status_var.set("Making prediction...")
+        
+        # Get the most recent data for prediction
+        conn = create_connection(db_name)
+        if conn:
+            # Get recent data - adjust limit based on your sequence length
+            query = f"""
+                        SELECT * FROM {table_name} 
+                        WHERE ticker = ? 
+                        ORDER BY date DESC 
+                        LIMIT 20
+                    """
+            df = pd.read_sql_query(query, conn, params=(ticker,))
+            print(f"Retrieved {len(df)} rows of data")
+            
+            # Sort by date ascending (oldest to newest)
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.sort_values('date')
+            
+            # Prepare prediction data
+            data_adapter = DataAdapter()
+            data_adapter.scaler = trained_scaler  # Use the scaler from training
+            
+            X_pred = data_adapter.prepare_prediction_data(df)
+            
+            if X_pred is not None:
+                # Make prediction
+                predictions = trained_model.predict(X_pred)
+                
+                # Inverse transform to get actual values
+                last_prediction = predictions[-1][0]
+                
+                # Get actual price for comparison
+                current_price = df['close'].iloc[-1]
+                
+                # Calculate percentage change
+                pct_change = (float(last_prediction) - current_price) / current_price * 100
+                
+                print("\nPrediction Results:")
+                print(f"Current Price: ${current_price:.2f}")
+                print(f"Predicted Price: ${float(last_prediction):.2f}")
+                print(f"Predicted Change: {pct_change:.2f}%")
+                
+                status_var.set(f"Predicted: ${float(last_prediction):.2f} ({pct_change:+.2f}%)")
+                
+                # Update plot with prediction
+                if 'date' in df.columns:
+                    dates = df['date'].values
+                    prices = df['close'].values
+                    update_plot_with_prediction(dates, prices, float(last_prediction))
+            else:
+                status_var.set("Failed to prepare prediction data")
+            
+            conn.close()
+    except Exception as e:
+        error_msg = f"Error making prediction: {str(e)}"
+        print(error_msg)
+        traceback.print_exc()
+        status_var.set(error_msg)
+
+def update_plot_with_prediction(dates, prices, predicted_price):
+    """Update the plot with predicted price."""
+    global ax, canvas
+    
+    try:
+        if not dates.any() or not prices.any():
+            print("No data to plot")
+            return
+            
+        # Make sure dates is a list of datetime objects, not integers
+        if isinstance(dates[0], (int, float, np.integer)):
+            print(f"Converting date from numeric: {dates[0]}")
+            # Convert timestamps to datetime
+            dates = pd.to_datetime(dates)
+            
+        # Now we can safely add a timedelta
+        next_date = dates[-1] + pd.Timedelta(days=1)
+        
+        # Clear the plot
+        ax.clear()
+        
+        # Plot the historical data
+        ax.plot(dates, prices, label='Historical Prices')
+        
+        # Highlight the prediction
+        ax.plot([dates[-1], next_date], [prices[-1], predicted_price], 'r-', linewidth=2, label='Prediction')
+        ax.scatter([next_date], [predicted_price], color='red', s=50)
+        
+        # Add labels and legend
+        ax.set_xlabel('Date')
+        ax.set_ylabel('Price')
+        ax.set_title(f'Price Prediction')
+        ax.legend()
+        
+        # Format x-axis to show dates nicely
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        plt.xticks(rotation=45)
+        
+        # Redraw the plot
+        canvas.draw()
+    except Exception as e:
+        print(f"Error updating plot: {e}")
+        traceback.print_exc()
+
+def initialize_gui(database_files=None):
+    """Initialize the GUI application."""
+    try:
+        print("\nStarting initialize_gui...")
+        # Use provided database files or global variable
+        databases = database_files or []
+        
+        # If we still don't have databases, look for them
+        if not databases:
+            print("No databases provided, searching for database files...")
+            db_files = glob.glob('*.db')
+            print(f"Found databases: {db_files}")
+            databases = db_files
+        
+        print("Initializing GUI...")
+        
+        # Create the main application window
+        root = tk.Tk()
+        root.title("Stock Market Analyzer")
+        root.geometry("1200x800")
+        print("Setting window dimensions...")
+        
+        # Create a main container frame to hold controls and plot
+        main_frame = tk.Frame(root)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Initialize control panel on the left side
+        control_frame = initialize_control_panel(main_frame, databases)
+        
+        # Create a frame for the plot area on the right side
+        plot_frame = tk.Frame(main_frame)
+        plot_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Initialize GUI components as global variables
+        global ax, canvas, fig, trained_model, trained_scaler
+        trained_model = None
+        trained_scaler = None
+        
+        # Create plot area
+        print("\nInitializing plot area...")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        print("Creating canvas...")
+        canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+        print("Adding toolbar...")
+        toolbar = NavigationToolbar2Tk(canvas, plot_frame)
+        toolbar.update()
+        print("Positioning canvas...")
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        print("Plot area initialization complete")
+        
+        print("Successfully completed initialize_gui")
+        
+        # Run the application
+        print("Running the GUI application...")
+        root.mainloop()
+        
+        return root, fig, ax, canvas
+    except Exception as e:
+        print(f"Error in initialize_gui: {e}")
+        print("Traceback:")
+        traceback.print_exc()
+        return None
 
 def process_database(db_name):
     """Process a single database file"""
