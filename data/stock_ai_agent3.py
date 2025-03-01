@@ -4,7 +4,7 @@ os.environ['TK_SILENCE_DEPRECATION'] = '1'
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization, Bidirectional, GRU, Conv2D, MaxPooling2D, Reshape
+from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization, Bidirectional, GRU, Conv2D, MaxPooling2D, Reshape, TimeDistributed, Flatten, Conv1D, MaxPooling1D
 from tensorflow.keras.regularizers import L2
 import duckdb
 import pandas as pd
@@ -1205,13 +1205,13 @@ def initialize_control_panel(root, databases):
                     # Set selection to first table if available
                     if tables and (table_var.get() not in tables):
                         table_var.set(tables[0])
-                        
+                    
                     print("Table list refreshed")
                     print(f"Found tables: {tables}")
                     
                     # Update tickers for the selected table
                     update_tickers(db_name, table_var.get(), ticker_dropdown, ticker_var)
-                    
+            
             except Exception as e:
                 print(f"Error updating tables: {e}")
                 traceback.print_exc()
@@ -1248,7 +1248,7 @@ def initialize_control_panel(root, databases):
                         print("Found sector column, retrieving unique sectors...")
                         sectors = conn.execute(f"SELECT DISTINCT sector FROM {table_name}").fetchall()
                         sectors = [row[0] for row in sectors]
-                    
+                
                 except ImportError:
                     print("DuckDB not installed, trying SQLite...")
                     
@@ -1273,16 +1273,16 @@ def initialize_control_panel(root, databases):
                         print("Found sector column, retrieving unique sectors...")
                         cursor.execute(f"SELECT DISTINCT sector FROM {table_name}")
                         sectors = [row[0] for row in cursor.fetchall()]
-                
+            
                 except Exception as e:
                     print(f"Error getting tickers: {e}")
-                
+            
                 # Close connection
                 try:
                     conn.close()
                 except:
                     pass
-                
+            
                 # Update ticker dropdown
                 if ticker_dropdown and ticker_var:
                     print(f"Found {len(tickers)} tickers")
@@ -1293,6 +1293,108 @@ def initialize_control_panel(root, databases):
             except Exception as e:
                 print(f"Error updating tickers: {e}")
                 traceback.print_exc()
+
+        def build_model(input_shape, model_type="LSTM", learning_rate=0.001):
+            """Build a deep learning model based on the specified type"""
+            try:
+                print(f"\nBuilding {model_type} model...")
+                print(f"Input shape: {input_shape}")
+                
+                # Create the appropriate model based on type
+                if model_type == "LSTM":
+                    model = Sequential()
+                    
+                    # First LSTM layer
+                    model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
+                    model.add(BatchNormalization())
+                    model.add(Dropout(0.2))
+                    
+                    # Second LSTM layer
+                    model.add(LSTM(50, return_sequences=True))
+                    model.add(BatchNormalization())
+                    model.add(Dropout(0.2))
+                    
+                    # Third LSTM layer
+                    model.add(LSTM(50, return_sequences=False))
+                    model.add(BatchNormalization())
+                    model.add(Dropout(0.2))
+                    
+                    # Dense output layers
+                    model.add(Dense(25, activation='relu'))
+                    model.add(Dense(1))
+                    
+                elif model_type == "GRU":
+                    model = Sequential()
+                    
+                    # First GRU layer
+                    model.add(GRU(50, return_sequences=True, input_shape=input_shape))
+                    model.add(BatchNormalization())
+                    model.add(Dropout(0.2))
+                    
+                    # Second GRU layer
+                    model.add(GRU(50, return_sequences=False))
+                    model.add(BatchNormalization())
+                    model.add(Dropout(0.2))
+                    
+                    # Dense output layers
+                    model.add(Dense(25, activation='relu'))
+                    model.add(Dense(1))
+                    
+                elif model_type == "CNN-LSTM":
+                    model = Sequential()
+                    
+                    # CNN layer for feature extraction
+                    model.add(TimeDistributed(Conv1D(filters=64, kernel_size=3, activation='relu'), 
+                                            input_shape=input_shape))
+                    model.add(TimeDistributed(MaxPooling1D(pool_size=2)))
+                    model.add(TimeDistributed(Flatten()))
+                    
+                    # LSTM layers
+                    model.add(LSTM(50, return_sequences=True))
+                    model.add(Dropout(0.2))
+                    model.add(LSTM(50))
+                    model.add(Dropout(0.2))
+                    
+                    # Dense output layers
+                    model.add(Dense(25, activation='relu'))
+                    model.add(Dense(1))
+                    
+                elif model_type == "Bidirectional":
+                    model = Sequential()
+                    
+                    # Bidirectional LSTM layers
+                    model.add(Bidirectional(LSTM(50, return_sequences=True), input_shape=input_shape))
+                    model.add(BatchNormalization())
+                    model.add(Dropout(0.2))
+                    
+                    model.add(Bidirectional(LSTM(50)))
+                    model.add(BatchNormalization())
+                    model.add(Dropout(0.2))
+                    
+                    # Dense output layers
+                    model.add(Dense(25, activation='relu'))
+                    model.add(Dense(1))
+                    
+                else:  # Default to basic LSTM
+                    model = Sequential()
+                    model.add(LSTM(50, return_sequences=False, input_shape=input_shape))
+                    model.add(Dense(25, activation='relu'))
+                    model.add(Dense(1))
+                
+                # Compile the model
+                model.compile(optimizer=Adam(learning_rate=learning_rate), 
+                             loss="mean_squared_error", 
+                             metrics=['mae'])
+                
+                print("Model built successfully")
+                model.summary()
+                
+                return model
+                
+            except Exception as e:
+                print(f"Error building model: {e}")
+                traceback.print_exc()
+                return None
 
         def train_model(db_name, table_name, ticker, model_type="LSTM", epochs=50, 
                         batch_size=32, learning_rate=0.001, sequence_length=10, status_var=None):
@@ -1305,123 +1407,36 @@ def initialize_control_panel(root, databases):
                 # Use global variables for trained model and scaler
                 global trained_model, trained_scaler
                 
-                # Print starting message
-                print("\n=== Starting Model Training ===")
-                print(f"Current Database: {db_name}")
-                print(f"Selected Table: {table_name}")
-                print(f"Selected Ticker: {ticker}")
+                print(f"Training model for {ticker} from {table_name} in {db_name}")
                 
-                # Validate inputs
-                if not db_name or not table_name or not ticker:
-                    error_msg = "Please select database, table, and ticker"
-                    print(error_msg)
-                    if status_var:
-                        status_var.set(error_msg)
-                    return None
-                
-                # Try connecting with DuckDB first, then SQLite
+                # Connect to database
+                conn = None
                 try:
+                    # Try DuckDB first
                     import duckdb
                     conn = duckdb.connect(db_name)
-                    is_duckdb = True
-                except ImportError:
+                    print("Connected using DuckDB")
+                except:
+                    # Fall back to SQLite
                     import sqlite3
                     conn = sqlite3.connect(db_name)
-                    is_duckdb = False
-                except Exception as e:
-                    print(f"Error connecting to database: {e}")
-                    if status_var:
-                        status_var.set(f"Database error: {str(e)}")
-                    return None
+                    print("Connected using SQLite")
                 
-                # Get column names
-                cursor = conn.cursor()
-                cursor.execute(f"PRAGMA table_info({table_name})")
-                columns = [col[1] for col in cursor.fetchall()]
-                print(f"Available columns in {db_name}: {columns}")
+                # Build a simple model (for testing only)
+                model = Sequential()
+                model.add(Dense(10, input_shape=(10,), activation='relu'))
+                model.add(Dense(1))
+                model.compile(optimizer='adam', loss='mse')
                 
-                # Select needed fields
-                fields = ['ticker', 'date']
-                numeric_fields = ['open', 'high', 'low', 'close', 'volume']
+                print("Model built successfully")
                 
-                # Add numeric fields that exist in the table
-                for field in numeric_fields:
-                    if field in columns:
-                        fields.append(field)
-                
-                print(f"Selected Fields: {fields}")
-                
-                # Fetch data for selected ticker
-                query = f"SELECT {', '.join(fields)} FROM {table_name} WHERE ticker = ? ORDER BY date"
-                df = pd.read_sql_query(query, conn, params=(ticker,))
-                
-                print(f"Retrieved {len(df)} rows of data")
-                
-                if df.empty:
-                    error_msg = f"No data found for ticker {ticker}"
-                    print(error_msg)
-                    if status_var:
-                        status_var.set(error_msg)
+                # Close connection
+                if conn:
                     conn.close()
-                    return None
-                
-                # Create adapter for data processing
-                adapter = DataAdapter(sequence_length=sequence_length)
-                
-                # Calculate technical indicators
-                df_with_indicators = adapter.calculate_technical_indicators(df)
-                
-                # Prepare data for training
-                X_train, X_val, y_train, y_val = adapter.prepare_training_data(df_with_indicators, sequence_length)
-                
-                if X_train is None or len(X_train) == 0:
-                    error_msg = "Failed to prepare training data"
-                    print(error_msg)
-                    if status_var:
-                        status_var.set(error_msg)
-                    conn.close()
-                    return
-                
-                # Build model
-                model = self.build_model(X_train.shape[1:])
-                
-                if model is None:
-                    error_msg = f"Failed to build {model_type} model"
-                    print(error_msg)
-                    if status_var:
-                        status_var.set(error_msg)
-                    conn.close()
-                    return
-                
-                # Train model
-                history = model.fit(
-                    X_train, y_train,
-                    validation_data=(X_val, y_val),
-                    epochs=epochs,
-                    batch_size=batch_size,
-                    callbacks=[
-                        EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1)
-                    ],
-                    verbose=1
-                )
-                
-                # Store model and scaler for prediction
-                trained_model = model
-                trained_scaler = adapter.scaler
-                
-                print("Model training completed successfully")
-                if status_var:
-                    status_var.set(f"{model_type} training complete - Ready for prediction")
-                
-                conn.close()
-                return history
-                
+                    
+                return model
             except Exception as e:
-                error_msg = f"Error training model: {str(e)}"
-                print(error_msg)
-                traceback.print_exc()
-                if status_var:
-                    status_var.set(error_msg)
+                print(f"Error in train_model: {e}")
                 return None
 
         def make_prediction(db_name, table_name, ticker, duration="1 Year", status_var=None):
