@@ -4,7 +4,7 @@ os.environ['TK_SILENCE_DEPRECATION'] = '1'
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization, Bidirectional
+from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization, Bidirectional, GRU, Conv2D, MaxPooling2D, Reshape
 from tensorflow.keras.regularizers import L2
 import duckdb
 import pandas as pd
@@ -34,6 +34,7 @@ from sklearn.model_selection import train_test_split
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.losses import Huber
+import sqlite3
 
 matplotlib.use('TkAgg')
 
@@ -906,30 +907,28 @@ class StockAIAgent:
             widget.destroy()
         self.field_vars.clear()
 
-    def refresh_databases(self):
-        """Refresh the list of available databases"""
+    def refresh_databases(self, dropdown, var):
+        """Refresh the list of available database files"""
         try:
             print("Refreshing database list...")
+            # Look for both SQLite and DuckDB files
+            db_files = glob.glob('*.db') + glob.glob('*.duckdb')
+            print(f"Found databases: {db_files}")
             
-            # Store the current selection
-            current_selection = self.db_combo.get()
+            # Update dropdown values
+            dropdown['values'] = db_files
             
-            # Refresh the list of databases
-            self.available_dbs = find_databases()
-            self.db_combo['values'] = self.available_dbs
-            
-            # Reapply the previous selection if it still exists
-            if current_selection in self.available_dbs:
-                self.db_combo.set(current_selection)
-            elif self.available_dbs:
-                self.db_combo.set(self.available_dbs[0])
-                self.on_database_change()
-            else:
-                self.db_combo.set('No databases available')
+            # Set selection to first database if available
+            if db_files and (var.get() not in db_files):
+                var.set(db_files[0])
             
             print("Database list refreshed")
+            
+            # Update tables for the selected database
+            update_tables(var.get(), table_dropdown, table_var)
+            
         except Exception as e:
-            print(f"Error refreshing databases: {str(e)}")
+            print(f"Error refreshing databases: {e}")
             traceback.print_exc()
 
     def get_tables(self):
@@ -955,45 +954,141 @@ class StockAIAgent:
             traceback.print_exc()
             return []
 
-    def refresh_sectors(self):
-        """Refresh the list of available sectors"""
+    def update_tables(self, db_name, table_dropdown=None, table_var=None):
+        """Update the tables dropdown when a database is selected"""
         try:
-            print("Refreshing sector list...")
-            table = self.table_var.get()
-            if not table or table == 'No tables available':
-                self.clear_sector_selection()
+            if not db_name:
+                print("No database selected")
                 return
             
-            # Store the current selection
-            current_selection = self.sector_var.get()
+            print(f"Connecting to database: {db_name}")
             
-            # Get column information
-            columns = self.db_conn.execute(f"SELECT * FROM {table} LIMIT 0").description
-            column_names = [col[0] for col in columns]
-            
-            # Update sector selection if sector column exists
-            if 'sector' in column_names:
-                sectors = self.db_conn.execute(
-                    f"SELECT DISTINCT sector FROM {table} ORDER BY sector"
-                ).fetchall()
-                sectors = [s[0] for s in sectors if s[0] is not None]  # Filter out None values
-                self.sector_combo['values'] = sectors
+            # Try connecting with DuckDB first
+            try:
+                import duckdb
+                conn = duckdb.connect(db_name)
                 
-                # Reapply the previous selection if it still exists
-                if current_selection in sectors:
-                    self.sector_var.set(current_selection)
-                elif sectors:
-                    self.sector_var.set(sectors[0])
-                    print(f"Set initial sector to: {sectors[0]}")
-                    self.sector_combo.bind('<<ComboboxSelected>>', self.on_sector_change)
-                else:
-                    self.clear_sector_selection()
-            else:
-                self.clear_sector_selection()
+                # List tables in DuckDB
+                tables = conn.execute("SHOW TABLES").fetchall()
+                tables = [row[0] for row in tables]
+                print(f"Retrieved DuckDB tables: {tables}")
+                
+            except ImportError:
+                print("DuckDB not installed, trying SQLite...")
+                
+                # Fall back to SQLite
+                import sqlite3
+                conn = sqlite3.connect(db_name)
+                cursor = conn.cursor()
+                
+                # Get list of tables
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = [row[0] for row in cursor.fetchall()]
+                print(f"Retrieved SQLite tables: {tables}")
+            except Exception as e:
+                print(f"Error connecting to database: {e}")
+                tables = []
             
-            print("Sector list refreshed")
+            # Close connection
+            try:
+                conn.close()
+            except:
+                pass
+            
+            if table_dropdown and table_var:
+                # Update dropdown values
+                table_dropdown['values'] = tables
+                
+                # Set selection to first table if available
+                if tables and (table_var.get() not in tables):
+                    table_var.set(tables[0])
+                
+                print("Table list refreshed")
+                print(f"Found tables: {tables}")
+                
+                # Update tickers for the selected table
+                update_tickers(db_name, table_var.get(), ticker_dropdown, ticker_var)
+            
         except Exception as e:
-            print(f"Error refreshing sectors: {str(e)}")
+            print(f"Error updating tables: {e}")
+            traceback.print_exc()
+
+    def update_tickers(self, db_name, table_name, ticker_dropdown=None, ticker_var=None):
+        """Update the tickers dropdown when a table is selected"""
+        try:
+            if not db_name or not table_name:
+                print("Database or table not selected")
+                return
+            
+            # Try connecting with DuckDB first
+            tickers = []
+            sectors = []
+            
+            try:
+                import duckdb
+                conn = duckdb.connect(db_name)
+                
+                # Get column names
+                print(f"Getting columns for table: {table_name}")
+                columns = conn.execute(f"DESCRIBE {table_name}").fetchall()
+                columns = [col[0] for col in columns]
+                print(f"Available columns in DuckDB: {columns}")
+                
+                # Check if ticker column exists
+                if 'ticker' in columns:
+                    print("Found ticker column, retrieving unique tickers...")
+                    tickers = conn.execute(f"SELECT DISTINCT ticker FROM {table_name}").fetchall()
+                    tickers = [row[0] for row in tickers]
+                
+                # Check if sector column exists
+                if 'sector' in columns:
+                    print("Found sector column, retrieving unique sectors...")
+                    sectors = conn.execute(f"SELECT DISTINCT sector FROM {table_name}").fetchall()
+                    sectors = [row[0] for row in sectors]
+                
+            except ImportError:
+                print("DuckDB not installed, trying SQLite...")
+                
+                # Fall back to SQLite
+                import sqlite3
+                conn = sqlite3.connect(db_name)
+                cursor = conn.cursor()
+                
+                # Get column names
+                cursor.execute(f"PRAGMA table_info({table_name})")
+                columns = [col[1] for col in cursor.fetchall()]
+                print(f"Available columns in SQLite: {columns}")
+                
+                # Check if ticker column exists
+                if 'ticker' in columns:
+                    print("Found ticker column, retrieving unique tickers...")
+                    cursor.execute(f"SELECT DISTINCT ticker FROM {table_name}")
+                    tickers = [row[0] for row in cursor.fetchall()]
+                
+                # Check if sector column exists
+                if 'sector' in columns:
+                    print("Found sector column, retrieving unique sectors...")
+                    cursor.execute(f"SELECT DISTINCT sector FROM {table_name}")
+                    sectors = [row[0] for row in cursor.fetchall()]
+            
+            except Exception as e:
+                print(f"Error getting tickers: {e}")
+            
+            # Close connection
+            try:
+                conn.close()
+            except:
+                pass
+            
+            # Update ticker dropdown
+            if ticker_dropdown and ticker_var:
+                print(f"Found {len(tickers)} tickers")
+                ticker_dropdown['values'] = tickers
+                if tickers and ticker_var.get() not in tickers:
+                    ticker_var.set(tickers[0] if tickers else "")
+            
+        except Exception as e:
+            print(f"Error updating tickers: {e}")
             traceback.print_exc()
 
     def run(self):
@@ -1037,6 +1132,451 @@ def initialize_control_panel(root, databases):
     try:
         print("\nInitializing control panel...")
         
+        # Define helper functions inside this function scope
+        def refresh_databases(dropdown, var):
+            """Refresh the list of available database files"""
+            try:
+                print("Refreshing database list...")
+                # Look for both SQLite and DuckDB files
+                db_files = glob.glob('*.db') + glob.glob('*.duckdb')
+                print(f"Found databases: {db_files}")
+                
+                # Update dropdown values
+                dropdown['values'] = db_files
+                
+                # Set selection to first database if available
+                if db_files and (var.get() not in db_files):
+                    var.set(db_files[0])
+                    
+                print("Database list refreshed")
+                
+                # Update tables for the selected database
+                update_tables(var.get(), table_dropdown, table_var)
+                
+            except Exception as e:
+                print(f"Error refreshing databases: {e}")
+                traceback.print_exc()
+
+        def update_tables(db_name, table_dropdown=None, table_var=None):
+            """Update the tables dropdown when a database is selected"""
+            try:
+                if not db_name:
+                    print("No database selected")
+                    return
+                    
+                print(f"Connecting to database: {db_name}")
+                
+                # Try connecting with DuckDB first
+                try:
+                    import duckdb
+                    conn = duckdb.connect(db_name)
+                    
+                    # List tables in DuckDB
+                    tables = conn.execute("SHOW TABLES").fetchall()
+                    tables = [row[0] for row in tables]
+                    print(f"Retrieved DuckDB tables: {tables}")
+                    
+                except ImportError:
+                    print("DuckDB not installed, trying SQLite...")
+                    
+                    # Fall back to SQLite
+                    import sqlite3
+                    conn = sqlite3.connect(db_name)
+                    cursor = conn.cursor()
+                    
+                    # Get list of tables
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                    tables = [row[0] for row in cursor.fetchall()]
+                    print(f"Retrieved SQLite tables: {tables}")
+                except Exception as e:
+                    print(f"Error connecting to database: {e}")
+                    tables = []
+                
+                # Close connection
+                try:
+                    conn.close()
+                except:
+                    pass
+                
+                if table_dropdown and table_var:
+                    # Update dropdown values
+                    table_dropdown['values'] = tables
+                    
+                    # Set selection to first table if available
+                    if tables and (table_var.get() not in tables):
+                        table_var.set(tables[0])
+                        
+                    print("Table list refreshed")
+                    print(f"Found tables: {tables}")
+                    
+                    # Update tickers for the selected table
+                    update_tickers(db_name, table_var.get(), ticker_dropdown, ticker_var)
+                    
+            except Exception as e:
+                print(f"Error updating tables: {e}")
+                traceback.print_exc()
+
+        def update_tickers(db_name, table_name, ticker_dropdown=None, ticker_var=None):
+            """Update the tickers dropdown when a table is selected"""
+            try:
+                if not db_name or not table_name:
+                    print("Database or table not selected")
+                    return
+                
+                # Try connecting with DuckDB first
+                tickers = []
+                sectors = []
+                
+                try:
+                    import duckdb
+                    conn = duckdb.connect(db_name)
+                    
+                    # Get column names
+                    print(f"Getting columns for table: {table_name}")
+                    columns = conn.execute(f"DESCRIBE {table_name}").fetchall()
+                    columns = [col[0] for col in columns]
+                    print(f"Available columns in DuckDB: {columns}")
+                    
+                    # Check if ticker column exists
+                    if 'ticker' in columns:
+                        print("Found ticker column, retrieving unique tickers...")
+                        tickers = conn.execute(f"SELECT DISTINCT ticker FROM {table_name}").fetchall()
+                        tickers = [row[0] for row in tickers]
+                    
+                    # Check if sector column exists
+                    if 'sector' in columns:
+                        print("Found sector column, retrieving unique sectors...")
+                        sectors = conn.execute(f"SELECT DISTINCT sector FROM {table_name}").fetchall()
+                        sectors = [row[0] for row in sectors]
+                    
+                except ImportError:
+                    print("DuckDB not installed, trying SQLite...")
+                    
+                    # Fall back to SQLite
+                    import sqlite3
+                    conn = sqlite3.connect(db_name)
+                    cursor = conn.cursor()
+                    
+                    # Get column names
+                    cursor.execute(f"PRAGMA table_info({table_name})")
+                    columns = [col[1] for col in cursor.fetchall()]
+                    print(f"Available columns in SQLite: {columns}")
+                    
+                    # Check if ticker column exists
+                    if 'ticker' in columns:
+                        print("Found ticker column, retrieving unique tickers...")
+                        cursor.execute(f"SELECT DISTINCT ticker FROM {table_name}")
+                        tickers = [row[0] for row in cursor.fetchall()]
+                    
+                    # Check if sector column exists
+                    if 'sector' in columns:
+                        print("Found sector column, retrieving unique sectors...")
+                        cursor.execute(f"SELECT DISTINCT sector FROM {table_name}")
+                        sectors = [row[0] for row in cursor.fetchall()]
+                
+                except Exception as e:
+                    print(f"Error getting tickers: {e}")
+                
+                # Close connection
+                try:
+                    conn.close()
+                except:
+                    pass
+                
+                # Update ticker dropdown
+                if ticker_dropdown and ticker_var:
+                    print(f"Found {len(tickers)} tickers")
+                    ticker_dropdown['values'] = tickers
+                    if tickers and ticker_var.get() not in tickers:
+                        ticker_var.set(tickers[0] if tickers else "")
+            
+            except Exception as e:
+                print(f"Error updating tickers: {e}")
+                traceback.print_exc()
+
+        def train_model(db_name, table_name, ticker, model_type="LSTM", epochs=50, 
+                        batch_size=32, learning_rate=0.001, sequence_length=10, status_var=None):
+            """Train a model with the specified parameters"""
+            try:
+                # Update status
+                if status_var:
+                    status_var.set("Training model...")
+                
+                # Use global variables for trained model and scaler
+                global trained_model, trained_scaler
+                
+                # Print starting message
+                print("\n=== Starting Model Training ===")
+                print(f"Current Database: {db_name}")
+                print(f"Selected Table: {table_name}")
+                print(f"Selected Ticker: {ticker}")
+                
+                # Validate inputs
+                if not db_name or not table_name or not ticker:
+                    error_msg = "Please select database, table, and ticker"
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    return None
+                
+                # Try connecting with DuckDB first, then SQLite
+                try:
+                    import duckdb
+                    conn = duckdb.connect(db_name)
+                    is_duckdb = True
+                except ImportError:
+                    import sqlite3
+                    conn = sqlite3.connect(db_name)
+                    is_duckdb = False
+                except Exception as e:
+                    print(f"Error connecting to database: {e}")
+                    if status_var:
+                        status_var.set(f"Database error: {str(e)}")
+                    return None
+                
+                # Get column names
+                cursor = conn.cursor()
+                cursor.execute(f"PRAGMA table_info({table_name})")
+                columns = [col[1] for col in cursor.fetchall()]
+                print(f"Available columns in {db_name}: {columns}")
+                
+                # Select needed fields
+                fields = ['ticker', 'date']
+                numeric_fields = ['open', 'high', 'low', 'close', 'volume']
+                
+                # Add numeric fields that exist in the table
+                for field in numeric_fields:
+                    if field in columns:
+                        fields.append(field)
+                
+                print(f"Selected Fields: {fields}")
+                
+                # Fetch data for selected ticker
+                query = f"SELECT {', '.join(fields)} FROM {table_name} WHERE ticker = ? ORDER BY date"
+                df = pd.read_sql_query(query, conn, params=(ticker,))
+                
+                print(f"Retrieved {len(df)} rows of data")
+                
+                if df.empty:
+                    error_msg = f"No data found for ticker {ticker}"
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    conn.close()
+                    return None
+                
+                # Create adapter for data processing
+                adapter = DataAdapter(sequence_length=sequence_length)
+                
+                # Calculate technical indicators
+                df_with_indicators = adapter.calculate_technical_indicators(df)
+                
+                # Prepare data for training
+                X_train, X_val, y_train, y_val = adapter.prepare_training_data(df_with_indicators, sequence_length)
+                
+                if X_train is None or len(X_train) == 0:
+                    error_msg = "Failed to prepare training data"
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    conn.close()
+                    return
+                
+                # Build model
+                model = self.build_model(X_train.shape[1:])
+                
+                if model is None:
+                    error_msg = f"Failed to build {model_type} model"
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    conn.close()
+                    return
+                
+                # Train model
+                history = model.fit(
+                    X_train, y_train,
+                    validation_data=(X_val, y_val),
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    callbacks=[
+                        EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1)
+                    ],
+                    verbose=1
+                )
+                
+                # Store model and scaler for prediction
+                trained_model = model
+                trained_scaler = adapter.scaler
+                
+                print("Model training completed successfully")
+                if status_var:
+                    status_var.set(f"{model_type} training complete - Ready for prediction")
+                
+                conn.close()
+                return history
+                
+            except Exception as e:
+                error_msg = f"Error training model: {str(e)}"
+                print(error_msg)
+                traceback.print_exc()
+                if status_var:
+                    status_var.set(error_msg)
+                return None
+
+        def make_prediction(db_name, table_name, ticker, duration="1 Year", status_var=None):
+            """Make predictions using the trained model"""
+            try:
+                # Update status
+                if status_var:
+                    status_var.set("Making prediction...")
+                
+                # Use global variables for trained model and scaler
+                global trained_model, trained_scaler, ax, canvas
+                
+                # Print starting message
+                print("\n=== Starting Prediction ===")
+                print(f"Making prediction for {ticker}")
+                
+                # Validate inputs
+                if not db_name or not table_name or not ticker:
+                    error_msg = "Please select database, table, and ticker"
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    return None
+                
+                if trained_model is None:
+                    error_msg = "No trained model available. Please train a model first."
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    return None
+                
+                # Connect to database
+                conn = sqlite3.connect(db_name)
+                
+                # Convert duration to SQL date filter
+                date_filter = ""
+                if duration != "All":
+                    if duration == "1 Week":
+                        date_filter = "AND date >= date('now', '-7 days')"
+                    elif duration == "1 Month":
+                        date_filter = "AND date >= date('now', '-1 month')"
+                    elif duration == "3 Months":
+                        date_filter = "AND date >= date('now', '-3 months')"
+                    elif duration == "6 Months":
+                        date_filter = "AND date >= date('now', '-6 months')"
+                    elif duration == "1 Year":
+                        date_filter = "AND date >= date('now', '-1 year')"
+                
+                # Get 20 most recent data points for prediction
+                query = f"""
+                SELECT * FROM {table_name} 
+                WHERE ticker = ? 
+                {date_filter}
+                ORDER BY date DESC 
+                LIMIT 20
+                """
+                
+                df = pd.read_sql_query(query, conn, params=(ticker,))
+                
+                if df.empty:
+                    error_msg = f"No recent data found for ticker {ticker}"
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    conn.close()
+                    return None
+                
+                # Create adapter for data processing
+                adapter = DataAdapter()
+                adapter.scaler = trained_scaler  # Use scaler from training
+                
+                # Prepare data for prediction
+                prediction_data = adapter.prepare_prediction_data(df)
+                
+                if prediction_data is None:
+                    error_msg = "Failed to prepare prediction data"
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    conn.close()
+                    return None
+                
+                # Make prediction
+                scaled_predictions = trained_model.predict(prediction_data)
+                
+                # Convert predictions back to original scale
+                predictions = adapter.inverse_transform_predictions(scaled_predictions)
+                
+                if predictions is None or len(predictions) == 0:
+                    error_msg = "Failed to generate predictions"
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    conn.close()
+                    return None
+                
+                # Get the current price
+                current_price = df['close'].iloc[-1]
+                predicted_price = predictions[-1]
+                
+                # Calculate predicted change
+                pct_change = ((predicted_price - current_price) / current_price) * 100
+                
+                # Format results
+                result = (
+                    f"\nPrediction Results:\n"
+                    f"Current Price: ${current_price:.2f}\n"
+                    f"Predicted Price: ${predicted_price:.2f}\n"
+                    f"Predicted Change: {pct_change:.2f}%"
+                )
+                
+                print(result)
+                if status_var:
+                    status_var.set(result)
+                
+                # Update plot if available
+                try:
+                    if 'date' in df.columns:
+                        df = df.sort_values('date')
+                        dates = df['date'].tolist()
+                        prices = df['close'].tolist()
+                        
+                        # Clear previous plot
+                        ax.clear()
+                        
+                        # Plot historical data
+                        ax.plot(dates, prices, label='Historical')
+                        
+                        # Plot predictions
+                        prediction_dates = [dates[-1]]  # Start with the last date
+                        prediction_values = [prices[-1], predicted_price]  # Connect last real price to prediction
+                        ax.plot([dates[-1], "Next Day"], prediction_values, 'r--', label='Prediction')
+                        
+                        # Formatting
+                        ax.set_title(f"{ticker} Stock Price Prediction")
+                        ax.set_xlabel('Date')
+                        ax.set_ylabel('Price')
+                        ax.legend()
+                        
+                        # Update canvas
+                        canvas.draw()
+                except Exception as e:
+                    print(f"Error updating plot: {e}")
+                
+                conn.close()
+                return predictions
+                
+            except Exception as e:
+                error_msg = f"Error making prediction: {str(e)}"
+                print(error_msg)
+                traceback.print_exc()
+                if status_var:
+                    status_var.set(error_msg)
+                return None
+        
         # Create a frame for the control panel - now it will be on the left
         control_frame = tk.Frame(root)
         control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
@@ -1053,6 +1593,14 @@ def initialize_control_panel(root, databases):
         db_dropdown = ttk.Combobox(db_frame, textvariable=db_var, values=databases)
         db_dropdown.pack(padx=5, pady=5, fill=tk.X)
         
+        # Add refresh button
+        refresh_button = tk.Button(db_frame, text="Refresh", 
+                                command=lambda: refresh_databases(db_dropdown, db_var))
+        refresh_button.pack(padx=5, pady=5, fill=tk.X)
+        
+        # Bind selection change event
+        db_dropdown.bind("<<ComboboxSelected>>", lambda event: update_tables(db_var.get(), table_dropdown, table_var))
+        
         # Table selection section
         print("Creating table controls...")
         table_frame = tk.LabelFrame(control_frame, text="Table Selection")
@@ -1062,6 +1610,9 @@ def initialize_control_panel(root, databases):
         table_var = tk.StringVar()
         table_dropdown = ttk.Combobox(table_frame, textvariable=table_var)
         table_dropdown.pack(padx=5, pady=5, fill=tk.X)
+        
+        # Bind selection change event
+        table_dropdown.bind("<<ComboboxSelected>>", lambda event: update_tickers(db_var.get(), table_var.get(), ticker_dropdown, ticker_var))
         
         # Ticker selection section
         print("Creating ticker controls...")
@@ -1087,8 +1638,16 @@ def initialize_control_panel(root, databases):
         ai_frame = tk.LabelFrame(control_frame, text="AI Controls")
         ai_frame.pack(fill=tk.X, padx=5, pady=5)
         
+        # Model selection
+        model_type_label = tk.Label(ai_frame, text="Model Architecture:")
+        model_type_label.pack(anchor=tk.W, padx=5, pady=2)
+        model_type_var = tk.StringVar(value="LSTM")
+        model_type_dropdown = ttk.Combobox(ai_frame, textvariable=model_type_var, 
+                                         values=["LSTM", "GRU", "CNN-LSTM", "Bidirectional LSTM", "Transformer"])
+        model_type_dropdown.pack(padx=5, pady=2, fill=tk.X)
+        
         print("Adding training parameters...")
-        # Add AI model parameters
+        # Training parameters
         epochs_var = tk.IntVar(value=50)
         epochs_label = tk.Label(ai_frame, text="Epochs:")
         epochs_label.pack(anchor=tk.W, padx=5, pady=2)
@@ -1101,53 +1660,45 @@ def initialize_control_panel(root, databases):
         batch_size_entry = tk.Entry(ai_frame, textvariable=batch_size_var, width=10)
         batch_size_entry.pack(anchor=tk.W, padx=5, pady=2)
         
+        learning_rate_var = tk.DoubleVar(value=0.001)
+        learning_rate_label = tk.Label(ai_frame, text="Learning Rate:")
+        learning_rate_label.pack(anchor=tk.W, padx=5, pady=2)
+        learning_rate_entry = tk.Entry(ai_frame, textvariable=learning_rate_var, width=10)
+        learning_rate_entry.pack(anchor=tk.W, padx=5, pady=2)
+        
+        sequence_length_var = tk.IntVar(value=10)
+        sequence_length_label = tk.Label(ai_frame, text="Sequence Length:")
+        sequence_length_label.pack(anchor=tk.W, padx=5, pady=2)
+        sequence_length_entry = tk.Entry(ai_frame, textvariable=sequence_length_var, width=10)
+        sequence_length_entry.pack(anchor=tk.W, padx=5, pady=2)
+        
         # Status label
         status_var = tk.StringVar(value="Ready")
-        status_label = tk.Label(control_frame, textvariable=status_var, anchor=tk.W)
+        status_label = tk.Label(control_frame, textvariable=status_var, anchor=tk.W, wraplength=180)
         status_label.pack(fill=tk.X, padx=5, pady=10)
         
         # Train and predict buttons
-        train_button = tk.Button(ai_frame, text="Train Model", 
-                                command=lambda: train_model(db_var.get(), table_var.get(), ticker_var.get(), 
-                                                         epochs_var.get(), batch_size_var.get(), status_var))
-        train_button.pack(padx=5, pady=5, fill=tk.X)
+        buttons_frame = tk.Frame(ai_frame)
+        buttons_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        predict_button = tk.Button(ai_frame, text="Make Prediction", 
-                                 command=lambda: make_prediction(db_var.get(), table_var.get(), ticker_var.get(), status_var))
-        predict_button.pack(padx=5, pady=5, fill=tk.X)
+        train_button = tk.Button(buttons_frame, text="Train Model", 
+                                command=lambda: train_model(
+                                    db_var.get(), table_var.get(), ticker_var.get(),
+                                    model_type_var.get(), epochs_var.get(), 
+                                    batch_size_var.get(), learning_rate_var.get(),
+                                    sequence_length_var.get(), status_var))
+        train_button.pack(side=tk.LEFT, padx=5, pady=5, expand=True, fill=tk.X)
+        
+        predict_button = tk.Button(buttons_frame, text="Make Prediction", 
+                                 command=lambda: make_prediction(
+                                     db_var.get(), table_var.get(), ticker_var.get(),
+                                     duration_var.get(), status_var))
+        predict_button.pack(side=tk.LEFT, padx=5, pady=5, expand=True, fill=tk.X)
         
         print("AI controls setup complete")
         
-        # Create a refresh button for database list
-        refresh_button = tk.Button(db_frame, text="Refresh", 
-                                 command=lambda: refresh_databases(db_dropdown, db_var))
-        refresh_button.pack(padx=5, pady=5, fill=tk.X)
-        
-        # Configure dropdown events
-        db_dropdown.bind("<<ComboboxSelected>>", lambda event: update_tables(db_var.get(), table_dropdown, table_var))
-        table_dropdown.bind("<<ComboboxSelected>>", lambda event: update_tickers(db_var.get(), table_var.get(), ticker_dropdown, ticker_var))
-        
-        # Store references to UI elements in globals to access later
-        global ui_elements
-        ui_elements = {
-            'db_var': db_var,
-            'db_dropdown': db_dropdown,
-            'table_var': table_var,
-            'table_dropdown': table_dropdown,
-            'ticker_var': ticker_var,
-            'ticker_dropdown': ticker_dropdown,
-            'duration_var': duration_var,
-            'duration_dropdown': duration_dropdown,
-            'epochs_var': epochs_var,
-            'batch_size_var': batch_size_var,
-            'status_var': status_var,
-            'train_button': train_button,
-            'predict_button': predict_button,
-            'root': root
-        }
-        
-        # Initial population of tables if a database is selected
-        if db_var.get():
+        # Initialize the tables dropdown with the selected database
+        if databases:
             update_tables(db_var.get(), table_dropdown, table_var)
         
         print("Control panel creation complete")
@@ -1157,285 +1708,6 @@ def initialize_control_panel(root, databases):
         print(f"Error initializing control panel: {e}")
         traceback.print_exc()
         return None
-
-# Functions for UI events
-def refresh_databases(db_dropdown, db_var):
-    """Refresh the list of available databases"""
-    try:
-        print("Refreshing database list...")
-        db_files = glob.glob('*.db')
-        print(f"Found databases: {db_files}")
-        db_dropdown['values'] = db_files
-        if db_files and not db_var.get() in db_files:
-            db_var.set(db_files[0])
-        print("Database list refreshed")
-    except Exception as e:
-        print(f"Error refreshing database list: {e}")
-        traceback.print_exc()
-
-def update_tables(db_name, table_dropdown, table_var):
-    """Update the list of tables in the selected database"""
-    try:
-        if not db_name:
-            return
-            
-        print(f"Connecting to database: {db_name}")
-        conn = create_connection(db_name)
-        if conn:
-            # Get list of tables
-            query = "SELECT name FROM sqlite_master WHERE type='table'"
-            tables = conn.execute(query).fetchall()
-            table_list = [t[0] for t in tables]
-            print(f"Retrieved tables: {table_list}")
-            
-            # Update the dropdown
-            table_dropdown['values'] = table_list
-            if table_list and (not table_var.get() or table_var.get() not in table_list):
-                table_var.set(table_list[0])
-                
-            print("Table list refreshed")
-            conn.close()
-            print(f"Found tables: {table_list}")
-            return table_list
-    except Exception as e:
-        print(f"Error updating tables: {e}")
-        traceback.print_exc()
-    return []
-
-def update_tickers(db_name, table_name, ticker_dropdown, ticker_var):
-    """Update the list of tickers in the selected table"""
-    try:
-        if not db_name or not table_name:
-            return
-            
-        print(f"Getting columns for table: {table_name}")
-        conn = create_connection(db_name)
-        if conn:
-            # Get column info
-            query = f"PRAGMA table_info({table_name})"
-            columns = conn.execute(query).fetchall()
-            column_names = [col[1] for col in columns]
-            print(f"Available columns: {column_names}")
-            
-            ticker_column = None
-            sector_column = None
-            
-            # Find ticker and sector columns
-            for col in column_names:
-                if col.lower() == 'ticker':
-                    ticker_column = col
-                    print(f"Found ticker column, retrieving unique tickers...")
-                if col.lower() == 'sector':
-                    sector_column = col
-                    print(f"Found sector column, retrieving unique sectors...")
-            
-            # Get unique tickers
-            if ticker_column:
-                query = f"SELECT DISTINCT {ticker_column} FROM {table_name}"
-                tickers = conn.execute(query).fetchall()
-                ticker_list = [t[0] for t in tickers]
-                print(f"Found {len(ticker_list)} tickers")
-                
-                # Update the dropdown
-                ticker_dropdown['values'] = ticker_list
-                if ticker_list and (not ticker_var.get() or ticker_var.get() not in ticker_list):
-                    ticker_var.set(ticker_list[0])
-            
-            conn.close()
-    except Exception as e:
-        print(f"Error updating tickers: {e}")
-        traceback.print_exc()
-
-def train_model(db_name, table_name, ticker, epochs, batch_size, status_var):
-    """Train the AI model with selected parameters"""
-    try:
-        print("\n=== Starting Model Training ===")
-        print(f"Current Database: {db_name}")
-        print(f"Selected Table: {table_name}")
-        print(f"Selected Ticker: {ticker}")
-        
-        status_var.set("Training model...")
-        
-        # Get the data
-        conn = create_connection(db_name)
-        if conn:
-            # Check if ticker exists in table
-            query = f"SELECT COUNT(*) FROM {table_name} WHERE ticker = ?"
-            count = conn.execute(query, (ticker,)).fetchone()[0]
-            if count == 0:
-                error_msg = f"Error: Ticker '{ticker}' not found in table '{table_name}'"
-                print(error_msg)
-                status_var.set(error_msg)
-                return
-                
-            # Get column info
-            query = f"PRAGMA table_info({table_name})"
-            columns = conn.execute(query).fetchall()
-            column_names = [col[1] for col in columns]
-            print(f"Available columns in {table_name}: {column_names}")
-            
-            # Select required fields
-            fields = []
-            for field in ['ticker', 'date', 'open', 'high', 'low', 'close', 'volume']:
-                if field in column_names:
-                    fields.append(field)
-            
-            print(f"Selected Fields: {fields}")
-            
-            # Execute query to get data
-            query = f"SELECT {', '.join(fields)} FROM {table_name} WHERE ticker = ?"
-            df = pd.read_sql_query(query, conn, params=(ticker,))
-            print(f"Retrieved {len(df)} rows of data")
-            
-            # Create and train the model
-            agent = AIAgent()
-            
-            # Prepare data
-            data_adapter = DataAdapter()
-            X_train, X_val, y_train, y_val = data_adapter.prepare_training_data(df)
-            
-            if X_train is not None:
-                # Build model
-                input_shape = (X_train.shape[1], X_train.shape[2])  # (sequence_length, features)
-                agent.build_model(input_shape)
-                
-                # Train model
-                agent.train(X_train, y_train, X_val, y_val, epochs=epochs, batch_size=batch_size)
-                
-                # Save the trained model and scaler in global variables
-                global trained_model, trained_scaler
-                trained_model = agent.model
-                trained_scaler = data_adapter.scaler
-                
-                status_var.set("Model training completed successfully")
-                print("Model training completed successfully")
-            else:
-                status_var.set("Failed to prepare training data")
-            
-            conn.close()
-    except Exception as e:
-        error_msg = f"Error training model: {str(e)}"
-        print(error_msg)
-        traceback.print_exc()
-        status_var.set(error_msg)
-
-def make_prediction(db_name, table_name, ticker, status_var):
-    """Make predictions using the trained model"""
-    global trained_model, trained_scaler, ui_elements, ax, canvas
-    
-    try:
-        print("\n=== Starting Prediction ===")
-        print(f"Making prediction for {ticker}")
-        
-        if trained_model is None:
-            status_var.set("Error: Model not trained yet")
-            return
-            
-        status_var.set("Making prediction...")
-        
-        # Get the most recent data for prediction
-        conn = create_connection(db_name)
-        if conn:
-            # Get recent data - adjust limit based on your sequence length
-            query = f"""
-                        SELECT * FROM {table_name} 
-                        WHERE ticker = ? 
-                        ORDER BY date DESC 
-                        LIMIT 20
-                    """
-            df = pd.read_sql_query(query, conn, params=(ticker,))
-            print(f"Retrieved {len(df)} rows of data")
-            
-            # Sort by date ascending (oldest to newest)
-            if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'])
-                df = df.sort_values('date')
-            
-            # Prepare prediction data
-            data_adapter = DataAdapter()
-            data_adapter.scaler = trained_scaler  # Use the scaler from training
-            
-            X_pred = data_adapter.prepare_prediction_data(df)
-            
-            if X_pred is not None:
-                # Make prediction
-                predictions = trained_model.predict(X_pred)
-                
-                # Inverse transform to get actual values
-                last_prediction = predictions[-1][0]
-                
-                # Get actual price for comparison
-                current_price = df['close'].iloc[-1]
-                
-                # Calculate percentage change
-                pct_change = (float(last_prediction) - current_price) / current_price * 100
-                
-                print("\nPrediction Results:")
-                print(f"Current Price: ${current_price:.2f}")
-                print(f"Predicted Price: ${float(last_prediction):.2f}")
-                print(f"Predicted Change: {pct_change:.2f}%")
-                
-                status_var.set(f"Predicted: ${float(last_prediction):.2f} ({pct_change:+.2f}%)")
-                
-                # Update plot with prediction
-                if 'date' in df.columns:
-                    dates = df['date'].values
-                    prices = df['close'].values
-                    update_plot_with_prediction(dates, prices, float(last_prediction))
-            else:
-                status_var.set("Failed to prepare prediction data")
-            
-            conn.close()
-    except Exception as e:
-        error_msg = f"Error making prediction: {str(e)}"
-        print(error_msg)
-        traceback.print_exc()
-        status_var.set(error_msg)
-
-def update_plot_with_prediction(dates, prices, predicted_price):
-    """Update the plot with predicted price."""
-    global ax, canvas
-    
-    try:
-        if not dates.any() or not prices.any():
-            print("No data to plot")
-            return
-            
-        # Make sure dates is a list of datetime objects, not integers
-        if isinstance(dates[0], (int, float, np.integer)):
-            print(f"Converting date from numeric: {dates[0]}")
-            # Convert timestamps to datetime
-            dates = pd.to_datetime(dates)
-            
-        # Now we can safely add a timedelta
-        next_date = dates[-1] + pd.Timedelta(days=1)
-        
-        # Clear the plot
-        ax.clear()
-        
-        # Plot the historical data
-        ax.plot(dates, prices, label='Historical Prices')
-        
-        # Highlight the prediction
-        ax.plot([dates[-1], next_date], [prices[-1], predicted_price], 'r-', linewidth=2, label='Prediction')
-        ax.scatter([next_date], [predicted_price], color='red', s=50)
-        
-        # Add labels and legend
-        ax.set_xlabel('Date')
-        ax.set_ylabel('Price')
-        ax.set_title(f'Price Prediction')
-        ax.legend()
-        
-        # Format x-axis to show dates nicely
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        plt.xticks(rotation=45)
-        
-        # Redraw the plot
-        canvas.draw()
-    except Exception as e:
-        print(f"Error updating plot: {e}")
-        traceback.print_exc()
 
 def initialize_gui(database_files=None):
     """Initialize the GUI application."""
