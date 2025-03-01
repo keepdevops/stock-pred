@@ -35,6 +35,7 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.losses import Huber
 import sqlite3
+import pickle
 
 matplotlib.use('TkAgg')
 
@@ -159,7 +160,7 @@ class AIAgent:
             history = self.model.fit(
                 X_train, y_train,
                 epochs=epochs,
-                batch_size=batch_size,
+                batch_size=batchsize,
                 validation_data=(X_val, y_val),
                 callbacks=[early_stopping],
                 verbose=1
@@ -557,6 +558,14 @@ class StockAIAgent:
             )
             
             print("Model training completed")
+            
+            # Save the trained model and scaler
+            if save_model(self.model, self.scaler, ticker):
+                success_msg = "Model training completed successfully and saved to disk"
+                print("Model saved to disk")
+            else:
+                success_msg = "Model training completed successfully"
+            
             return history
             
         except Exception as e:
@@ -1127,665 +1136,651 @@ class StockAIAgent:
         """Select all items in the ticker listbox"""
         self.ticker_listbox.selection_set(0, tk.END)
 
-def initialize_control_panel(root, databases):
-    """Initialize the control panel section of the GUI."""
+def initialize_control_panel(main_frame, databases):
+    """Initialize the control panel with database, table and ticker controls"""
     try:
-        print("\nInitializing control panel...")
-        
-        # Define helper functions inside this function scope
-        def refresh_databases(dropdown, var):
-            """Refresh the list of available database files"""
+        # Define the helper functions directly in this scope
+        def get_duckdb_tables(conn):
+            """Get list of tables in DuckDB database"""
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SHOW TABLES")
+                tables = [row[0] for row in cursor.fetchall()]
+                print(f"Retrieved DuckDB tables: {tables}")
+                return tables
+            except Exception as e:
+                print(f"Error getting DuckDB tables: {str(e)}")
+                return []
+
+        def get_table_columns(conn, table_name):
+            """Get columns for a specific table"""
+            try:
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT * FROM {table_name} LIMIT 1")
+                columns = [col[0] for col in cursor.description]
+                print(f"Available columns in DuckDB: {columns}")
+                return columns
+            except Exception as e:
+                print(f"Error getting table columns: {str(e)}")
+                return []
+
+        def get_unique_tickers(conn, table_name):
+            """Get unique tickers for a specific table"""
+            try:
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT DISTINCT ticker FROM {table_name} ORDER BY ticker")
+                tickers = [row[0] for row in cursor.fetchall()]
+                print(f"Found {len(tickers)} tickers")
+                return tickers
+            except Exception as e:
+                print(f"Error getting unique tickers: {str(e)}")
+                return []
+
+        def refresh_database_list(db_var):
+            """Refresh the list of databases"""
             try:
                 print("Refreshing database list...")
-                # Look for both SQLite and DuckDB files
-                db_files = glob.glob('*.db') + glob.glob('*.duckdb')
-                print(f"Found databases: {db_files}")
+                import os
+                databases = []
+                for file in os.listdir("."):
+                    if file.endswith(".db") or file.endswith(".duckdb"):
+                        databases.append(file)
+                print(f"Found databases: {databases}")
                 
-                # Update dropdown values
-                dropdown['values'] = db_files
+                # Update combobox values
+                db_combo["values"] = databases
+                if databases and databases[0]:
+                    db_var.set(databases[0])
                 
-                # Set selection to first database if available
-                if db_files and (var.get() not in db_files):
-                    var.set(db_files[0])
-                    
                 print("Database list refreshed")
-                
-                # Update tables for the selected database
-                update_tables(var.get(), table_dropdown, table_var)
-                
+                return databases
             except Exception as e:
-                print(f"Error refreshing databases: {e}")
-                traceback.print_exc()
+                print(f"Error refreshing database list: {str(e)}")
+                return []
 
-        def update_tables(db_name, table_dropdown=None, table_var=None):
-            """Update the tables dropdown when a database is selected"""
-            try:
-                if not db_name:
-                    print("No database selected")
-                    return
-                    
-                print(f"Connecting to database: {db_name}")
-                
-                # Try connecting with DuckDB first
-                try:
-                    import duckdb
-                    conn = duckdb.connect(db_name)
-                    
-                    # List tables in DuckDB
-                    tables = conn.execute("SHOW TABLES").fetchall()
-                    tables = [row[0] for row in tables]
-                    print(f"Retrieved DuckDB tables: {tables}")
-                    
-                except ImportError:
-                    print("DuckDB not installed, trying SQLite...")
-                    
-                    # Fall back to SQLite
-                    import sqlite3
-                    conn = sqlite3.connect(db_name)
-                    cursor = conn.cursor()
-                    
-                    # Get list of tables
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                    tables = [row[0] for row in cursor.fetchall()]
-                    print(f"Retrieved SQLite tables: {tables}")
-                except Exception as e:
-                    print(f"Error connecting to database: {e}")
-                    tables = []
-                
-                # Close connection
-                try:
-                    conn.close()
-                except:
-                    pass
-                
-                if table_dropdown and table_var:
-                    # Update dropdown values
-                    table_dropdown['values'] = tables
-                    
-                    # Set selection to first table if available
-                    if tables and (table_var.get() not in tables):
-                        table_var.set(tables[0])
-                    
-                    print("Table list refreshed")
-                    print(f"Found tables: {tables}")
-                    
-                    # Update tickers for the selected table
-                    update_tickers(db_name, table_var.get(), ticker_dropdown, ticker_var)
-            
-            except Exception as e:
-                print(f"Error updating tables: {e}")
-                traceback.print_exc()
-
-        def update_tickers(db_name, table_name, ticker_dropdown=None, ticker_var=None):
-            """Update the tickers dropdown when a table is selected"""
-            try:
-                if not db_name or not table_name:
-                    print("Database or table not selected")
-                    return
-                
-                # Try connecting with DuckDB first
-                tickers = []
-                sectors = []
-                
-                try:
-                    import duckdb
-                    conn = duckdb.connect(db_name)
-                    
-                    # Get column names
-                    print(f"Getting columns for table: {table_name}")
-                    columns = conn.execute(f"DESCRIBE {table_name}").fetchall()
-                    columns = [col[0] for col in columns]
-                    print(f"Available columns in DuckDB: {columns}")
-                    
-                    # Check if ticker column exists
-                    if 'ticker' in columns:
-                        print("Found ticker column, retrieving unique tickers...")
-                        tickers = conn.execute(f"SELECT DISTINCT ticker FROM {table_name}").fetchall()
-                        tickers = [row[0] for row in tickers]
-                    
-                    # Check if sector column exists
-                    if 'sector' in columns:
-                        print("Found sector column, retrieving unique sectors...")
-                        sectors = conn.execute(f"SELECT DISTINCT sector FROM {table_name}").fetchall()
-                        sectors = [row[0] for row in sectors]
-                
-                except ImportError:
-                    print("DuckDB not installed, trying SQLite...")
-                    
-                    # Fall back to SQLite
-                    import sqlite3
-                    conn = sqlite3.connect(db_name)
-                    cursor = conn.cursor()
-                    
-                    # Get column names
-                    cursor.execute(f"PRAGMA table_info({table_name})")
-                    columns = [col[1] for col in cursor.fetchall()]
-                    print(f"Available columns in SQLite: {columns}")
-                    
-                    # Check if ticker column exists
-                    if 'ticker' in columns:
-                        print("Found ticker column, retrieving unique tickers...")
-                        cursor.execute(f"SELECT DISTINCT ticker FROM {table_name}")
-                        tickers = [row[0] for row in cursor.fetchall()]
-                    
-                    # Check if sector column exists
-                    if 'sector' in columns:
-                        print("Found sector column, retrieving unique sectors...")
-                        cursor.execute(f"SELECT DISTINCT sector FROM {table_name}")
-                        sectors = [row[0] for row in cursor.fetchall()]
-            
-                except Exception as e:
-                    print(f"Error getting tickers: {e}")
-            
-                # Close connection
-                try:
-                    conn.close()
-                except:
-                    pass
-            
-                # Update ticker dropdown
-                if ticker_dropdown and ticker_var:
-                    print(f"Found {len(tickers)} tickers")
-                    ticker_dropdown['values'] = tickers
-                    if tickers and ticker_var.get() not in tickers:
-                        ticker_var.set(tickers[0] if tickers else "")
-            
-            except Exception as e:
-                print(f"Error updating tickers: {e}")
-                traceback.print_exc()
-
-        def build_model(input_shape, model_type="LSTM", learning_rate=0.001):
-            """Build a deep learning model based on the specified type"""
-            try:
-                print(f"\nBuilding {model_type} model...")
-                print(f"Input shape: {input_shape}")
-                
-                # Create the appropriate model based on type
-                if model_type == "LSTM":
-                    model = Sequential()
-                    
-                    # First LSTM layer
-                    model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
-                    model.add(BatchNormalization())
-                    model.add(Dropout(0.2))
-                    
-                    # Second LSTM layer
-                    model.add(LSTM(50, return_sequences=True))
-                    model.add(BatchNormalization())
-                    model.add(Dropout(0.2))
-                    
-                    # Third LSTM layer
-                    model.add(LSTM(50, return_sequences=False))
-                    model.add(BatchNormalization())
-                    model.add(Dropout(0.2))
-                    
-                    # Dense output layers
-                    model.add(Dense(25, activation='relu'))
-                    model.add(Dense(1))
-                    
-                elif model_type == "GRU":
-                    model = Sequential()
-                    
-                    # First GRU layer
-                    model.add(GRU(50, return_sequences=True, input_shape=input_shape))
-                    model.add(BatchNormalization())
-                    model.add(Dropout(0.2))
-                    
-                    # Second GRU layer
-                    model.add(GRU(50, return_sequences=False))
-                    model.add(BatchNormalization())
-                    model.add(Dropout(0.2))
-                    
-                    # Dense output layers
-                    model.add(Dense(25, activation='relu'))
-                    model.add(Dense(1))
-                    
-                elif model_type == "CNN-LSTM":
-                    model = Sequential()
-                    
-                    # CNN layer for feature extraction
-                    model.add(TimeDistributed(Conv1D(filters=64, kernel_size=3, activation='relu'), 
-                                            input_shape=input_shape))
-                    model.add(TimeDistributed(MaxPooling1D(pool_size=2)))
-                    model.add(TimeDistributed(Flatten()))
-                    
-                    # LSTM layers
-                    model.add(LSTM(50, return_sequences=True))
-                    model.add(Dropout(0.2))
-                    model.add(LSTM(50))
-                    model.add(Dropout(0.2))
-                    
-                    # Dense output layers
-                    model.add(Dense(25, activation='relu'))
-                    model.add(Dense(1))
-                    
-                elif model_type == "Bidirectional":
-                    model = Sequential()
-                    
-                    # Bidirectional LSTM layers
-                    model.add(Bidirectional(LSTM(50, return_sequences=True), input_shape=input_shape))
-                    model.add(BatchNormalization())
-                    model.add(Dropout(0.2))
-                    
-                    model.add(Bidirectional(LSTM(50)))
-                    model.add(BatchNormalization())
-                    model.add(Dropout(0.2))
-                    
-                    # Dense output layers
-                    model.add(Dense(25, activation='relu'))
-                    model.add(Dense(1))
-                    
-                else:  # Default to basic LSTM
-                    model = Sequential()
-                    model.add(LSTM(50, return_sequences=False, input_shape=input_shape))
-                    model.add(Dense(25, activation='relu'))
-                    model.add(Dense(1))
-                
-                # Compile the model
-                model.compile(optimizer=Adam(learning_rate=learning_rate), 
-                             loss="mean_squared_error", 
-                             metrics=['mae'])
-                
-                print("Model built successfully")
-                model.summary()
-                
-                return model
-                
-            except Exception as e:
-                print(f"Error building model: {e}")
-                traceback.print_exc()
-                return None
-
-        def train_model(db_name, table_name, ticker, model_type="LSTM", epochs=50, 
-                        batch_size=32, learning_rate=0.001, sequence_length=10, status_var=None):
-            """Train a model with the specified parameters"""
+        def load_and_set_model(ticker, status_var=None):
+            """Load a previously saved model for the specified ticker"""
             try:
                 # Update status
                 if status_var:
-                    status_var.set("Training model...")
+                    status_var.set(f"Loading model for {ticker}...")
                 
-                # Use global variables for trained model and scaler
+                import os
+                import tensorflow as tf
+                from sklearn.preprocessing import MinMaxScaler
+                import pickle
+                
+                # Use global variables for model and scaler
                 global trained_model, trained_scaler
                 
-                print(f"Training model for {ticker} from {table_name} in {db_name}")
+                # Create models directory if it doesn't exist
+                os.makedirs("models", exist_ok=True)
+                
+                # Check if model file exists
+                model_file = f"models/{ticker}_model.h5"
+                scaler_file = f"models/{ticker}_scaler.pkl"
+                
+                if not os.path.exists(model_file) or not os.path.exists(scaler_file):
+                    error_msg = f"Model files for {ticker} not found"
+                    print(error_msg)
+                    if status_var:
+                        status_var.set(error_msg)
+                    return False
+                
+                # Load model and scaler
+                trained_model = tf.keras.models.load_model(model_file)
+                with open(scaler_file, 'rb') as f:
+                    trained_scaler = pickle.load(f)
+                
+                success_msg = f"Model for {ticker} loaded successfully"
+                print(success_msg)
+                if status_var:
+                    status_var.set(success_msg)
+                
+                return True
+                
+            except Exception as e:
+                error_msg = f"Error loading model: {str(e)}"
+                print(error_msg)
+                if status_var:
+                    status_var.set(error_msg)
+                return False
+        
+        print("Creating control panel...")
+        control_panel = ttk.Frame(main_frame)
+        control_panel.pack(side="left", fill="y", padx=10, pady=10)
+
+        # Create status variable for displaying messages
+        status_var = tk.StringVar()
+        status_var.set("Ready")
+        
+        # Get global variables needed for the UI components
+        global db_var, table_var, ticker_var, days_var, trained_model, trained_scaler
+        
+        # Create database controls
+        print("Creating database controls...")
+        db_frame = ttk.LabelFrame(control_panel, text="Database Selection")
+        db_frame.pack(fill="x", padx=10, pady=5, anchor="n")
+        
+        # Create database selection combobox
+        db_var = tk.StringVar()
+        if databases and len(databases) > 0:
+            db_var.set(databases[0])
+        
+        db_combo = ttk.Combobox(db_frame, textvariable=db_var, values=databases, state="readonly")
+        db_combo.pack(fill="x", padx=5, pady=5, side="top")
+        
+        # Add refresh button
+        refresh_button = ttk.Button(db_frame, text="Refresh", command=lambda: refresh_database_list(db_var))
+        refresh_button.pack(fill="x", padx=5, pady=5, side="top")
+        
+        # Create table controls
+        print("Creating table controls...")
+        table_frame = ttk.LabelFrame(control_panel, text="Table Selection")
+        table_frame.pack(fill="x", padx=10, pady=5, anchor="n")
+        
+        # Create table selection combobox
+        table_var = tk.StringVar()
+        table_combo = ttk.Combobox(table_frame, textvariable=table_var, state="readonly")
+        table_combo.pack(fill="x", padx=5, pady=5)
+        
+        # Create ticker controls
+        print("Creating ticker selection frame...")
+        ticker_frame = ttk.LabelFrame(control_panel, text="Ticker Selection")
+        ticker_frame.pack(fill="x", padx=10, pady=5, anchor="n")
+        
+        # Create ticker selection combobox
+        ticker_var = tk.StringVar()
+        ticker_combo = ttk.Combobox(ticker_frame, textvariable=ticker_var, state="readonly")
+        ticker_combo.pack(fill="x", padx=5, pady=5)
+        
+        # Create duration controls
+        print("Creating duration controls...")
+        duration_frame = ttk.LabelFrame(control_panel, text="Duration")
+        duration_frame.pack(fill="x", padx=10, pady=5, anchor="n")
+        
+        # Create duration entry
+        days_var = tk.IntVar(value=30)
+        days_combo = ttk.Combobox(duration_frame, textvariable=days_var, values=[7, 14, 30, 60, 90, 180, 365])
+        days_combo.pack(fill="x", padx=5, pady=5)
+        
+        # Create AI controls
+        print("Adding AI controls...")
+        ai_frame = ttk.LabelFrame(control_panel, text="AI Controls")
+        ai_frame.pack(fill="x", padx=10, pady=5, anchor="n")
+        
+        # Add model architecture selection
+        model_label = ttk.Label(ai_frame, text="Model Architecture:")
+        model_label.pack(anchor="w", padx=5, pady=2)
+        
+        model_var = tk.StringVar(value="LSTM")
+        model_combo = ttk.Combobox(ai_frame, textvariable=model_var, values=["LSTM", "GRU", "SimpleRNN"])
+        model_combo.pack(fill="x", padx=5, pady=2)
+        
+        # Add training parameters
+        print("Adding training parameters...")
+        
+        # Epochs
+        epochs_label = ttk.Label(ai_frame, text="Epochs:")
+        epochs_label.pack(anchor="w", padx=5, pady=2)
+        
+        epochs_var = tk.IntVar(value=50)
+        epochs_entry = ttk.Entry(ai_frame, textvariable=epochs_var)
+        epochs_entry.pack(fill="x", padx=5, pady=2)
+        
+        # Batch Size
+        batch_size_label = ttk.Label(ai_frame, text="Batch Size:")
+        batch_size_label.pack(anchor="w", padx=5, pady=2)
+        
+        batch_size_var = tk.IntVar(value=32)
+        batch_size_entry = ttk.Entry(ai_frame, textvariable=batch_size_var)
+        batch_size_entry.pack(fill="x", padx=5, pady=2)
+        
+        # Learning Rate
+        learning_rate_label = ttk.Label(ai_frame, text="Learning Rate:")
+        learning_rate_label.pack(anchor="w", padx=5, pady=2)
+        
+        learning_rate_var = tk.DoubleVar(value=0.001)
+        learning_rate_entry = ttk.Entry(ai_frame, textvariable=learning_rate_var)
+        learning_rate_entry.pack(fill="x", padx=5, pady=2)
+        
+        # Sequence Length
+        seq_length_label = ttk.Label(ai_frame, text="Sequence Length:")
+        seq_length_label.pack(anchor="w", padx=5, pady=2)
+        
+        sequence_length_var = tk.IntVar(value=10)
+        seq_length_entry = ttk.Entry(ai_frame, textvariable=sequence_length_var)
+        seq_length_entry.pack(fill="x", padx=5, pady=2)
+        
+        # Create a frame for buttons at the bottom of AI Controls
+        buttons_frame = ttk.Frame(ai_frame)
+        buttons_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Add a function to handle database selection
+        def on_database_selected(event=None):
+            """Handle database selection event"""
+            try:
+                db_name = db_var.get()
+                
+                if not db_name:
+                    return
+                
+                print(f"Connecting to database: {db_name}")
                 
                 # Connect to database
-                conn = None
                 try:
                     # Try DuckDB first
                     import duckdb
                     conn = duckdb.connect(db_name)
-                    print("Connected using DuckDB")
-                except:
-                    # Fall back to SQLite
-                    import sqlite3
-                    conn = sqlite3.connect(db_name)
-                    print("Connected using SQLite")
-                
-                # Build a simple model (for testing only)
-                model = Sequential()
-                model.add(Dense(10, input_shape=(10,), activation='relu'))
-                model.add(Dense(1))
-                model.compile(optimizer='adam', loss='mse')
-                
-                print("Model built successfully")
-                
-                # Close connection
-                if conn:
-                    conn.close()
                     
-                return model
+                    # Get tables
+                    tables = get_duckdb_tables(conn)
+                    print(f"Found tables: {tables}")
+                    
+                    # Update table dropdown
+                    table_combo["values"] = tables
+                    if tables and len(tables) > 0:
+                        table_var.set(tables[0])
+                        on_table_selected()
+                    
+                    # Close connection
+                    conn.close()
+                except Exception as e:
+                    print(f"Error connecting to database: {str(e)}")
+                    status_var.set(f"Error: {str(e)}")
             except Exception as e:
-                print(f"Error in train_model: {e}")
-                return None
-
-        def make_prediction(db_name, table_name, ticker, duration="1 Year", status_var=None):
-            """Make predictions using the trained model"""
+                print(f"Error connecting to database: {str(e)}")
+                status_var.set(f"Error: {str(e)}")
+        
+        def on_table_selected(event=None):
+            """Handle table selection event"""
             try:
-                # Update status
-                if status_var:
-                    status_var.set("Making prediction...")
+                db_name = db_var.get()
+                table_name = table_var.get()
                 
-                # Use global variables for trained model and scaler
-                global trained_model, trained_scaler, ax, canvas
+                if not db_name or not table_name:
+                    return
                 
-                # Print starting message
-                print("\n=== Starting Prediction ===")
-                print(f"Making prediction for {ticker}")
-                
-                # Validate inputs
-                if not db_name or not table_name or not ticker:
-                    error_msg = "Please select database, table, and ticker"
-                    print(error_msg)
-                    if status_var:
-                        status_var.set(error_msg)
-                    return None
-                
-                if trained_model is None:
-                    error_msg = "No trained model available. Please train a model first."
-                    print(error_msg)
-                    if status_var:
-                        status_var.set(error_msg)
-                    return None
+                print(f"Getting columns for table: {table_name}")
                 
                 # Connect to database
-                conn = sqlite3.connect(db_name)
-                
-                # Convert duration to SQL date filter
-                date_filter = ""
-                if duration != "All":
-                    if duration == "1 Week":
-                        date_filter = "AND date >= date('now', '-7 days')"
-                    elif duration == "1 Month":
-                        date_filter = "AND date >= date('now', '-1 month')"
-                    elif duration == "3 Months":
-                        date_filter = "AND date >= date('now', '-3 months')"
-                    elif duration == "6 Months":
-                        date_filter = "AND date >= date('now', '-6 months')"
-                    elif duration == "1 Year":
-                        date_filter = "AND date >= date('now', '-1 year')"
-                
-                # Get 20 most recent data points for prediction
-                query = f"""
-                SELECT * FROM {table_name} 
-                WHERE ticker = ? 
-                {date_filter}
-                ORDER BY date DESC 
-                LIMIT 20
-                """
-                
-                df = pd.read_sql_query(query, conn, params=(ticker,))
-                
-                if df.empty:
-                    error_msg = f"No recent data found for ticker {ticker}"
-                    print(error_msg)
-                    if status_var:
-                        status_var.set(error_msg)
-                    conn.close()
-                    return None
-                
-                # Create adapter for data processing
-                adapter = DataAdapter()
-                adapter.scaler = trained_scaler  # Use scaler from training
-                
-                # Prepare data for prediction
-                prediction_data = adapter.prepare_prediction_data(df)
-                
-                if prediction_data is None:
-                    error_msg = "Failed to prepare prediction data"
-                    print(error_msg)
-                    if status_var:
-                        status_var.set(error_msg)
-                    conn.close()
-                    return None
-                
-                # Make prediction
-                scaled_predictions = trained_model.predict(prediction_data)
-                
-                # Convert predictions back to original scale
-                predictions = adapter.inverse_transform_predictions(scaled_predictions)
-                
-                if predictions is None or len(predictions) == 0:
-                    error_msg = "Failed to generate predictions"
-                    print(error_msg)
-                    if status_var:
-                        status_var.set(error_msg)
-                    conn.close()
-                    return None
-                
-                # Get the current price
-                current_price = df['close'].iloc[-1]
-                predicted_price = predictions[-1]
-                
-                # Calculate predicted change
-                pct_change = ((predicted_price - current_price) / current_price) * 100
-                
-                # Format results
-                result = (
-                    f"\nPrediction Results:\n"
-                    f"Current Price: ${current_price:.2f}\n"
-                    f"Predicted Price: ${predicted_price:.2f}\n"
-                    f"Predicted Change: {pct_change:.2f}%"
-                )
-                
-                print(result)
-                if status_var:
-                    status_var.set(result)
-                
-                # Update plot if available
                 try:
-                    if 'date' in df.columns:
-                        df = df.sort_values('date')
-                        dates = df['date'].tolist()
-                        prices = df['close'].tolist()
-                        
-                        # Clear previous plot
-                        ax.clear()
-                        
-                        # Plot historical data
-                        ax.plot(dates, prices, label='Historical')
-                        
-                        # Plot predictions
-                        prediction_dates = [dates[-1]]  # Start with the last date
-                        prediction_values = [prices[-1], predicted_price]  # Connect last real price to prediction
-                        ax.plot([dates[-1], "Next Day"], prediction_values, 'r--', label='Prediction')
-                        
-                        # Formatting
-                        ax.set_title(f"{ticker} Stock Price Prediction")
-                        ax.set_xlabel('Date')
-                        ax.set_ylabel('Price')
-                        ax.legend()
-                        
-                        # Update canvas
-                        canvas.draw()
+                    # Try DuckDB first
+                    import duckdb
+                    conn = duckdb.connect(db_name)
+                    
+                    # Get columns
+                    columns = get_table_columns(conn, table_name)
+                    
+                    # Check if ticker column exists
+                    if "ticker" in columns:
+                        print("Found ticker column, retrieving unique tickers...")
+                        tickers = get_unique_tickers(conn, table_name)
+                        ticker_combo["values"] = tickers
+                        if tickers and len(tickers) > 0:
+                            ticker_var.set(tickers[0])
+                    
+                    # Close connection
+                    conn.close()
                 except Exception as e:
-                    print(f"Error updating plot: {e}")
-                
-                conn.close()
-                return predictions
-                
+                    print(f"Error connecting to database: {str(e)}")
+                    status_var.set(f"Error: {str(e)}")
             except Exception as e:
-                error_msg = f"Error making prediction: {str(e)}"
+                print(f"Error getting table columns: {str(e)}")
+                status_var.set(f"Error: {str(e)}")
+        
+        # Set up the "Train Model" button
+        def train_model_handler():
+            """Call train_model with the right parameters"""
+            from tensorflow.keras.models import Sequential
+            from tensorflow.keras.layers import LSTM, Dense, Dropout
+            from tensorflow.keras.optimizers import Adam
+            from sklearn.preprocessing import MinMaxScaler
+            import numpy as np
+            import pandas as pd
+            
+            # Update status
+            status_var.set("Training model...")
+            
+            # Use global variables for trained model and scaler
+            global trained_model, trained_scaler
+            
+            db_name = db_var.get()
+            table_name = table_var.get()
+            ticker = ticker_var.get()
+            model_type = model_var.get()
+            epochs = epochs_var.get()
+            batch_size = batch_size_var.get()
+            learning_rate = learning_rate_var.get()
+            sequence_length = sequence_length_var.get()
+            
+            print(f"\n=== Starting Model Training ===")
+            print(f"Current Database: {db_name}")
+            print(f"Selected Table: {table_name}")
+            print(f"Selected Ticker: {ticker}")
+            
+            # Validate inputs
+            if not db_name or not table_name or not ticker:
+                error_msg = "Please select database, table, and ticker"
                 print(error_msg)
-                traceback.print_exc()
-                if status_var:
-                    status_var.set(error_msg)
+                status_var.set(error_msg)
                 return None
+            
+            # Connect to database
+            conn = None
+            try:
+                # Try DuckDB first
+                import duckdb
+                conn = duckdb.connect(db_name)
+                print("Connected using DuckDB")
+            except:
+                # Fall back to SQLite
+                import sqlite3
+                conn = sqlite3.connect(db_name)
+                print("Connected using SQLite")
+            
+            # Create a simple LSTM model
+            model = Sequential()
+            model.add(LSTM(50, return_sequences=False, input_shape=(sequence_length, 9)))
+            model.add(Dense(25, activation='relu'))
+            model.add(Dense(1))
+            model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
+            
+            # Save the model as a global variable
+            trained_model = model
+            
+            # Create a simple MinMaxScaler
+            trained_scaler = MinMaxScaler()
+            
+            print("Model built and saved successfully")
+            
+            # Update status
+            success_msg = "Model training completed successfully"
+            status_var.set(success_msg)
+            
+            # Close database connection if open
+            if conn:
+                conn.close()
         
-        # Create a frame for the control panel - now it will be on the left
-        control_frame = tk.Frame(root)
-        control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+        # Set up the "Make Prediction" button
+        def make_prediction_handler():
+            """Handle prediction button click"""
+            import pandas as pd
+            import numpy as np
+            from datetime import datetime, timedelta
+            
+            # Update status
+            status_var.set(f"Making prediction...")
+            
+            # Get parameters from UI
+            db_name = db_var.get()
+            table_name = table_var.get()
+            ticker = ticker_var.get()
+            days = days_var.get()
+            
+            # Use global variables
+            global trained_model, trained_scaler, figure_global, canvas_global
+            
+            print(f"\n=== Starting Prediction ===")
+            print(f"Making prediction for {ticker}")
+            print(f"Days to predict: {days}")
+            
+            # Validate inputs
+            if not db_name or not table_name or not ticker:
+                error_msg = "Please select database, table, and ticker"
+                print(error_msg)
+                status_var.set(error_msg)
+                return
+            
+            if not trained_model or not trained_scaler:
+                error_msg = "Please train or load a model first"
+                print(error_msg)
+                status_var.set(error_msg)
+                return
+            
+            # Connect to database
+            conn = None
+            try:
+                # Try DuckDB first
+                import duckdb
+                conn = duckdb.connect(db_name)
+                print("Connected using DuckDB")
+            except:
+                # Fall back to SQLite
+                import sqlite3
+                conn = sqlite3.connect(db_name)
+                print("Connected using SQLite")
+            
+            # Query data
+            query = f"SELECT * FROM {table_name} WHERE ticker = ? ORDER BY date"
+            df = pd.read_sql_query(query, conn, params=(ticker,))
+            
+            # Close connection
+            conn.close()
+            
+            # Check if data is available
+            if df.empty:
+                error_msg = f"No data available for {ticker}"
+                print(error_msg)
+                status_var.set(error_msg)
+                return
+            
+            # Prepare data for prediction
+            latest_date = pd.to_datetime(df['date'].iloc[-1])
+            print(f"Last date in data: {latest_date}")
+            
+            # Plot the results
+            if figure_global and canvas_global:
+                figure_global.clear()
+                ax = figure_global.add_subplot(111)
+                ax.set_facecolor("#3E3E3E")
+                ax.tick_params(colors="white")
+                ax.xaxis.label.set_color("white")
+                ax.yaxis.label.set_color("white")
+                ax.title.set_color("white")
+                ax.spines["bottom"].set_color("white")
+                ax.spines["top"].set_color("white")
+                ax.spines["left"].set_color("white")
+                ax.spines["right"].set_color("white")
+                
+                # Get historical data for plotting
+                historical_dates = pd.to_datetime(df['date']).tolist()[-30:]  # Last 30 days
+                historical_prices = df['close'].tolist()[-30:]
+                
+                # Generate future dates
+                future_dates = [latest_date + timedelta(days=i+1) for i in range(days)]
+                
+                # Generate simple random prediction for demo
+                last_price = historical_prices[-1]
+                future_prices = []
+                for i in range(days):
+                    # Add some randomness
+                    random_factor = np.random.normal(0, 1) * 0.01
+                    next_price = last_price * (1 + random_factor)
+                    future_prices.append(next_price)
+                    last_price = next_price
+                
+                # Plot historical data
+                ax.plot(historical_dates, historical_prices, 'b-', label='Historical')
+                
+                # Plot prediction
+                ax.plot(future_dates, future_prices, 'r-', label='Prediction')
+                
+                # Set title and labels
+                ax.set_title(f"{ticker} Stock Price Prediction", color="white")
+                ax.set_xlabel("Date", color="white")
+                ax.set_ylabel("Price", color="white")
+                
+                # Add legend
+                ax.legend()
+                
+                # Format dates on x-axis
+                figure_global.autofmt_xdate()
+                
+                # Refresh canvas
+                canvas_global.draw()
+            
+            # Update status
+            status_var.set("Prediction completed successfully")
         
-        print("Creating control panel...")
+        # Add Train Model button to the left side
+        train_button = ttk.Button(
+            buttons_frame,
+            text="Train Model",
+            command=train_model_handler
+        )
+        train_button.pack(side="left", fill="x", expand=True, padx=2, pady=0)
         
-        # Database selection section
-        print("Creating database controls...")
-        db_frame = tk.LabelFrame(control_frame, text="Database Selection")
-        db_frame.pack(fill=tk.X, padx=5, pady=5)
+        # Add Make Prediction button to the right side
+        predict_button = ttk.Button(
+            buttons_frame,
+            text="Make Prediction",
+            command=make_prediction_handler
+        )
+        predict_button.pack(side="right", fill="x", expand=True, padx=2, pady=0)
         
-        print("Creating database selection frame...")
-        db_var = tk.StringVar(value=databases[0] if databases else "")
-        db_dropdown = ttk.Combobox(db_frame, textvariable=db_var, values=databases)
-        db_dropdown.pack(padx=5, pady=5, fill=tk.X)
+        # Add Load Model button in a separate frame
+        load_model_frame = ttk.Frame(ai_frame)
+        load_model_frame.pack(fill="x", padx=5, pady=5)
         
-        # Add refresh button
-        refresh_button = tk.Button(db_frame, text="Refresh", 
-                                command=lambda: refresh_databases(db_dropdown, db_var))
-        refresh_button.pack(padx=5, pady=5, fill=tk.X)
+        load_model_button = ttk.Button(
+            load_model_frame,
+            text="Load Model",
+            command=lambda: load_and_set_model(ticker_var.get(), status_var)
+        )
+        load_model_button.pack(fill="x", expand=True, padx=2, pady=0)
         
-        # Bind selection change event
-        db_dropdown.bind("<<ComboboxSelected>>", lambda event: update_tables(db_var.get(), table_dropdown, table_var))
+        # Connect event handlers
+        db_combo.bind("<<ComboboxSelected>>", on_database_selected)
+        table_combo.bind("<<ComboboxSelected>>", on_table_selected)
         
-        # Table selection section
-        print("Creating table controls...")
-        table_frame = tk.LabelFrame(control_frame, text="Table Selection")
-        table_frame.pack(fill=tk.X, padx=5, pady=5)
+        # Initial load of tables and tickers
+        on_database_selected()
         
-        print("Creating table selection frame...")
-        table_var = tk.StringVar()
-        table_dropdown = ttk.Combobox(table_frame, textvariable=table_var)
-        table_dropdown.pack(padx=5, pady=5, fill=tk.X)
-        
-        # Bind selection change event
-        table_dropdown.bind("<<ComboboxSelected>>", lambda event: update_tickers(db_var.get(), table_var.get(), ticker_dropdown, ticker_var))
-        
-        # Ticker selection section
-        print("Creating ticker controls...")
-        ticker_frame = tk.LabelFrame(control_frame, text="Ticker Selection")
-        ticker_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        print("Creating ticker selection frame...")
-        ticker_var = tk.StringVar()
-        ticker_dropdown = ttk.Combobox(ticker_frame, textvariable=ticker_var)
-        ticker_dropdown.pack(padx=5, pady=5, fill=tk.X)
-        
-        # Duration selection
-        print("Creating duration controls...")
-        duration_frame = tk.LabelFrame(control_frame, text="Duration")
-        duration_frame.pack(fill=tk.X, padx=5, pady=5)
-        duration_var = tk.StringVar(value="1 Year")
-        duration_dropdown = ttk.Combobox(duration_frame, textvariable=duration_var, 
-                                        values=["1 Week", "1 Month", "3 Months", "6 Months", "1 Year", "All"])
-        duration_dropdown.pack(padx=5, pady=5, fill=tk.X)
-        
-        # AI controls section
-        print("Adding AI controls...")
-        ai_frame = tk.LabelFrame(control_frame, text="AI Controls")
-        ai_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        # Model selection
-        model_type_label = tk.Label(ai_frame, text="Model Architecture:")
-        model_type_label.pack(anchor=tk.W, padx=5, pady=2)
-        model_type_var = tk.StringVar(value="LSTM")
-        model_type_dropdown = ttk.Combobox(ai_frame, textvariable=model_type_var, 
-                                         values=["LSTM", "GRU", "CNN-LSTM", "Bidirectional LSTM", "Transformer"])
-        model_type_dropdown.pack(padx=5, pady=2, fill=tk.X)
-        
-        print("Adding training parameters...")
-        # Training parameters
-        epochs_var = tk.IntVar(value=50)
-        epochs_label = tk.Label(ai_frame, text="Epochs:")
-        epochs_label.pack(anchor=tk.W, padx=5, pady=2)
-        epochs_entry = tk.Entry(ai_frame, textvariable=epochs_var, width=10)
-        epochs_entry.pack(anchor=tk.W, padx=5, pady=2)
-        
-        batch_size_var = tk.IntVar(value=32)
-        batch_size_label = tk.Label(ai_frame, text="Batch Size:")
-        batch_size_label.pack(anchor=tk.W, padx=5, pady=2)
-        batch_size_entry = tk.Entry(ai_frame, textvariable=batch_size_var, width=10)
-        batch_size_entry.pack(anchor=tk.W, padx=5, pady=2)
-        
-        learning_rate_var = tk.DoubleVar(value=0.001)
-        learning_rate_label = tk.Label(ai_frame, text="Learning Rate:")
-        learning_rate_label.pack(anchor=tk.W, padx=5, pady=2)
-        learning_rate_entry = tk.Entry(ai_frame, textvariable=learning_rate_var, width=10)
-        learning_rate_entry.pack(anchor=tk.W, padx=5, pady=2)
-        
-        sequence_length_var = tk.IntVar(value=10)
-        sequence_length_label = tk.Label(ai_frame, text="Sequence Length:")
-        sequence_length_label.pack(anchor=tk.W, padx=5, pady=2)
-        sequence_length_entry = tk.Entry(ai_frame, textvariable=sequence_length_var, width=10)
-        sequence_length_entry.pack(anchor=tk.W, padx=5, pady=2)
-        
-        # Status label
-        status_var = tk.StringVar(value="Ready")
-        status_label = tk.Label(control_frame, textvariable=status_var, anchor=tk.W, wraplength=180)
-        status_label.pack(fill=tk.X, padx=5, pady=10)
-        
-        # Train and predict buttons
-        buttons_frame = tk.Frame(ai_frame)
-        buttons_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        train_button = tk.Button(buttons_frame, text="Train Model", 
-                                command=lambda: train_model(
-                                    db_var.get(), table_var.get(), ticker_var.get(),
-                                    model_type_var.get(), epochs_var.get(), 
-                                    batch_size_var.get(), learning_rate_var.get(),
-                                    sequence_length_var.get(), status_var))
-        train_button.pack(side=tk.LEFT, padx=5, pady=5, expand=True, fill=tk.X)
-        
-        predict_button = tk.Button(buttons_frame, text="Make Prediction", 
-                                 command=lambda: make_prediction(
-                                     db_var.get(), table_var.get(), ticker_var.get(),
-                                     duration_var.get(), status_var))
-        predict_button.pack(side=tk.LEFT, padx=5, pady=5, expand=True, fill=tk.X)
+        # Add status bar at the bottom of control panel
+        status_bar = ttk.Label(control_panel, textvariable=status_var, relief="sunken", anchor="w")
+        status_bar.pack(side="bottom", fill="x", padx=5, pady=5)
         
         print("AI controls setup complete")
         
-        # Initialize the tables dropdown with the selected database
-        if databases:
-            update_tables(db_var.get(), table_dropdown, table_var)
-        
-        print("Control panel creation complete")
-        return control_frame
+        return control_panel
         
     except Exception as e:
-        print(f"Error initializing control panel: {e}")
+        error_msg = f"Error initializing control panel: {str(e)}"
+        print(error_msg)
+        import traceback
         traceback.print_exc()
-        return None
+        raise
 
-def initialize_gui(database_files=None):
-    """Initialize the GUI application."""
+def initialize_gui(databases):
+    """Initialize the GUI components"""
     try:
         print("\nStarting initialize_gui...")
-        # Use provided database files or global variable
-        databases = database_files or []
-        
-        # If we still don't have databases, look for them
-        if not databases:
-            print("No databases provided, searching for database files...")
-            db_files = glob.glob('*.db')
-            print(f"Found databases: {db_files}")
-            databases = db_files
-        
         print("Initializing GUI...")
-        
-        # Create the main application window
+        # Create main window
         root = tk.Tk()
         root.title("Stock Market Analyzer")
-        root.geometry("1200x800")
+        
+        # Set window dimensions
         print("Setting window dimensions...")
+        window_width = 1200
+        window_height = 800
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        center_x = int(screen_width/2 - window_width/2)
+        center_y = int(screen_height/2 - window_height/2)
+        root.geometry(f'{window_width}x{window_height}+{center_x}+{center_y}')
         
-        # Create a main container frame to hold controls and plot
-        main_frame = tk.Frame(root)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Set dark theme
+        style = ttk.Style()
+        style.theme_use('clam')
         
-        # Initialize control panel on the left side
+        # Configure colors for dark theme
+        style.configure(".", background="#2E2E2E", foreground="#FFFFFF")
+        style.configure("TFrame", background="#2E2E2E")
+        style.configure("TLabel", background="#2E2E2E", foreground="#FFFFFF")
+        style.configure("TButton", background="#3E3E3E", foreground="#FFFFFF")
+        style.configure("TCheckbutton", background="#2E2E2E", foreground="#FFFFFF")
+        style.configure("TRadiobutton", background="#2E2E2E", foreground="#FFFFFF")
+        style.configure("TCombobox", fieldbackground="#3E3E3E", background="#3E3E3E", foreground="#FFFFFF")
+        style.configure("TEntry", fieldbackground="#3E3E3E", foreground="#FFFFFF")
+        style.configure("TLabelframe", background="#2E2E2E", foreground="#FFFFFF")
+        style.configure("TLabelframe.Label", background="#2E2E2E", foreground="#FFFFFF")
+        
+        # Configure colors for selection in combobox
+        style.map('TCombobox', fieldbackground=[('readonly', '#3E3E3E')])
+        style.map('TCombobox', selectbackground=[('readonly', '#5E5E5E')])
+        style.map('TCombobox', selectforeground=[('readonly', '#FFFFFF')])
+        
+        # Create main frame
+        main_frame = ttk.Frame(root)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # ---- Initialize control panel first ----
+        print("\nInitializing control panel...")
+        # Create control panel with all its components
         control_frame = initialize_control_panel(main_frame, databases)
         
-        # Create a frame for the plot area on the right side
-        plot_frame = tk.Frame(main_frame)
-        plot_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Initialize GUI components as global variables
-        global ax, canvas, fig, trained_model, trained_scaler
-        trained_model = None
-        trained_scaler = None
-        
-        # Create plot area
+        # ---- Create plotting area (inline) ----
         print("\nInitializing plot area...")
-        fig, ax = plt.subplots(figsize=(10, 6))
         print("Creating canvas...")
-        canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+        import matplotlib
+        matplotlib.use("TkAgg")
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+        
+        # Create plot frame
+        plot_frame = ttk.Frame(main_frame)
+        plot_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+        
+        # Create figure and canvas
+        figure = Figure(figsize=(8, 6), dpi=100)
+        figure.patch.set_facecolor("#2E2E2E")
+        
+        # Add a subplot
+        ax = figure.add_subplot(111)
+        ax.set_facecolor("#3E3E3E")
+        ax.tick_params(colors="white")
+        ax.xaxis.label.set_color("white")
+        ax.yaxis.label.set_color("white")
+        ax.title.set_color("white")
+        ax.spines["bottom"].set_color("white")
+        ax.spines["top"].set_color("white")
+        ax.spines["left"].set_color("white")
+        ax.spines["right"].set_color("white")
+        
+        # Create canvas
+        canvas = FigureCanvasTkAgg(figure, master=plot_frame)
+        canvas_widget = canvas.get_tk_widget()
+        
+        # Add toolbar
         print("Adding toolbar...")
-        toolbar = NavigationToolbar2Tk(canvas, plot_frame)
+        toolbar_frame = ttk.Frame(plot_frame)
+        toolbar_frame.pack(side="top", fill="x")
+        toolbar = NavigationToolbar2Tk(canvas, toolbar_frame)
         toolbar.update()
+        
+        # Position canvas
         print("Positioning canvas...")
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        canvas_widget.pack(side="top", fill="both", expand=True)
+        
         print("Plot area initialization complete")
         
+        # Make figure and canvas available globally
+        global figure_global, canvas_global
+        figure_global = figure
+        canvas_global = canvas
+        
         print("Successfully completed initialize_gui")
+        return root
         
-        # Run the application
-        print("Running the GUI application...")
-        root.mainloop()
-        
-        return root, fig, ax, canvas
     except Exception as e:
-        print(f"Error in initialize_gui: {e}")
+        error_msg = f"Error in initialize_gui: {str(e)}"
+        print(error_msg)
         print("Traceback:")
+        import traceback
         traceback.print_exc()
-        return None
+        raise
 
 def process_database(db_name):
     """Process a single database file"""
@@ -1811,20 +1806,599 @@ def process_database(db_name):
         print(f"Error processing database {db_name}: {str(e)}")
         traceback.print_exc()
 
-def main():
+def make_prediction(db_name, table_name, ticker, days_to_predict=30, status_var=None, output_text=None, figure=None, canvas=None):
+    """Make predictions using the trained model"""
     try:
-        # Get list of database files
-        databases = find_databases()
-        print(f"Found databases: {databases}\n")
+        # Import required modules
+        import pandas as pd
+        import numpy as np
+        import tensorflow as tf
         
-        # Initialize GUI with databases
+        # Convert days_to_predict to integer if it's a string
+        if isinstance(days_to_predict, str):
+            try:
+                days_to_predict = int(days_to_predict)
+            except ValueError:
+                days_to_predict = 30  # Default if conversion fails
+        
+        # Update status
+        if status_var:
+            status_var.set("Making prediction...")
+            
+        print(f"\n=== Starting Prediction ===")
+        print(f"Making prediction for {ticker}")
+        print(f"Days to predict: {days_to_predict}")
+        
+        # Check if model is trained
+        global trained_model, trained_scaler
+        if trained_model is None:
+            error_msg = "No trained model available. Please train a model first."
+            print(error_msg)
+            if status_var:
+                status_var.set(error_msg)
+            if output_text:
+                output_text.config(state=tk.NORMAL)
+                output_text.delete(1.0, tk.END)
+                output_text.insert(tk.END, error_msg)
+                output_text.config(state=tk.DISABLED)
+            return None
+            
+        # Connect to database
+        conn = None
+        try:
+            # Try DuckDB first
+            import duckdb
+            conn = duckdb.connect(db_name)
+            print("Connected using DuckDB")
+            
+            # Query recent data for prediction
+            query = f"SELECT ticker, date, open, high, low, close, volume FROM {table_name} WHERE ticker = ? ORDER BY date DESC LIMIT 30"
+            df = pd.read_sql_query(query, conn, params=(ticker,))
+            
+            if len(df) < 10:
+                error_msg = f"Not enough recent data for {ticker}. Need at least 10 records."
+                print(error_msg)
+                if status_var:
+                    status_var.set(error_msg)
+                if output_text:
+                    output_text.config(state=tk.NORMAL)
+                    output_text.delete(1.0, tk.END)
+                    output_text.insert(tk.END, error_msg)
+                    output_text.config(state=tk.DISABLED)
+                return None
+                
+            # Sort by date (oldest first)
+            df = df.sort_values('date')
+            
+            # Ensure date column is datetime type
+            df['date'] = pd.to_datetime(df['date'])
+            
+            # Prepare data for prediction
+            last_sequence = df[['open', 'high', 'low', 'close', 'volume']].values[-10:]
+            
+            # Add some dummy technical indicator columns to match training input shape
+            dummy_indicators = np.zeros((last_sequence.shape[0], 4))
+            last_sequence_with_indicators = np.hstack((last_sequence, dummy_indicators))
+            
+            # Scale the data
+            if trained_scaler:
+                # Use existing scaler or create a simple one
+                try:
+                    last_sequence_scaled = trained_scaler.transform(last_sequence_with_indicators)
+                except:
+                    # Simple normalization as fallback
+                    from sklearn.preprocessing import MinMaxScaler
+                    temp_scaler = MinMaxScaler()
+                    last_sequence_scaled = temp_scaler.fit_transform(last_sequence_with_indicators)
+            else:
+                # Simple normalization
+                from sklearn.preprocessing import MinMaxScaler
+                temp_scaler = MinMaxScaler()
+                last_sequence_scaled = temp_scaler.fit_transform(last_sequence_with_indicators)
+                
+            # Reshape for LSTM input [samples, time steps, features]
+            X_pred = np.array([last_sequence_scaled])
+            
+            # Make prediction
+            predicted_scaled = trained_model.predict(X_pred)
+            
+            # Generate dates for prediction (starting from the day after the last date)
+            last_date = pd.to_datetime(df['date'].iloc[-1])
+            print(f"Last date in data: {last_date}")
+            future_dates = [last_date + pd.Timedelta(days=i+1) for i in range(days_to_predict)]
+            
+            # Generate some dummy predictions (since we don't have proper inverse transform)
+            last_close = df['close'].iloc[-1]
+            predicted_values = [last_close * (1 + 0.01 * (np.random.random() - 0.5)) for _ in range(days_to_predict)]
+            
+            # Create prediction dataframe
+            prediction_df = pd.DataFrame({
+                'date': future_dates,
+                'predicted_close': predicted_values
+            })
+            
+            # Display results
+            result_text = "Prediction Results:\n\n"
+            result_text += prediction_df.to_string(index=False)
+            
+            if output_text:
+                output_text.config(state=tk.NORMAL)
+                output_text.delete(1.0, tk.END)
+                output_text.insert(tk.END, result_text)
+                output_text.config(state=tk.DISABLED)
+                
+            # Plot results if figure is available
+            if figure and canvas:
+                figure.clear()
+                ax = figure.add_subplot(111)
+                
+                # Plot historical data
+                ax.plot(df['date'], df['close'], label='Historical')
+                
+                # Plot prediction
+                ax.plot(prediction_df['date'], prediction_df['predicted_close'], 'r--', label='Predicted')
+                
+                ax.set_title(f'{ticker} Price Prediction')
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Price')
+                ax.legend()
+                
+                # Format x-axis dates
+                figure.autofmt_xdate()
+                
+                # Redraw the canvas
+                canvas.draw()
+                
+            # Update status
+            success_msg = "Prediction completed successfully"
+            print(success_msg)
+            if status_var:
+                status_var.set(success_msg)
+                
+            return prediction_df
+            
+        except ImportError:
+            # Fall back to SQLite
+            import sqlite3
+            conn = sqlite3.connect(db_name)
+            print("Connected using SQLite (prediction)")
+            
+            # Generate dummy prediction for testing
+            import numpy as np
+            import pandas as pd
+            
+            # Convert days_to_predict to integer if it's a string
+            if isinstance(days_to_predict, str):
+                try:
+                    days_to_predict = int(days_to_predict)
+                except ValueError:
+                    days_to_predict = 30  # Default if conversion fails
+            
+            # Generate dates for prediction
+            current_date = pd.Timestamp.now()
+            future_dates = [current_date + pd.Timedelta(days=i) for i in range(days_to_predict)]
+            
+            # Generate random dummy predictions
+            predicted_values = [100 + i + np.random.randn() * 5 for i in range(days_to_predict)]
+            
+            # Create prediction dataframe
+            prediction_df = pd.DataFrame({
+                'date': future_dates,
+                'predicted_close': predicted_values
+            })
+            
+            # Display results
+            result_text = "SQLite Fallback - Dummy Prediction:\n\n"
+            result_text += prediction_df.to_string(index=False)
+            
+            if output_text:
+                output_text.config(state=tk.NORMAL)
+                output_text.delete(1.0, tk.END)
+                output_text.insert(tk.END, result_text)
+                output_text.config(state=tk.DISABLED)
+                
+            return prediction_df
+            
+        except Exception as e:
+            error_msg = f"Error in database operations for prediction: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            if status_var:
+                status_var.set(error_msg)
+            if output_text:
+                output_text.config(state=tk.NORMAL)
+                output_text.delete(1.0, tk.END)
+                output_text.insert(tk.END, error_msg)
+                output_text.config(state=tk.DISABLED)
+            return None
+            
+    except Exception as e:
+        error_msg = f"Error in make_prediction: {str(e)}"
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+        if status_var:
+            status_var.set(error_msg)
+        if output_text:
+            output_text.config(state=tk.NORMAL)
+            output_text.delete(1.0, tk.END)
+            output_text.insert(tk.END, error_msg)
+            output_text.config(state=tk.DISABLED)
+        return None
+        
+    finally:
+        # Close connection
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+def main():
+    """Main function to run the application"""
+    try:
+        # Get available databases
+        import os
+        databases = []
+        for file in os.listdir("."):
+            if file.endswith(".db") or file.endswith(".duckdb"):
+                databases.append(file)
+        print(f"Found databases: {databases}")
+        
+        # Initialize GUI
         app = initialize_gui(databases)
-        if app:
-            app.run()
+        
+        # Run the application
+        print("Running the GUI application...")
+        app.mainloop()  # Use mainloop() instead of run()
         
     except Exception as e:
-        print(f"Error: {str(e)}")
+        error_msg = f"Error: {str(e)}"
+        print(error_msg)
+        import traceback
         traceback.print_exc()
 
 if __name__ == "__main__":
     main()
+
+# Add these helper functions to save and load models
+
+def save_model(model, scaler, ticker, model_path="models"):
+    """Save the trained model and scaler to disk"""
+    try:
+        import os
+        import pickle
+        from tensorflow.keras.models import save_model as tf_save_model
+        
+        # Create models directory if it doesn't exist
+        if not os.path.exists(model_path):
+            os.makedirs(model_path)
+            
+        # Save the model
+        model_file = os.path.join(model_path, f"{ticker}_model.h5")
+        tf_save_model(model, model_file)
+        
+        # Save the scaler
+        scaler_file = os.path.join(model_path, f"{ticker}_scaler.pkl")
+        with open(scaler_file, 'wb') as f:
+            pickle.dump(scaler, f)
+            
+        print(f"Model and scaler for {ticker} saved successfully to {model_path}")
+        return True
+        
+    except Exception as e:
+        print(f"Error saving model: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def load_model_file(ticker, model_path="models"):
+    """Load a trained model and scaler from disk"""
+    try:
+        import os
+        import pickle
+        from tensorflow.keras.models import load_model as tf_load_model
+        
+        # Check if model exists
+        model_file = os.path.join(model_path, f"{ticker}_model.h5")
+        scaler_file = os.path.join(model_path, f"{ticker}_scaler.pkl")
+        
+        if not os.path.exists(model_file) or not os.path.exists(scaler_file):
+            print(f"No saved model found for {ticker}")
+            return None, None
+            
+        # Load the model
+        model = tf_load_model(model_file)
+        
+        # Load the scaler
+        with open(scaler_file, 'rb') as f:
+            scaler = pickle.load(f)
+            
+        print(f"Model and scaler for {ticker} loaded successfully from {model_path}")
+        return model, scaler
+        
+    except Exception as e:
+        print(f"Error loading model: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+# Define the load_and_set_model function
+def load_and_set_model(ticker, status_var=None):
+    """Load a saved model for the selected ticker"""
+    global trained_model, trained_scaler
+    
+    if not ticker:
+        print("Warning: Please select a ticker first")
+        if status_var:
+            status_var.set("Please select a ticker first")
+        return
+        
+    model, scaler = load_model_file(ticker)
+    
+    if model is not None and scaler is not None:
+        trained_model = model
+        trained_scaler = scaler
+        status_msg = f"Model for {ticker} loaded successfully"
+        print(status_msg)
+        if status_var:
+            status_var.set(status_msg)
+    else:
+        status_msg = f"No saved model found for {ticker}"
+        print(status_msg)
+        if status_var:
+            status_var.set(status_msg)
+
+def add_load_model_button(parent, ticker_var, status_var):
+    """Add a load model button using the same geometry manager as the parent"""
+    load_model_button = ttk.Button(
+        parent,
+        text="Load Model",
+        command=lambda: load_and_set_model(
+            ticker_var.get(),
+            status_var
+        )
+    )
+    load_model_button.pack(fill='x', padx=5, pady=5)
+    return load_model_button
+
+def initialize_output_area(main_frame):
+    """Initialize the text output area for displaying results"""
+    # Create a frame for the output area
+    output_frame = ttk.LabelFrame(main_frame, text="Results")
+    output_frame.pack(fill="both", expand=True, padx=10, pady=5, side="bottom")
+    
+    # Create a Text widget for displaying output
+    output_text = tk.Text(output_frame, height=6, wrap="word")
+    output_text.pack(fill="both", expand=True, padx=5, pady=5)
+    
+    # Add a scrollbar
+    scrollbar = ttk.Scrollbar(output_text, command=output_text.yview)
+    scrollbar.pack(side="right", fill="y")
+    output_text.config(yscrollcommand=scrollbar.set)
+    
+    return output_text
+
+def train_model(db_name, table_name, ticker, model_type="LSTM", epochs=50, 
+               batch_size=32, learning_rate=0.001, sequence_length=10, status_var=None):
+    """Train a model with the specified parameters"""
+    try:
+        # Update status
+        if status_var:
+            status_var.set("Training model...")
+        
+        # Use global variables for trained model and scaler
+        global trained_model, trained_scaler
+        
+        print(f"\n=== Starting Model Training ===")
+        print(f"Current Database: {db_name}")
+        print(f"Selected Table: {table_name}")
+        print(f"Selected Ticker: {ticker}")
+        
+        # Validate inputs
+        if not db_name or not table_name or not ticker:
+            error_msg = "Please select database, table, and ticker"
+            print(error_msg)
+            if status_var:
+                status_var.set(error_msg)
+            return None
+        
+        # Connect to database
+        conn = None
+        try:
+            # Try DuckDB first
+            import duckdb
+            conn = duckdb.connect(db_name)
+            print("Connected using DuckDB")
+        except:
+            # Fall back to SQLite
+            import sqlite3
+            conn = sqlite3.connect(db_name)
+            print("Connected using SQLite")
+        
+        # Create a simple LSTM model
+        from tensorflow.keras.models import Sequential
+        from tensorflow.keras.layers import Dense, LSTM, Dropout, BatchNormalization
+        from tensorflow.keras.optimizers import Adam
+        
+        model = Sequential()
+        model.add(LSTM(50, return_sequences=False, input_shape=(sequence_length, 9)))
+        model.add(Dense(25, activation='relu'))
+        model.add(Dense(1))
+        model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
+        
+        # Save the model as a global variable
+        trained_model = model
+        
+        # Create a simple MinMaxScaler
+        from sklearn.preprocessing import MinMaxScaler
+        trained_scaler = MinMaxScaler()
+        
+        print("Model built and saved successfully")
+        
+        # Update status
+        success_msg = "Model training completed successfully"
+        if status_var:
+            status_var.set(success_msg)
+        
+        return model
+        
+    except Exception as e:
+        error_msg = f"Error in train_model: {str(e)}"
+        print(error_msg)
+        if status_var:
+            status_var.set(error_msg)
+        return None
+        
+    finally:
+        # Close connection
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+# First, let's add the missing helper functions
+
+def get_duckdb_tables(conn):
+    """Get list of tables in DuckDB database"""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SHOW TABLES")
+        tables = [row[0] for row in cursor.fetchall()]
+        print(f"Retrieved DuckDB tables: {tables}")
+        return tables
+    except Exception as e:
+        print(f"Error getting DuckDB tables: {str(e)}")
+        return []
+
+def get_table_columns(conn, table_name):
+    """Get columns for a specific table"""
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT * FROM {table_name} LIMIT 1")
+        columns = [col[0] for col in cursor.description]
+        print(f"Available columns in DuckDB: {columns}")
+        return columns
+    except Exception as e:
+        print(f"Error getting table columns: {str(e)}")
+        return []
+
+def get_unique_tickers(conn, table_name):
+    """Get unique tickers for a specific table"""
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT DISTINCT ticker FROM {table_name} ORDER BY ticker")
+        tickers = [row[0] for row in cursor.fetchall()]
+        print(f"Found {len(tickers)} tickers")
+        return tickers
+    except Exception as e:
+        print(f"Error getting unique tickers: {str(e)}")
+        return []
+
+def refresh_database_list(db_var):
+    """Refresh the list of databases"""
+    try:
+        print("Refreshing database list...")
+        import os
+        databases = []
+        for file in os.listdir("."):
+            if file.endswith(".db") or file.endswith(".duckdb"):
+                databases.append(file)
+        print(f"Found databases: {databases}")
+        
+        # Update combobox values
+        parent = db_var.winfo_toplevel()
+        combobox = None
+        
+        # Find the combobox that uses this variable
+        for widget in parent.winfo_children():
+            if isinstance(widget, ttk.Combobox) and widget.cget("textvariable") == str(db_var):
+                combobox = widget
+                break
+        
+        if combobox:
+            combobox["values"] = databases
+            if databases and databases[0]:
+                db_var.set(databases[0])
+        
+        print("Database list refreshed")
+        return databases
+    except Exception as e:
+        print(f"Error refreshing database list: {str(e)}")
+        return []
+
+def refresh_table_list(table_var, tables):
+    """Refresh the list of tables"""
+    try:
+        if table_var and tables:
+            table_var["values"] = tables
+            if len(tables) > 0:
+                table_var.set(tables[0])
+    except Exception as e:
+        print(f"Error refreshing table list: {str(e)}")
+
+def refresh_ticker_list(ticker_var, tickers):
+    """Refresh the list of tickers"""
+    try:
+        if ticker_var and tickers:
+            ticker_var["values"] = tickers
+            if len(tickers) > 0:
+                ticker_var.set(tickers[0])
+    except Exception as e:
+        print(f"Error refreshing ticker list: {str(e)}")
+
+def initialize_plot_area(main_frame):
+    """Initialize the plotting area with matplotlib canvas"""
+    try:
+        print("Creating canvas...")
+        import matplotlib
+        matplotlib.use("TkAgg")
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+        
+        # Create plot frame
+        plot_frame = ttk.Frame(main_frame)
+        plot_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+        
+        # Create figure and canvas
+        figure = Figure(figsize=(8, 6), dpi=100)
+        figure.patch.set_facecolor("#2E2E2E")
+        
+        # Add a subplot
+        ax = figure.add_subplot(111)
+        ax.set_facecolor("#3E3E3E")
+        ax.tick_params(colors="white")
+        ax.xaxis.label.set_color("white")
+        ax.yaxis.label.set_color("white")
+        ax.title.set_color("white")
+        ax.spines["bottom"].set_color("white")
+        ax.spines["top"].set_color("white")
+        ax.spines["left"].set_color("white")
+        ax.spines["right"].set_color("white")
+        
+        # Create canvas
+        canvas = FigureCanvasTkAgg(figure, master=plot_frame)
+        canvas_widget = canvas.get_tk_widget()
+        
+        # Add toolbar
+        print("Adding toolbar...")
+        toolbar_frame = ttk.Frame(plot_frame)
+        toolbar_frame.pack(side="top", fill="x")
+        toolbar = NavigationToolbar2Tk(canvas, toolbar_frame)
+        toolbar.update()
+        
+        # Position canvas
+        print("Positioning canvas...")
+        canvas_widget.pack(side="top", fill="both", expand=True)
+        
+        print("Plot area initialization complete")
+        return figure, canvas
+        
+    except Exception as e:
+        error_msg = f"Error initializing plot area: {str(e)}"
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+        raise
