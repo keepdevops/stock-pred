@@ -2424,3 +2424,130 @@ def initialize_plot_area(main_frame):
         import traceback
         traceback.print_exc()
         raise
+
+def create_scrollable_plot_area(parent_frame):
+    """Create a scrollable frame for multiple plots
+    
+    Args:
+        parent_frame: The parent frame to contain the scrollable area
+        
+    Returns:
+        tuple: (scrollable_frame, canvas) - The frame where plots should be added and the canvas widget
+    """
+    # Create a frame to hold the canvas and scrollbar
+    container = ttk.Frame(parent_frame)
+    container.pack(fill="both", expand=True)
+    
+    # Create canvas with light grey background
+    canvas = tk.Canvas(container, bg="#E0E0E0", highlightthickness=0)
+    canvas.configure(borderwidth=0)
+    
+    # Create vertical scrollbar
+    vscrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+    
+    # Create horizontal scrollbar
+    hscrollbar = ttk.Scrollbar(container, orient="horizontal", command=canvas.xview)
+    
+    # Create the scrollable frame inside the canvas with matching background
+    scrollable_frame = ttk.Frame(canvas)
+    scrollable_frame.columnconfigure(0, weight=1)  # Make frame expand horizontally
+    
+    # Configure style for the frame to match canvas
+    style = ttk.Style()
+    style.configure("LightGrey.TFrame", background="#E0E0E0")
+    scrollable_frame.configure(style="LightGrey.TFrame")
+    
+    # Create window inside canvas for the frame
+    canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    
+    # Configure canvas to use scrollbars
+    canvas.configure(yscrollcommand=vscrollbar.set, xscrollcommand=hscrollbar.set)
+    
+    # Pack scrollbars
+    vscrollbar.pack(side="right", fill="y")
+    hscrollbar.pack(side="bottom", fill="x")
+    
+    return scrollable_frame, canvas
+
+def apply_plot_style(ax, title=None):
+    """Apply consistent styling to plot axes
+    
+    Args:
+        ax: Matplotlib axis object to style
+        title: Optional title for the plot
+    """
+    # Set title if provided
+    if title:
+        ax.set_title(title, color='white', fontsize=12)
+    
+    # Set labels with white font
+    ax.set_xlabel('Date', color='white')
+    ax.set_ylabel('Price ($)', color='white')
+    
+    # Make axis text white
+    ax.tick_params(axis='x', colors='white')
+    ax.tick_params(axis='y', colors='white')
+    
+    # Set the background color
+    ax.set_facecolor('#E0E0E0')  # Light grey background
+    
+    # Make the grid subtle but visible
+    ax.grid(True, linestyle='--', alpha=0.7)
+    
+    # Make axis spines white
+    for spine in ax.spines.values():
+        spine.set_color('white')
+
+def create_plot(figure, stock_data, title):
+    """Create a matplotlib plot on the given figure"""
+    ax = figure.add_subplot(111)
+    
+    # Plot the data
+    ax.plot(stock_data.index, stock_data['Close'], color='blue')
+    
+    # Apply consistent styling
+    apply_plot_style(ax, title)
+    
+    # Set the figure background color
+    figure.patch.set_facecolor('#E0E0E0')  # Light grey background
+    figure.tight_layout()
+    return ax
+
+def create_multiple_plots(parent_frame, stock_data_dict):
+    """Create multiple plots in the scrollable area
+    
+    Args:
+        parent_frame: Frame to add plots to
+        stock_data_dict: Dictionary of {ticker: dataframe} pairs
+    """
+    scrollable_frame, canvas = create_scrollable_plot_area(parent_frame)
+    
+    # Create a plot for each stock
+    for idx, (ticker, data) in enumerate(stock_data_dict.items()):
+        # Create container frame for this plot
+        plot_frame = ttk.Frame(scrollable_frame)
+        plot_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Create figure and plot
+        fig = Figure(figsize=(10, 4), dpi=100)
+        fig.patch.set_facecolor('#E0E0E0')  # Light grey background
+        
+        ax = fig.add_subplot(111)
+        ax.plot(data.index, data['Close'], color='blue')
+        
+        # Apply the consistent styling
+        apply_plot_style(ax, f"{ticker} - Stock Price")
+        
+        fig.tight_layout()
+        
+        # Create canvas to display the plot
+        canvas_plot = FigureCanvasTkAgg(fig, master=plot_frame)
+        canvas_plot.draw()
+        canvas_plot.get_tk_widget().pack(fill="both", expand=True)
+        
+        # Add toolbar
+        toolbar = NavigationToolbar2Tk(canvas_plot, plot_frame)
+        toolbar.update()
+        toolbar.pack()
+    
+    return scrollable_frame
