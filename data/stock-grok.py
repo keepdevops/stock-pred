@@ -895,11 +895,30 @@ class StockAIAgent:
             else:
                 self.clear_sector_selection()
             
-            # Update field selection
+            # Update field selection with scrollable container
             self.clear_field_selection()
+            
+            # Create a canvas with scrollbar for the fields
+            field_canvas = tk.Canvas(self.field_frame)
+            field_scrollbar = ttk.Scrollbar(self.field_frame, orient="vertical", command=field_canvas.yview)
+            scrollable_frame = ttk.Frame(field_canvas)
+            
+            # Configure the canvas
+            scrollable_frame.bind(
+                "<Configure>",
+                lambda e: field_canvas.configure(scrollregion=field_canvas.bbox("all"))
+            )
+            field_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+            field_canvas.configure(yscrollcommand=field_scrollbar.set)
+            
+            # Pack the scrollbar and canvas
+            field_scrollbar.pack(side="right", fill="y")
+            field_canvas.pack(side="left", fill="both", expand=True)
+            
+            # Add checkboxes to the scrollable frame
             for column in column_names:
                 var = tk.BooleanVar(value=True)  # Default to checked
-                chk = ttk.Checkbutton(self.field_frame, text=column, variable=var)
+                chk = ttk.Checkbutton(scrollable_frame, text=column, variable=var)
                 chk.pack(anchor='w')
                 self.field_vars[column] = var
             
@@ -1344,10 +1363,38 @@ def initialize_control_panel(main_frame, databases):
                     status_var.set(error_msg)
                 return False
         
-        # Create main control panel frame
+        # Create main control panel frame with fixed width
         print("Creating control panel...")
         control_panel = ttk.Frame(main_frame)
         control_panel.pack(side="left", fill="y", padx=10, pady=10)
+        
+        # Set a fixed width for the control panel
+        control_panel_width = 300  # Adjust this value as needed
+        
+        # Create a canvas with scrollbar for the entire control panel
+        control_canvas = tk.Canvas(control_panel, width=control_panel_width)
+        control_scrollbar = ttk.Scrollbar(control_panel, orient="vertical", command=control_canvas.yview)
+        scrollable_control_frame = ttk.Frame(control_canvas, width=control_panel_width-20)  # Account for scrollbar width
+        
+        # Configure the canvas
+        scrollable_control_frame.bind(
+            "<Configure>",
+            lambda e: control_canvas.configure(scrollregion=control_canvas.bbox("all"))
+        )
+        
+        # Create window inside canvas with specific width
+        control_canvas.create_window((0, 0), window=scrollable_control_frame, anchor="nw", width=control_panel_width-20)
+        control_canvas.configure(yscrollcommand=control_scrollbar.set)
+        
+        # Add mouse wheel scrolling
+        def _on_mousewheel(event):
+            control_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            
+        control_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        # Pack the scrollbar and canvas
+        control_scrollbar.pack(side="right", fill="y")
+        control_canvas.pack(side="left", fill="both", expand=True)
 
         # Create status variable for displaying messages
         status_var = tk.StringVar()
@@ -1364,13 +1411,13 @@ def initialize_control_panel(main_frame, databases):
         learning_rate_var = tk.DoubleVar(value=0.001)
         sequence_length_var = tk.IntVar(value=10)
         
-        # Create database selection frame
+        # Create database selection frame with constrained width
         print("Creating database controls...")
-        db_frame = ttk.LabelFrame(control_panel, text="Database Selection")
-        db_frame.pack(fill="x", padx=10, pady=5, anchor="n")
+        db_frame = ttk.LabelFrame(scrollable_control_frame, text="Database Selection")
+        db_frame.pack(fill="x", padx=5, pady=5, anchor="n")
         
         # Create database dropdown
-        db_combo = ttk.Combobox(db_frame, textvariable=db_var, state="readonly")
+        db_combo = ttk.Combobox(db_frame, textvariable=db_var, state="readonly", width=30)  # Set specific width
         db_combo["values"] = databases
         if databases and databases[0]:
             db_var.set(databases[0])
@@ -1384,28 +1431,28 @@ def initialize_control_panel(main_frame, databases):
         )
         refresh_button.pack(fill="x", padx=5, pady=5)
         
-        # Create table selection frame
+        # Create table selection frame with constrained width
         print("Creating table controls...")
-        table_frame = ttk.LabelFrame(control_panel, text="Table Selection")
-        table_frame.pack(fill="x", padx=10, pady=5)
+        table_frame = ttk.LabelFrame(scrollable_control_frame, text="Table Selection")
+        table_frame.pack(fill="x", padx=5, pady=5)
         
-        # Create table dropdown
-        table_combo = ttk.Combobox(table_frame, textvariable=table_var, state="readonly")
+        # Create table dropdown with fixed width
+        table_combo = ttk.Combobox(table_frame, textvariable=table_var, state="readonly", width=30)
         table_combo.pack(fill="x", padx=5, pady=5)
         
         # Create ticker selection frame
         print("Creating ticker selection frame...")
-        ticker_frame = ttk.LabelFrame(control_panel, text="Ticker Selection")
-        ticker_frame.pack(fill="x", padx=10, pady=5)
+        ticker_frame = ttk.LabelFrame(scrollable_control_frame, text="Ticker Selection")
+        ticker_frame.pack(fill="x", padx=5, pady=5)
         
-        # Create ticker Listbox with scrollbar
+        # Create ticker Listbox with scrollbar but with reduced height
         ticker_listbox_frame = ttk.Frame(ticker_frame)
         ticker_listbox_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
         ticker_listbox = tk.Listbox(
             ticker_listbox_frame,
             selectmode="multiple",
-            height=10,
+            height=6,  # Reduced height to save space
             bg="#3E3E3E",
             fg="white",
             selectbackground="#5E5E5E",
@@ -1439,24 +1486,27 @@ def initialize_control_panel(main_frame, databases):
         )
         clear_btn.pack(side="left", padx=2)
         
+        # Rest of UI components with reduced padding and appropriate sizing...
+        
         # Create duration controls
         print("Creating duration controls...")
-        duration_frame = ttk.LabelFrame(control_panel, text="Duration")
-        duration_frame.pack(fill="x", padx=10, pady=5)
+        duration_frame = ttk.LabelFrame(scrollable_control_frame, text="Duration")
+        duration_frame.pack(fill="x", padx=5, pady=5)
         
         # Create duration dropdown
         days_combo = ttk.Combobox(
             duration_frame, 
             textvariable=days_var, 
             values=[1, 7, 14, 30, 60, 90, 180, 365], 
-            state="readonly"
+            state="readonly",
+            width=30
         )
         days_combo.pack(fill="x", padx=5, pady=5)
         
         # Create AI controls
         print("Adding AI controls...")
-        ai_frame = ttk.LabelFrame(control_panel, text="AI Controls")
-        ai_frame.pack(fill="x", padx=10, pady=5)
+        ai_frame = ttk.LabelFrame(scrollable_control_frame, text="AI Controls")
+        ai_frame.pack(fill="x", padx=5, pady=5)
         
         # Add model architecture dropdown
         print("Adding training parameters...")
@@ -1465,36 +1515,37 @@ def initialize_control_panel(main_frame, databases):
             ai_frame, 
             textvariable=model_var, 
             values=["LSTM", "GRU", "SimpleRNN", "CNN-LSTM"], 
-            state="readonly"
+            state="readonly",
+            width=30
         )
         model_combo.pack(fill="x", padx=5, pady=2)
         
         # Add epochs input
         ttk.Label(ai_frame, text="Epochs:").pack(anchor="w", padx=5)
-        epochs_entry = ttk.Entry(ai_frame, textvariable=epochs_var)
+        epochs_entry = ttk.Entry(ai_frame, textvariable=epochs_var, width=30)
         epochs_entry.pack(fill="x", padx=5, pady=2)
         
         # Add batch size input
         ttk.Label(ai_frame, text="Batch Size:").pack(anchor="w", padx=5)
-        batch_size_entry = ttk.Entry(ai_frame, textvariable=batch_size_var)
+        batch_size_entry = ttk.Entry(ai_frame, textvariable=batch_size_var, width=30)
         batch_size_entry.pack(fill="x", padx=5, pady=2)
         
         # Add learning rate input
         ttk.Label(ai_frame, text="Learning Rate:").pack(anchor="w", padx=5)
-        learning_rate_entry = ttk.Entry(ai_frame, textvariable=learning_rate_var)
+        learning_rate_entry = ttk.Entry(ai_frame, textvariable=learning_rate_var, width=30)
         learning_rate_entry.pack(fill="x", padx=5, pady=2)
         
         # Add sequence length input
         ttk.Label(ai_frame, text="Sequence Length:").pack(anchor="w", padx=5)
-        sequence_length_entry = ttk.Entry(ai_frame, textvariable=sequence_length_var)
+        sequence_length_entry = ttk.Entry(ai_frame, textvariable=sequence_length_var, width=30)
         sequence_length_entry.pack(fill="x", padx=5, pady=2)
         
         # Create buttons frame
         buttons_frame = ttk.Frame(ai_frame)
         buttons_frame.pack(fill="x", padx=5, pady=5)
         
-        # Create the output text area
-        output_text = create_output_area(control_panel)
+        # Create the output text area with reduced height
+        output_text = create_output_area(scrollable_control_frame)
         
         # Define the event handlers for buttons after all UI elements are created
         def train_model_handler():
@@ -1662,7 +1713,7 @@ def initialize_control_panel(main_frame, databases):
         # Initial load of tables and tickers
         on_database_selected()
         
-        # Add status bar at the bottom of control panel
+        # Add status bar at the bottom of control panel (outside scrollable area)
         status_bar = ttk.Label(control_panel, textvariable=status_var, relief="sunken", anchor="w")
         status_bar.pack(side="bottom", fill="x", padx=5, pady=5)
         
