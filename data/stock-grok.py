@@ -85,16 +85,32 @@ class DataAdapter:
             print("\nPreparing prediction data...")
             df = data.copy()
             df['date'] = pd.to_datetime(df['date'])
-            df = df.set_index('date').sort_index()
-
+            
+            # Sort by date
+            if 'date' in df.columns:
+                df = df.sort_values('date')
+            
+            # Calculate technical indicators if needed
             df = self.calculate_technical_indicators(df)
-            df = df[self.features].fillna(method='ffill').fillna(method='bfill').fillna(0)
+            
+            # Make sure we have all required features
+            for feature in self.features:
+                if feature not in df.columns and feature != 'date':
+                    print(f"Warning: Feature '{feature}' not found in data. Adding zeros.")
+                    df[feature] = 0
+                    
+            # Use exactly the line provided for NaN handling
+            df = df[self.features].ffill().bfill().fillna(0)
+            
+            # Scale the data
             scaled_data = self.scaler.transform(df)
 
+            # Create sequences
             X = []
             for i in range(len(scaled_data) - self.sequence_length + 1):
                 X.append(scaled_data[i:i + self.sequence_length])
             return np.array(X) if X else None
+            
         except Exception as e:
             print(f"Error preparing prediction data: {e}")
             traceback.print_exc()
@@ -124,7 +140,7 @@ class DataAdapter:
                 ema12 = df['close'].ewm(span=12, adjust=False).mean()
                 ema26 = df['close'].ewm(span=26, adjust=False).mean()
                 df['macd'] = ema12 - ema26
-            return df.fillna(method='ffill').fillna(method='bfill').fillna(0)
+            return df.ffill().bfill().fillna(0)
         except Exception as e:
             print(f"Error calculating technical indicators: {e}")
             return df
@@ -195,7 +211,7 @@ class StockAIAgent:
             traceback.print_exc()
             return None
 
-    def predict(self, df):
+    def predict(self, df, future_only=False):
         """Make predictions using the trained model"""
         try:
             print("\nStarting prediction...")
@@ -206,12 +222,47 @@ class StockAIAgent:
             if X is None:
                 raise ValueError("Prediction data preparation failed")
 
+            if future_only:
+                X = X[-1:]  # Use only the last sequence
+
             predictions = self.model.predict(X)
-            return self.data_adapter.inverse_transform_predictions(predictions)
+            inverse_predictions = self.data_adapter.inverse_transform_predictions(predictions)
+            return inverse_predictions[0] if future_only else inverse_predictions
         except Exception as e:
             print(f"Error making predictions: {e}")
             traceback.print_exc()
             return None
+
+    def predict_future(self, df, days=30):
+        """Predict future prices for multiple days ahead"""
+        try:
+            predictions = []
+            temp_df = df.copy()
+
+            for _ in range(days):
+                next_price = self.predict(temp_df, future_only=True)
+                if next_price is None:
+                    break
+                predictions.append(next_price)
+
+                last_date = pd.to_datetime(temp_df['date'].iloc[-1])
+                next_date = last_date + pd.Timedelta(days=1)
+                new_row = pd.DataFrame({
+                    'date': [next_date],
+                    'open': [next_price],
+                    'high': [next_price * 1.005],  # Slight increase
+                    'low': [next_price * 0.995],   # Slight decrease
+                    'close': [next_price],
+                    'volume': [temp_df['volume'].mean()],
+                    'ticker': [temp_df['ticker'].iloc[-1]]
+                })
+                temp_df = pd.concat([temp_df, new_row], ignore_index=True)
+
+            return predictions
+        except Exception as e:
+            print(f"Error in future prediction: {e}")
+            traceback.print_exc()
+            return []
 
 def initialize_control_panel(main_frame, databases):
     """Initialize the control panel with database, table, and ticker controls"""
@@ -425,83 +476,169 @@ def initialize_control_panel(main_frame, databases):
             print(f"\n=== Starting Model Training ===\nDatabase: {db_name}\nTable: {table_name}\nTicker: {ticker}")
 
             engine = create_connection(db_name)
-            query = text(f"SELECT * FROM {table_name} WHERE ticker = :ticker")
-            df = pd.read_sql_query(query, engine, params={"ticker": ticker})
-            engine.dispose()
-
-            if df.empty:
-                error_msg = f"No data found for ticker {ticker}"
+            if not engine:
+                error_msg = f"Could not connect to database: {db_name}"
                 status_var.set(error_msg)
                 output_text.insert("end", f"Error: {error_msg}\n")
                 return
 
-            agent = StockAIAgent()
-            input_shape = (sequence_length_var.get(), len(agent.data_adapter.features))
-            agent.build_model(input_shape)
-            history = agent.train(df, epochs=epochs_var.get(), batch_size=batch_size_var.get())
+            try:
+                ticker_escaped = ticker.replace("'", "''")
+                query = text(f"SELECT * FROM {table_name} WHERE ticker = '{ticker_escaped}'")
+                with engine.connect() as conn:
+                    result = conn.execute(query)
+                    df = pd.DataFrame(result.fetchall(), columns=result.keys())
 
-            if history:
-                save_model(agent.model, agent.data_adapter.scaler, ticker)
-                trained_model, trained_scaler = agent.model, agent.data_adapter.scaler
-                status_var.set("Model training completed")
-                output_text.insert("end", "Model training completed successfully\n")
-            else:
+                if df.empty:
+                    error_msg = f"No data found for ticker {ticker}"
+                    status_var.set(error_msg)
+                    output_text.insert("end", f"Error: {error_msg}\n")
+                    return
+
+                # Check for required columns
+                required_columns = ['open', 'high', 'low', 'close', 'volume']
+                missing_columns = [col for col in required_columns if col not in df.columns]
+                if missing_columns:
+                    error_msg = f"Table '{table_name}' is missing required columns: {', '.join(missing_columns)}. Please select a table with stock price data (e.g., 'stocks')."
+                    status_var.set(error_msg)
+                    output_text.insert("end", f"Error: {error_msg}\n")
+                    messagebox.showerror("Error", error_msg)
+                    return
+
+                agent = StockAIAgent()
+                input_shape = (sequence_length_var.get(), len(agent.data_adapter.features))
+                agent.build_model(input_shape)
+                history = agent.train(df, epochs=epochs_var.get(), batch_size=batch_size_var.get())
+
+                if history:
+                    save_model(agent.model, agent.data_adapter.scaler, ticker)
+                    trained_model, trained_scaler = agent.model, agent.data_adapter.scaler
+                    status_var.set("Model training completed")
+                    output_text.insert("end", "Model training completed successfully\n")
+                else:
+                    status_var.set("Model training failed")
+                    output_text.insert("end", "Model training failed\n")
+            except Exception as e:
                 status_var.set("Model training failed")
-                output_text.insert("end", "Model training failed\n")
+                output_text.insert("end", f"Error during training: {str(e)}\n")
+                traceback.print_exc()
+            finally:
+                engine.dispose()
 
         def predict_handler():
-            global trained_model, trained_scaler
-            status_var.set("Making predictions...")
-            output_text.delete(1.0, "end")
+            try:
+                status_var.set("Making predictions...")
+                output_text.delete(1.0, "end")
 
-            db_name = db_var.get()
-            table_name = table_var.get()
-            selected_indices = ticker_listbox.curselection()
-            tickers = [ticker_listbox.get(i) for i in selected_indices]
-            days = days_var.get()
+                db_name = db_var.get()
+                table_name = table_var.get()
+                selected_indices = ticker_listbox.curselection()
+                tickers = [ticker_listbox.get(i) for i in selected_indices]
+                days = days_var.get()
 
-            if not tickers:
-                error_msg = "Please select at least one ticker"
-                status_var.set(error_msg)
-                output_text.insert("end", f"Error: {error_msg}\n")
-                messagebox.showerror("Error", error_msg)
-                return
+                if not tickers:
+                    error_msg = "Please select at least one ticker"
+                    status_var.set(error_msg)
+                    output_text.insert("end", f"Error: {error_msg}\n")
+                    messagebox.showerror("Error", error_msg)
+                    return
 
-            if not trained_model:
-                error_msg = "No trained model available. Please train a model first."
-                status_var.set(error_msg)
-                output_text.insert("end", f"Error: {error_msg}\n")
-                return
+                if not trained_model:
+                    error_msg = "No trained model available. Please train a model first."
+                    status_var.set(error_msg)
+                    output_text.insert("end", f"Error: {error_msg}\n")
+                    return
 
-            ticker = tickers[0]
-            output_text.insert("end", f"=== Starting Predictions ===\nTicker: {ticker}\nDays: {days}\n\n")
-            engine = create_connection(db_name)
-            query = text(f"SELECT * FROM {table_name} WHERE ticker = :ticker ORDER BY date")
-            df = pd.read_sql_query(query, engine, params={"ticker": ticker})
-            engine.dispose()
+                ticker = tickers[0]
+                output_text.insert("end", f"=== Starting Predictions ===\nTicker: {ticker}\nDays: {days}\n\n")
 
-            agent = StockAIAgent()
-            agent.model, agent.data_adapter.scaler = trained_model, trained_scaler
-            predictions = agent.predict(df)
+                engine = create_connection(db_name)
+                if not engine:
+                    error_msg = f"Could not connect to database: {db_name}"
+                    status_var.set(error_msg)
+                    output_text.insert("end", f"Error: {error_msg}\n")
+                    return
 
-            if predictions is not None:
-                last_date = pd.to_datetime(df['date'].iloc[-1])
-                future_dates = [last_date + pd.Timedelta(days=i + 1) for i in range(days)]
-                fig.clear()
-                ax = fig.add_subplot(111)
-                ax.plot(df['date'], df['close'], label='Historical')
-                ax.plot(future_dates[:len(predictions)], predictions, 'r--', label='Predicted')
-                ax.set_title(f"{ticker} Prediction")
-                ax.set_xlabel('Date')
-                ax.set_ylabel('Price')
-                ax.legend()
-                fig.autofmt_xdate()
-                canvas.draw()
-                status_var.set("Predictions completed")
-                output_text.insert("end", "Predictions completed successfully\n")
-            else:
+                try:
+                    ticker_escaped = ticker.replace("'", "''")
+                    query = text(f"SELECT * FROM {table_name} WHERE ticker = '{ticker_escaped}'")
+                    with engine.connect() as conn:
+                        result = conn.execute(query)
+                        df = pd.DataFrame(result.fetchall(), columns=result.keys())
+
+                    if df.empty:
+                        error_msg = f"No data found for ticker {ticker}"
+                        status_var.set(error_msg)
+                        output_text.insert("end", f"Error: {error_msg}\n")
+                        return
+
+                    df['date'] = pd.to_datetime(df['date'])
+                    df = df.sort_values('date')
+                    print(f"Prediction data rows: {len(df)}")  # Debug: Confirm row count
+
+                    # Check required columns for prediction
+                    required_columns = ['open', 'high', 'low', 'close', 'volume']
+                    missing_columns = [col for col in required_columns if col not in df.columns]
+                    if missing_columns:
+                        error_msg = f"Table '{table_name}' is missing required columns: {', '.join(missing_columns)}."
+                        status_var.set(error_msg)
+                        output_text.insert("end", f"Error: {error_msg}\n")
+                        return
+
+                    agent = StockAIAgent()
+                    agent.model, agent.data_adapter.scaler = trained_model, trained_scaler
+                    agent.sequence_length = sequence_length_var.get()
+
+                    # Historical predictions
+                    historical_predictions = agent.predict(df, future_only=False)
+                    print(f"Historical predictions length: {len(historical_predictions)}")  # Debug
+
+                    # Future predictions
+                    future_predictions = agent.predict_future(df, days=days)
+                    print(f"Future predictions length: {len(future_predictions)}")  # Debug
+
+                    if historical_predictions is not None and future_predictions:
+                        sequence_length = agent.sequence_length
+                        historical_dates = df['date'].iloc[sequence_length:]  # 3236 dates
+                        print(f"Historical dates length: {len(historical_dates)}")  # Debug
+
+                        # Trim historical predictions to match historical dates
+                        historical_predictions = historical_predictions[:len(historical_dates)]  # 3236 predictions
+
+                        last_date = pd.to_datetime(df['date'].iloc[-1])
+                        future_dates = [last_date + pd.Timedelta(days=i + 1) for i in range(days)]
+
+                        fig.clear()
+                        ax = fig.add_subplot(111)
+                        ax.set_facecolor("#3E3E3E")
+                        ax.tick_params(colors="white")
+                        for spine in ax.spines.values():
+                            spine.set_color("white")
+
+                        ax.plot(df['date'], df['close'], label='Historical', color='#00FF00')
+                        ax.plot(historical_dates, historical_predictions, 'g--', label='Historical Predictions')
+                        ax.plot(future_dates[:len(future_predictions)], future_predictions, 'r--', label='Future Predictions')
+                        ax.set_title(f"{ticker} Predictions", color="white")
+                        ax.set_xlabel('Date', color="white")
+                        ax.set_ylabel('Price', color="white")
+                        ax.legend(facecolor="#2E2E2E", labelcolor="white")
+                        fig.autofmt_xdate()
+                        canvas.draw()
+                        status_var.set("Predictions completed")
+                        output_text.insert("end", "Predictions completed successfully\n")
+                    else:
+                        status_var.set("Prediction failed")
+                        output_text.insert("end", "Prediction failed\n")
+                except Exception as e:
+                    status_var.set("Prediction failed")
+                    output_text.insert("end", f"Error in prediction: {str(e)}\n")
+                    traceback.print_exc()
+                finally:
+                    engine.dispose()
+            except Exception as e:
                 status_var.set("Prediction failed")
-                output_text.insert("end", "Prediction failed\n")
+                output_text.insert("end", f"Error: {str(e)}\n")
+                traceback.print_exc()
 
         db_combo.bind("<<ComboboxSelected>>", on_database_selected)
         table_combo.bind("<<ComboboxSelected>>", on_table_selected)
@@ -585,7 +722,10 @@ def save_model(model, scaler, ticker, model_path="models"):
     """Save the trained model and scaler"""
     try:
         os.makedirs(model_path, exist_ok=True)
-        model.save(os.path.join(model_path, f"{ticker}_model.h5"))
+        
+        # Use .keras extension as requested
+        model.save(os.path.join(model_path, f"{ticker}_model.keras"))
+        
         with open(os.path.join(model_path, f"{ticker}_scaler.pkl"), 'wb') as f:
             pickle.dump(scaler, f)
         print(f"Model and scaler saved for {ticker}")
