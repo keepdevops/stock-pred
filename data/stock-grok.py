@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import matplotlib.dates as mdates
+import matplotlib
 import tkinter as tk
 from tkinter import ttk, messagebox
 import traceback
@@ -279,11 +280,13 @@ def create_lstm_model(input_shape, neurons=50, num_layers=2, dropout_rate=0.2):
     """Create an LSTM model with the specified architecture"""
     model = tf.keras.Sequential()
     
-    # First layer with explicit input shape
-    model.add(tf.keras.layers.InputLayer(input_shape=input_shape))
+    # First layer with explicit Input shape
+    model.add(tf.keras.layers.Input(shape=input_shape))  # Use 'shape' here
+    model.add(tf.keras.layers.LSTM(neurons, return_sequences=(num_layers > 1)))
+    model.add(tf.keras.layers.Dropout(dropout_rate))
     
-    # LSTM layers
-    for i in range(num_layers):
+    # Additional LSTM layers if requested
+    for i in range(1, num_layers):
         return_sequences = i < num_layers - 1  # Only last layer doesn't return sequences
         model.add(tf.keras.layers.LSTM(neurons, return_sequences=return_sequences))
         model.add(tf.keras.layers.Dropout(dropout_rate))
@@ -295,29 +298,34 @@ def create_lstm_model(input_shape, neurons=50, num_layers=2, dropout_rate=0.2):
 def create_gru_model(input_shape, neurons=50, num_layers=2, dropout_rate=0.2):
     """Create a GRU model with the specified architecture"""
     model = tf.keras.Sequential()
-    model.add(tf.keras.layers.GRU(neurons, return_sequences=(num_layers > 1), 
-                             input_shape=input_shape))
+    
+    # First layer with explicit Input shape
+    model.add(tf.keras.layers.Input(shape=input_shape))  # Use 'shape' here
+    model.add(tf.keras.layers.GRU(neurons, return_sequences=(num_layers > 1)))
     model.add(tf.keras.layers.Dropout(dropout_rate))
     
-    # Add additional GRU layers if requested
+    # Additional GRU layers if requested
     for i in range(1, num_layers):
         return_sequences = i < num_layers - 1  # Only last layer doesn't return sequences
         model.add(tf.keras.layers.GRU(neurons, return_sequences=return_sequences))
         model.add(tf.keras.layers.Dropout(dropout_rate))
     
+    # Output layer
     model.add(tf.keras.layers.Dense(1))
     return model
 
 def create_bilstm_model(input_shape, neurons=50, num_layers=2, dropout_rate=0.2):
     """Create a Bidirectional LSTM model with the specified architecture"""
     model = tf.keras.Sequential()
+    
+    # First layer with explicit Input shape
+    model.add(tf.keras.layers.Input(shape=input_shape))  # Use 'shape' here
     model.add(tf.keras.layers.Bidirectional(
-        tf.keras.layers.LSTM(neurons, return_sequences=(num_layers > 1)),
-        input_shape=input_shape
+        tf.keras.layers.LSTM(neurons, return_sequences=(num_layers > 1))
     ))
     model.add(tf.keras.layers.Dropout(dropout_rate))
     
-    # Add additional BiLSTM layers if requested
+    # Additional BiLSTM layers if requested
     for i in range(1, num_layers):
         return_sequences = i < num_layers - 1  # Only last layer doesn't return sequences
         model.add(tf.keras.layers.Bidirectional(
@@ -325,6 +333,7 @@ def create_bilstm_model(input_shape, neurons=50, num_layers=2, dropout_rate=0.2)
         ))
         model.add(tf.keras.layers.Dropout(dropout_rate))
     
+    # Output layer
     model.add(tf.keras.layers.Dense(1))
     return model
 
@@ -332,9 +341,10 @@ def create_cnn_lstm_model(input_shape, filters=64, kernel_size=3, lstm_units=50,
     """Create a CNN-LSTM model with the specified architecture"""
     model = tf.keras.Sequential()
     
-    # CNN layers
+    # CNN layers with explicit Input shape
+    model.add(tf.keras.layers.Input(shape=input_shape))  # Use 'shape' here
     model.add(tf.keras.layers.Conv1D(filters=filters, kernel_size=kernel_size, 
-                                activation='relu', input_shape=input_shape))
+                                     activation='relu'))
     model.add(tf.keras.layers.MaxPooling1D(pool_size=2))
     model.add(tf.keras.layers.Dropout(dropout_rate))
     
@@ -786,11 +796,9 @@ def train_model_handler():
         messagebox.showerror("Error", error_msg)
         return
     
-    # Log the number of selected tickers
     output_text.insert("end", f"Selected {len(tickers)} tickers for training\n")
     output_text.update()
     
-    # Check if too many tickers are selected (optional warning)
     if len(tickers) > 10:
         warning_msg = f"You've selected {len(tickers)} tickers. Training with many tickers may take longer."
         output_text.insert("end", f"Warning: {warning_msg}\n")
@@ -807,15 +815,9 @@ def train_model_handler():
         return
 
     try:
-        # Build query with safe parameter escaping for DuckDB
-        # Use a more efficient approach for many tickers
         placeholders = ', '.join([':ticker' + str(i) for i in range(len(tickers))])
         query = text(f"SELECT * FROM {table_name} WHERE ticker IN ({placeholders})")
-        
-        # Create parameters dictionary
-        params = {}
-        for i, ticker in enumerate(tickers):
-            params['ticker' + str(i)] = ticker
+        params = {f'ticker{i}': ticker for i, ticker in enumerate(tickers)}
         
         output_text.insert("end", "Fetching data from database...\n")
         output_text.update()
@@ -830,13 +832,11 @@ def train_model_handler():
             output_text.insert("end", f"Error: {error_msg}\n")
             return
 
-        # Display data summary
         output_text.insert("end", f"Fetched {len(df)} rows of data\n")
         output_text.insert("end", f"Date range: {df['date'].min()} to {df['date'].max()}\n")
         output_text.insert("end", f"Tickers in dataset: {', '.join(df['ticker'].unique())}\n\n")
         output_text.update()
 
-        # Check required columns for training
         required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'ticker']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
@@ -847,7 +847,6 @@ def train_model_handler():
 
         df['date'] = pd.to_datetime(df['date'])
         
-        # Get training parameters from UI
         sequence_length = sequence_length_var.get()
         epochs = epochs_var.get()
         batch_size = batch_size_var.get()
@@ -857,7 +856,6 @@ def train_model_handler():
         neurons = neurons_var.get()
         dropout_rate = dropout_var.get()
         
-        # Display training information
         output_text.insert("end", f"Starting model training with:\n")
         output_text.insert("end", f"- Model type: {model_type}\n")
         output_text.insert("end", f"- Layers: {num_layers}\n")
@@ -868,10 +866,7 @@ def train_model_handler():
         output_text.insert("end", f"- Tickers: {', '.join(tickers)}\n\n")
         output_text.update()
         
-        # Create a data adapter with the specified sequence length
-        data_adapter = DataAdapter(sequence_length=sequence_length)  # Correct class name
-        
-        # Prepare training data
+        data_adapter = DataAdapter(sequence_length=sequence_length)
         X_train, X_val, y_train, y_val = data_adapter.prepare_training_data(df)
         
         if X_train is None or y_train is None:
@@ -882,10 +877,8 @@ def train_model_handler():
         output_text.insert("end", f"Data prepared: {X_train.shape[0]} training samples\n")
         output_text.update()
         
-        # Get input shape from prepared data
         input_shape = (X_train.shape[1], X_train.shape[2])
         
-        # Create the appropriate model based on selection
         if model_type == "LSTM":
             model = create_lstm_model(input_shape, neurons, num_layers, dropout_rate)
         elif model_type == "GRU":
@@ -895,14 +888,11 @@ def train_model_handler():
         elif model_type == "CNN-LSTM":
             model = create_cnn_lstm_model(input_shape, filters=neurons, lstm_units=neurons, dropout_rate=dropout_rate)
         else:
-            # Default to LSTM
             model = create_lstm_model(input_shape, neurons, num_layers, dropout_rate)
         
-        # Compile the model
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
         model.compile(optimizer=optimizer, loss='mean_squared_error')
         
-        # Train the model
         output_text.insert("end", "Training model... This may take a while.\n")
         output_text.update()
         
@@ -918,34 +908,80 @@ def train_model_handler():
             batch_size=batch_size,
             validation_data=(X_val, y_val),
             callbacks=[early_stopping],
-            verbose=0  # Disable TF's verbose output
+            verbose=0
         )
         
-        # Store the trained model and scaler
         trained_model = model
         trained_scaler = data_adapter.scaler
         
-        # Plot the training history
+        # Predict historical data for all tickers
+        agent = StockAIAgent()
+        agent.model, agent.data_adapter.scaler = trained_model, trained_scaler
+        agent.sequence_length = sequence_length
+        
+        historical_predictions = agent.predict(df, future_only=False)
+        historical_dates = df['date'].iloc[sequence_length:]
+        historical_predictions = historical_predictions[:len(historical_dates)]
+        
+        # Calculate metrics and plot
         fig.clear()
         ax = fig.add_subplot(111)
         ax.set_facecolor("#3E3E3E")
         ax.tick_params(colors="white")
         for spine in ax.spines.values():
             spine.set_color("white")
+        
+        ticker_metrics = {}
+        colors = plt.cm.tab20  # Access colormap through plt.cm
+        
+        for i, ticker in enumerate(tickers):
+            ticker_df = df[df['ticker'] == ticker]
+            ticker_dates = ticker_df['date'].iloc[sequence_length:]
+            ticker_close = ticker_df['close'].iloc[sequence_length:]
+            ticker_pred = historical_predictions[ticker_df.index[sequence_length:]-sequence_length]
             
-        ax.plot(history.history['loss'], color='#00FF00', label='Training Loss')
-        ax.plot(history.history['val_loss'], color='#FF4444', label='Validation Loss')
-        ax.set_title(f"Training Loss - {model_type} Model", color="white")
-        ax.set_xlabel('Epoch', color="white")
-        ax.set_ylabel('Loss', color="white")
-        ax.legend(facecolor="#2E2E2E", labelcolor="white")
+            # Plot with color index
+            color = colors(i / len(tickers))  # Normalize index to [0, 1] for colormap
+            ax.plot(ticker_df['date'], ticker_df['close'], label=f'{ticker} Historical', color=color)
+            ax.plot(ticker_dates, ticker_pred, '--', label=f'{ticker} Predicted', color=color)
+            
+            # Normalization percentage
+            start_price = ticker_df['close'].iloc[0]
+            end_price = ticker_pred[-1] if len(ticker_pred) > 0 else ticker_close.iloc[-1]
+            norm_pct = ((end_price - start_price) / start_price) * 100
+            
+            # Return in dollars (assume $1,000 initial investment)
+            initial_investment = 1000
+            shares = initial_investment / start_price
+            dollar_return = shares * (end_price - start_price)
+            
+            ticker_metrics[ticker] = {'norm_pct': norm_pct, 'dollar_return': dollar_return}
+        
+        # Rank tickers by normalization percentage
+        ranked_tickers = sorted(ticker_metrics.items(), key=lambda x: x[1]['norm_pct'], reverse=True)
+        
+        ax.set_title("Historical Data and Predictions", color="white")
+        ax.set_xlabel('Date', color="white")
+        ax.set_ylabel('Price', color="white")
+        ax.legend(facecolor="#2E2E2E", labelcolor="white", loc='best')
+        fig.autofmt_xdate()
         canvas.draw()
         
-        status_var.set(f"Model training completed successfully")
-        output_text.insert("end", "Model training completed successfully\n")
+        # Display metrics
+        output_text.insert("end", "Training Results:\n")
         output_text.insert("end", f"Trained for {len(history.history['loss'])} epochs\n")
         output_text.insert("end", f"Final training loss: {history.history['loss'][-1]:.6f}\n")
-        output_text.insert("end", f"Final validation loss: {history.history['val_loss'][-1]:.6f}\n")
+        output_text.insert("end", f"Final validation loss: {history.history['val_loss'][-1]:.6f}\n\n")
+        output_text.insert("end", "Ticker Performance Metrics:\n")
+        for ticker, metrics in ranked_tickers:
+            output_text.insert("end", f"{ticker}:\n")
+            output_text.insert("end", f"  Normalization %: {metrics['norm_pct']:.2f}%\n")
+            output_text.insert("end", f"  Return ($1,000 invested): ${metrics['dollar_return']:.2f}\n")
+        output_text.insert("end", "\nBest Ticker to Invest In (by Normalization %):\n")
+        output_text.insert("end", f"1. {ranked_tickers[0][0]} ({ranked_tickers[0][1]['norm_pct']:.2f}%)\n")
+        
+        status_var.set("Model training completed successfully")
+        
     except Exception as e:
         status_var.set("Model training failed")
         output_text.insert("end", f"Error during training: {str(e)}\n")
@@ -1040,8 +1076,8 @@ def predict_handler():
             output_text.insert("end", f"Error: {error_msg}\n")
             return
 
-        ticker = tickers[0]
-        output_text.insert("end", f"=== Starting Predictions ===\nTicker: {ticker}\nDays: {days}\n\n")
+        output_text.insert("end", f"=== Starting Predictions ===\nTickers: {', '.join(tickers)}\nDays: {days}\n\n")
+        output_text.update()
 
         engine = create_connection(db_name)
         if not engine:
@@ -1051,23 +1087,24 @@ def predict_handler():
             return
 
         try:
-            ticker_escaped = ticker.replace("'", "''")
-            query = text(f"SELECT * FROM {table_name} WHERE ticker = '{ticker_escaped}'")
+            placeholders = ', '.join([':ticker' + str(i) for i in range(len(tickers))])
+            query = text(f"SELECT * FROM {table_name} WHERE ticker IN ({placeholders})")
+            params = {f'ticker{i}': ticker for i, ticker in enumerate(tickers)}
+            
             with engine.connect() as conn:
-                result = conn.execute(query)
+                result = conn.execute(query, params)
                 df = pd.DataFrame(result.fetchall(), columns=result.keys())
 
             if df.empty:
-                error_msg = f"No data found for ticker {ticker}"
+                error_msg = f"No data found for selected tickers"
                 status_var.set(error_msg)
                 output_text.insert("end", f"Error: {error_msg}\n")
                 return
 
             df['date'] = pd.to_datetime(df['date'])
             df = df.sort_values('date')
-            print(f"Prediction data rows: {len(df)}")  # Debug: Confirm row count
+            print(f"Prediction data rows: {len(df)}")
 
-            # Check required columns for prediction
             required_columns = ['open', 'high', 'low', 'close', 'volume']
             missing_columns = [col for col in required_columns if col not in df.columns]
             if missing_columns:
@@ -1080,46 +1117,77 @@ def predict_handler():
             agent.model, agent.data_adapter.scaler = trained_model, trained_scaler
             agent.sequence_length = sequence_length_var.get()
 
-            # Historical predictions
+            # Historical and future predictions for all tickers
             historical_predictions = agent.predict(df, future_only=False)
-            print(f"Historical predictions length: {len(historical_predictions)}")  # Debug
-
-            # Future predictions
-            future_predictions = agent.predict_future(df, days=days)
-            print(f"Future predictions length: {len(future_predictions)}")  # Debug
-
-            if historical_predictions is not None and future_predictions:
-                sequence_length = agent.sequence_length
-                historical_dates = df['date'].iloc[sequence_length:]  # 3236 dates
-                print(f"Historical dates length: {len(historical_dates)}")  # Debug
-
-                # Trim historical predictions to match historical dates
-                historical_predictions = historical_predictions[:len(historical_dates)]  # 3236 predictions
-
-                last_date = pd.to_datetime(df['date'].iloc[-1])
-                future_dates = [last_date + pd.Timedelta(days=i + 1) for i in range(days)]
-
-                fig.clear()
-                ax = fig.add_subplot(111)
-                ax.set_facecolor("#3E3E3E")
-                ax.tick_params(colors="white")
-                for spine in ax.spines.values():
-                    spine.set_color("white")
-
-                ax.plot(df['date'], df['close'], label='Historical', color='#00FF00')
-                ax.plot(historical_dates, historical_predictions, 'g--', label='Historical Predictions')
-                ax.plot(future_dates[:len(future_predictions)], future_predictions, 'r--', label='Future Predictions')
-                ax.set_title(f"{ticker} Predictions", color="white")
-                ax.set_xlabel('Date', color="white")
-                ax.set_ylabel('Price', color="white")
-                ax.legend(facecolor="#2E2E2E", labelcolor="white")
-                fig.autofmt_xdate()
-                canvas.draw()
-                status_var.set("Predictions completed")
-                output_text.insert("end", "Predictions completed successfully\n")
-            else:
-                status_var.set("Prediction failed")
-                output_text.insert("end", "Prediction failed\n")
+            historical_dates = df['date'].iloc[agent.sequence_length:]
+            historical_predictions = historical_predictions[:len(historical_dates)]
+            
+            ticker_metrics = {}
+            fig.clear()
+            ax = fig.add_subplot(111)
+            ax.set_facecolor("#3E3E3E")
+            ax.tick_params(colors="white")
+            for spine in ax.spines.values():
+                spine.set_color("white")
+            
+            colors = matplotlib.colormaps['tab20']
+            
+            for i, ticker in enumerate(tickers):
+                ticker_df = df[df['ticker'] == ticker]
+                ticker_dates = ticker_df['date'].iloc[agent.sequence_length:]
+                ticker_close = ticker_df['close'].iloc[agent.sequence_length:]
+                ticker_hist_pred = historical_predictions[ticker_df.index[agent.sequence_length:]-agent.sequence_length]
+                
+                # Future predictions
+                future_pred = agent.predict_future(ticker_df, days=days)
+                last_date = pd.to_datetime(ticker_df['date'].iloc[-1])
+                future_dates = [last_date + pd.Timedelta(days=j + 1) for j in range(days)]
+                
+                # Ensure future_pred is valid
+                if future_pred is None or len(future_pred) == 0:
+                    output_text.insert("end", f"Warning: No future predictions for {ticker}\n")
+                    continue
+                
+                # Plot with color index
+                color = colors(i / len(tickers))
+                ax.plot(ticker_df['date'], ticker_df['close'], label=f'{ticker} Historical', color=color)
+                ax.plot(ticker_dates, ticker_hist_pred, '--', label=f'{ticker} Hist. Pred.', color=color)
+                ax.plot(future_dates[:len(future_pred)], future_pred, ':', label=f'{ticker} Future Pred.', color=color)
+                
+                # Normalization percentage (future)
+                start_price = ticker_df['close'].iloc[-1]
+                end_price = future_pred[-1] if future_pred else ticker_close.iloc[-1]
+                norm_pct = ((end_price - start_price) / start_price) * 100
+                
+                # Return in dollars (assume $1,000 initial investment)
+                initial_investment = 1000
+                shares = initial_investment / start_price
+                dollar_return = shares * (end_price - start_price)
+                
+                ticker_metrics[ticker] = {'norm_pct': norm_pct, 'dollar_return': dollar_return}
+            
+            # Rank tickers by normalization percentage
+            ranked_tickers = sorted(ticker_metrics.items(), key=lambda x: x[1]['norm_pct'], reverse=True)
+            
+            ax.set_title("Historical and Future Predictions", color="white")
+            ax.set_xlabel('Date', color="white")
+            ax.set_ylabel('Price', color="white")
+            ax.legend(facecolor="#2E2E2E", labelcolor="white", loc='best')
+            fig.autofmt_xdate()
+            canvas.draw()
+            
+            # Display metrics
+            output_text.insert("end", "Prediction Results:\n")
+            for ticker, metrics in ranked_tickers:
+                output_text.insert("end", f"{ticker}:\n")
+                output_text.insert("end", f"  Normalization %: {metrics['norm_pct']:.2f}%\n")
+                output_text.insert("end", f"  Return ($1,000 invested): ${metrics['dollar_return']:.2f}\n")
+            output_text.insert("end", "\nBest Ticker to Invest In (by Normalization %):\n")
+            output_text.insert("end", f"1. {ranked_tickers[0][0]} ({ranked_tickers[0][1]['norm_pct']:.2f}%)\n")
+            
+            status_var.set("Predictions completed")
+            output_text.insert("end", "Predictions completed successfully\n")
+            
         except Exception as e:
             status_var.set("Prediction failed")
             output_text.insert("end", f"Error in prediction: {str(e)}\n")
