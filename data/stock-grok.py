@@ -785,6 +785,19 @@ def train_model_handler():
         output_text.insert("end", f"Error: {error_msg}\n")
         messagebox.showerror("Error", error_msg)
         return
+    
+    # Log the number of selected tickers
+    output_text.insert("end", f"Selected {len(tickers)} tickers for training\n")
+    output_text.update()
+    
+    # Check if too many tickers are selected (optional warning)
+    if len(tickers) > 10:
+        warning_msg = f"You've selected {len(tickers)} tickers. Training with many tickers may take longer."
+        output_text.insert("end", f"Warning: {warning_msg}\n")
+        output_text.update()
+        if not messagebox.askyesno("Warning", f"{warning_msg}\n\nDo you want to continue?"):
+            status_var.set("Training cancelled")
+            return
 
     engine = create_connection(db_name)
     if not engine:
@@ -795,6 +808,7 @@ def train_model_handler():
 
     try:
         # Build query with safe parameter escaping for DuckDB
+        # Use a more efficient approach for many tickers
         placeholders = ', '.join([':ticker' + str(i) for i in range(len(tickers))])
         query = text(f"SELECT * FROM {table_name} WHERE ticker IN ({placeholders})")
         
@@ -802,7 +816,10 @@ def train_model_handler():
         params = {}
         for i, ticker in enumerate(tickers):
             params['ticker' + str(i)] = ticker
-            
+        
+        output_text.insert("end", "Fetching data from database...\n")
+        output_text.update()
+        
         with engine.connect() as conn:
             result = conn.execute(query, params)
             df = pd.DataFrame(result.fetchall(), columns=result.keys())
@@ -812,6 +829,12 @@ def train_model_handler():
             status_var.set(error_msg)
             output_text.insert("end", f"Error: {error_msg}\n")
             return
+
+        # Display data summary
+        output_text.insert("end", f"Fetched {len(df)} rows of data\n")
+        output_text.insert("end", f"Date range: {df['date'].min()} to {df['date'].max()}\n")
+        output_text.insert("end", f"Tickers in dataset: {', '.join(df['ticker'].unique())}\n\n")
+        output_text.update()
 
         # Check required columns for training
         required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'ticker']
