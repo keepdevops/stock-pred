@@ -2,6 +2,11 @@ import os
 # Set environment variable to silence Tk deprecation warning
 os.environ['TK_SILENCE_DEPRECATION'] = '1'  # Silence Tk deprecation warning
 
+# Force CPU usage for TensorFlow to avoid Metal GPU issues
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Hide all GPUs
+os.environ['TF_DISABLE_GRAPPLER'] = '1'    # Disable the Grappler optimizer
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'false'  # Disable memory growth
+
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization, Input
@@ -22,6 +27,7 @@ from datetime import datetime
 import glob
 from sklearn.preprocessing import MinMaxScaler
 import pickle
+import json
 
 # Set Matplotlib backend
 plt.switch_backend('TkAgg')
@@ -29,6 +35,11 @@ plt.switch_backend('TkAgg')
 # Global variables for trained model and scaler
 trained_model = None
 trained_scaler = None
+
+# Also add this after importing TensorFlow:
+import tensorflow as tf
+tf.config.set_visible_devices([], 'GPU')  # Hide all GPUs from TensorFlow
+tf.keras.backend.set_floatx('float32')    # Use float32 for better CPU performance
 
 def find_databases():
     """Find all database files in the current directory"""
@@ -59,7 +70,7 @@ class DataAdapter:
 
             # Calculate technical indicators
             df = self.calculate_technical_indicators(df)
-            df = df[self.features].fillna(method='ffill').fillna(method='bfill').fillna(0)
+            df = df[self.features].ffill().bfill().fillna(0)
             scaled_data = self.scaler.fit_transform(df)
 
             X, y = [], []
@@ -264,6 +275,112 @@ class StockAIAgent:
             traceback.print_exc()
             return []
 
+def create_lstm_model(input_shape, neurons=50, num_layers=2, dropout_rate=0.2):
+    """Create an LSTM model with the specified architecture"""
+    model = tf.keras.Sequential()
+    
+    # First layer with explicit input shape
+    model.add(tf.keras.layers.InputLayer(input_shape=input_shape))
+    
+    # LSTM layers
+    for i in range(num_layers):
+        return_sequences = i < num_layers - 1  # Only last layer doesn't return sequences
+        model.add(tf.keras.layers.LSTM(neurons, return_sequences=return_sequences))
+        model.add(tf.keras.layers.Dropout(dropout_rate))
+    
+    # Output layer
+    model.add(tf.keras.layers.Dense(1))
+    return model
+
+def create_gru_model(input_shape, neurons=50, num_layers=2, dropout_rate=0.2):
+    """Create a GRU model with the specified architecture"""
+    model = tf.keras.Sequential()
+    model.add(tf.keras.layers.GRU(neurons, return_sequences=(num_layers > 1), 
+                             input_shape=input_shape))
+    model.add(tf.keras.layers.Dropout(dropout_rate))
+    
+    # Add additional GRU layers if requested
+    for i in range(1, num_layers):
+        return_sequences = i < num_layers - 1  # Only last layer doesn't return sequences
+        model.add(tf.keras.layers.GRU(neurons, return_sequences=return_sequences))
+        model.add(tf.keras.layers.Dropout(dropout_rate))
+    
+    model.add(tf.keras.layers.Dense(1))
+    return model
+
+def create_bilstm_model(input_shape, neurons=50, num_layers=2, dropout_rate=0.2):
+    """Create a Bidirectional LSTM model with the specified architecture"""
+    model = tf.keras.Sequential()
+    model.add(tf.keras.layers.Bidirectional(
+        tf.keras.layers.LSTM(neurons, return_sequences=(num_layers > 1)),
+        input_shape=input_shape
+    ))
+    model.add(tf.keras.layers.Dropout(dropout_rate))
+    
+    # Add additional BiLSTM layers if requested
+    for i in range(1, num_layers):
+        return_sequences = i < num_layers - 1  # Only last layer doesn't return sequences
+        model.add(tf.keras.layers.Bidirectional(
+            tf.keras.layers.LSTM(neurons, return_sequences=return_sequences)
+        ))
+        model.add(tf.keras.layers.Dropout(dropout_rate))
+    
+    model.add(tf.keras.layers.Dense(1))
+    return model
+
+def create_cnn_lstm_model(input_shape, filters=64, kernel_size=3, lstm_units=50, dropout_rate=0.2):
+    """Create a CNN-LSTM model with the specified architecture"""
+    model = tf.keras.Sequential()
+    
+    # CNN layers
+    model.add(tf.keras.layers.Conv1D(filters=filters, kernel_size=kernel_size, 
+                                activation='relu', input_shape=input_shape))
+    model.add(tf.keras.layers.MaxPooling1D(pool_size=2))
+    model.add(tf.keras.layers.Dropout(dropout_rate))
+    
+    # LSTM layer
+    model.add(tf.keras.layers.LSTM(lstm_units))
+    model.add(tf.keras.layers.Dropout(dropout_rate))
+    
+    # Output layer
+    model.add(tf.keras.layers.Dense(1))
+    return model
+
+def configure_black_text_widgets():
+    """Configure all input widgets to have black text"""
+    style = ttk.Style()
+    
+    # Configure Entry widgets to have black text
+    style.map("TEntry", 
+        foreground=[("active", "black"), ("disabled", "gray"), ("!disabled", "black")],
+        fieldbackground=[("!disabled", "white")]
+    )
+    
+    # Configure Combobox widgets to have black text
+    style.map("TCombobox",
+        foreground=[("active", "black"), ("disabled", "gray"), ("!disabled", "black")],
+        fieldbackground=[("!disabled", "white")]
+    )
+    
+    # Configure Listbox text color
+    root.option_add("*TListbox*foreground", "black")
+    
+    # Configure dropdown lists in comboboxes to have black text
+    root.option_add('*TCombobox*Listbox.foreground', 'black')
+    
+    # Make the selected text in comboboxes black
+    style.map('TCombobox', 
+              foreground=[('readonly', 'black'), ('active', 'black'), ('disabled', 'gray')],
+              fieldbackground=[('readonly', 'white'), ('active', 'white'), ('disabled', 'gray')])
+    
+    # Configure Spinbox widgets to have black text
+    style.configure("BlackText.TSpinbox", foreground="black")
+    style.map("BlackText.TSpinbox",
+              foreground=[('readonly', 'black'), ('disabled', 'gray'), ('active', 'black')],
+              fieldbackground=[('readonly', 'white'), ('disabled', '#D3D3D3'), ('active', 'white')])
+    
+    return style
+
 def initialize_control_panel(main_frame, databases):
     """Initialize the control panel with database, table, and ticker controls"""
     try:
@@ -271,49 +388,28 @@ def initialize_control_panel(main_frame, databases):
         control_panel = ttk.Frame(main_frame)
         control_panel.pack(side="left", fill="y", padx=10, pady=10)
 
-        # Create a frame that will contain the canvas and scrollbar
+        # Create a scrollable container
         control_container = ttk.Frame(control_panel)
-        control_container.pack(side="top", fill="both", expand=True)
+        control_container.pack(fill="both", expand=True)
         
-        # Create canvas with a fixed width that will hold all controls
-        control_canvas = tk.Canvas(control_container, width=280)
-        control_scrollbar = ttk.Scrollbar(control_container, orient="vertical", command=control_canvas.yview)
+        canvas = tk.Canvas(control_container)
+        scrollbar = ttk.Scrollbar(control_container, orient="vertical", command=canvas.yview)
         
-        # Create the scrollable frame that will contain all the controls
-        scrollable_control_frame = ttk.Frame(control_canvas)
+        scrollable_control_frame = ttk.Frame(canvas)
         scrollable_control_frame.bind(
-            "<Configure>", 
-            lambda e: control_canvas.configure(scrollregion=control_canvas.bbox("all"))
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
         
-        # Make the scrollable frame expand to fill the canvas width
-        def _configure_frame(event):
-            # Update the scrollbar to match the size of the inner frame
-            size = (scrollable_control_frame.winfo_reqwidth(), scrollable_control_frame.winfo_reqheight())
-            control_canvas.config(scrollregion="0 0 %s %s" % size)
-            # Make sure the frame fills the canvas width
-            if scrollable_control_frame.winfo_reqwidth() != control_canvas.winfo_width():
-                control_canvas.config(width=scrollable_control_frame.winfo_reqwidth())
+        canvas.create_window((0, 0), window=scrollable_control_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
         
-        control_canvas.bind("<Configure>", _configure_frame)
-        
-        # Create window inside canvas which will be scrolled
-        control_canvas.create_window((0, 0), window=scrollable_control_frame, anchor="nw")
-        
-        # Pack the scrollbar and canvas properly
-        control_scrollbar.pack(side="right", fill="y")
-        control_canvas.pack(side="left", fill="both", expand=True)
-        
-        # Configure the canvas to respond to scrollbar
-        control_canvas.configure(yscrollcommand=control_scrollbar.set)
-        
-        # Add mousewheel scrolling support
-        def _on_mousewheel(event):
-            control_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        control_canvas.bind_all("<MouseWheel>", _on_mousewheel)  # Windows/macOS
-        control_canvas.bind_all("<Button-4>", lambda e: control_canvas.yview_scroll(-1, "units"))  # Linux
-        control_canvas.bind_all("<Button-5>", lambda e: control_canvas.yview_scroll(1, "units"))   # Linux
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
 
+        # Initialize variables
+        global status_var, db_var, table_var, days_var, epochs_var, batch_size_var, learning_rate_var, sequence_length_var, ticker_listbox, output_text
+        global model_type_var, num_layers_var, neurons_var, dropout_var
         status_var = tk.StringVar(value="Ready")
         db_var = tk.StringVar()
         table_var = tk.StringVar()
@@ -322,6 +418,12 @@ def initialize_control_panel(main_frame, databases):
         batch_size_var = tk.IntVar(value=32)
         learning_rate_var = tk.DoubleVar(value=0.001)
         sequence_length_var = tk.IntVar(value=10)
+        
+        # Model architecture variables
+        model_type_var = tk.StringVar(value="LSTM")
+        num_layers_var = tk.IntVar(value=2)
+        neurons_var = tk.IntVar(value=50)
+        dropout_var = tk.DoubleVar(value=0.2)
 
         # Database selection
         db_frame = ttk.LabelFrame(scrollable_control_frame, text="Database Selection")
@@ -341,27 +443,34 @@ def initialize_control_panel(main_frame, databases):
         # Ticker selection
         ticker_frame = ttk.LabelFrame(scrollable_control_frame, text="Ticker Selection")
         ticker_frame.pack(fill="x", padx=5, pady=5)
-        ticker_listbox = tk.Listbox(ticker_frame, selectmode="multiple", height=6, bg="#FFFFFF", fg="black", width=30)
-        ticker_scrollbar = ttk.Scrollbar(ticker_frame, orient="vertical", command=ticker_listbox.yview)
+        
+        # Create a container for the listbox and scrollbar
+        ticker_list_container = ttk.Frame(ticker_frame)
+        ticker_list_container.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Create the listbox with reduced height to make room for buttons
+        ticker_listbox = tk.Listbox(ticker_list_container, selectmode="multiple", height=5, bg="#FFFFFF", fg="black", width=30)
+        ticker_scrollbar = ttk.Scrollbar(ticker_list_container, orient="vertical", command=ticker_listbox.yview)
         ticker_listbox.configure(yscrollcommand=ticker_scrollbar.set)
         ticker_scrollbar.pack(side="right", fill="y")
-        ticker_listbox.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-
-        # Add selection control buttons
+        ticker_listbox.pack(side="left", fill="both", expand=True)
+        
+        # Add selection control buttons in their own frame with more space
         ticker_buttons_frame = ttk.Frame(ticker_frame)
-        ticker_buttons_frame.pack(side="bottom", fill="x", padx=5, pady=2)
-
-        # Select All button
+        ticker_buttons_frame.pack(fill="x", padx=5, pady=5)  # Increased padding
+        
         def select_all_tickers():
             ticker_listbox.select_set(0, tk.END)
-        select_all_button = ttk.Button(ticker_buttons_frame, text="Select All", command=select_all_tickers, width=13)
-        select_all_button.pack(side="left", padx=2, pady=2)
-
-        # Clear All button
+        
         def clear_all_tickers():
             ticker_listbox.selection_clear(0, tk.END)
-        clear_all_button = ttk.Button(ticker_buttons_frame, text="Clear All", command=clear_all_tickers, width=13)
-        clear_all_button.pack(side="right", padx=2, pady=2)
+        
+        # Create a more spacious button layout
+        select_all_button = ttk.Button(ticker_buttons_frame, text="Select All", command=select_all_tickers, width=12)
+        select_all_button.pack(side="left", padx=5, pady=3, expand=True, fill="x")
+        
+        clear_all_button = ttk.Button(ticker_buttons_frame, text="Clear All", command=clear_all_tickers, width=12)
+        clear_all_button.pack(side="right", padx=5, pady=3, expand=True, fill="x")
 
         # Duration controls
         duration_frame = ttk.LabelFrame(scrollable_control_frame, text="Prediction Duration")
@@ -369,29 +478,61 @@ def initialize_control_panel(main_frame, databases):
         days_combo = ttk.Combobox(duration_frame, textvariable=days_var, values=[1, 7, 14, 30, 60, 90], state="readonly", width=28)
         days_combo.pack(fill="x", padx=5, pady=5)
 
-        # AI controls
-        ai_frame = ttk.LabelFrame(scrollable_control_frame, text="AI Controls")
+        # AI model architecture controls
+        model_frame = ttk.LabelFrame(scrollable_control_frame, text="Model Architecture")
+        model_frame.pack(fill="x", padx=5, pady=5)
+        
+        ttk.Label(model_frame, text="Model Type:").pack(anchor="w", padx=5)
+        model_combo = ttk.Combobox(model_frame, textvariable=model_type_var, 
+                                  values=["LSTM", "GRU", "BiLSTM", "CNN-LSTM"],
+                                  state="readonly", width=28)
+        model_combo.config(foreground="black")  # This sets the text color
+        model_combo.option_add('*TCombobox*Listbox.foreground', 'black')  # This sets dropdown list text color
+        model_combo.pack(fill="x", padx=5, pady=2)
+        
+        ttk.Label(model_frame, text="Number of Layers:").pack(anchor="w", padx=5)
+        layers_spin = ttk.Spinbox(model_frame, from_=1, to=5, textvariable=num_layers_var, width=28, style="BlackText.TSpinbox")
+        layers_spin.pack(fill="x", padx=5, pady=2)
+        
+        ttk.Label(model_frame, text="Neurons per Layer:").pack(anchor="w", padx=5)
+        neurons_spin = ttk.Spinbox(model_frame, from_=10, to=200, textvariable=neurons_var, width=28, style="BlackText.TSpinbox")
+        neurons_spin.pack(fill="x", padx=5, pady=2)
+        
+        ttk.Label(model_frame, text="Dropout Rate:").pack(anchor="w", padx=5)
+        dropout_spin = ttk.Spinbox(model_frame, from_=0.0, to=0.5, increment=0.1, textvariable=dropout_var, width=28, style="BlackText.TSpinbox")
+        dropout_spin.pack(fill="x", padx=5, pady=2)
+
+        # AI training controls
+        ai_frame = ttk.LabelFrame(scrollable_control_frame, text="Training Parameters")
         ai_frame.pack(fill="x", padx=5, pady=5)
         ttk.Label(ai_frame, text="Epochs:").pack(anchor="w", padx=5)
-        epochs_entry = ttk.Entry(ai_frame, textvariable=epochs_var, width=28, style="EntryStyle.TEntry")
+        epochs_entry = ttk.Entry(ai_frame, textvariable=epochs_var, width=28, style="BlackText.TEntry")
         epochs_entry.pack(fill="x", padx=5, pady=2)
         ttk.Label(ai_frame, text="Batch Size:").pack(anchor="w", padx=5)
-        batch_size_entry = ttk.Entry(ai_frame, textvariable=batch_size_var, width=28, style="EntryStyle.TEntry")
+        batch_size_entry = ttk.Entry(ai_frame, textvariable=batch_size_var, width=28, style="BlackText.TEntry")
         batch_size_entry.pack(fill="x", padx=5, pady=2)
         ttk.Label(ai_frame, text="Learning Rate:").pack(anchor="w", padx=5)
-        learning_rate_entry = ttk.Entry(ai_frame, textvariable=learning_rate_var, width=28, style="EntryStyle.TEntry")
+        learning_rate_entry = ttk.Entry(ai_frame, textvariable=learning_rate_var, width=28, style="BlackText.TEntry")
         learning_rate_entry.pack(fill="x", padx=5, pady=2)
         ttk.Label(ai_frame, text="Sequence Length:").pack(anchor="w", padx=5)
-        sequence_length_entry = ttk.Entry(ai_frame, textvariable=sequence_length_var, width=28, style="EntryStyle.TEntry")
+        sequence_length_entry = ttk.Entry(ai_frame, textvariable=sequence_length_var, width=28, style="BlackText.TEntry")
         sequence_length_entry.pack(fill="x", padx=5, pady=2)
 
         # Buttons
-        buttons_frame = ttk.Frame(ai_frame)
+        buttons_frame = ttk.Frame(scrollable_control_frame)
         buttons_frame.pack(fill="x", padx=5, pady=5)
-        train_button = ttk.Button(buttons_frame, text="Train Model")
+        train_button = ttk.Button(buttons_frame, text="Train Model", command=train_model_handler)
         train_button.pack(side="left", fill="x", expand=True, padx=2)
-        predict_button = ttk.Button(buttons_frame, text="Make Prediction")
+        predict_button = ttk.Button(buttons_frame, text="Make Prediction", command=predict_handler)
         predict_button.pack(side="right", fill="x", expand=True, padx=2)
+
+        # Model save/load buttons
+        model_io_frame = ttk.Frame(scrollable_control_frame)
+        model_io_frame.pack(fill="x", padx=5, pady=5)
+        save_button = ttk.Button(model_io_frame, text="Save Model", command=save_model_handler)
+        save_button.pack(side="left", fill="x", expand=True, padx=2)
+        load_button = ttk.Button(model_io_frame, text="Load Model", command=load_model_handler)
+        load_button.pack(side="right", fill="x", expand=True, padx=2)
 
         # Output area
         output_frame = ttk.LabelFrame(scrollable_control_frame, text="Results")
@@ -409,241 +550,24 @@ def initialize_control_panel(main_frame, databases):
         # Event handlers
         def on_database_selected(event=None):
             db_name = db_var.get()
-            engine = create_connection(db_name)
-            if engine:
-                print(f"Database selected: {db_name}")
-                try:
-                    with engine.connect() as conn:
-                        # Use text() to create an executable SQL statement
-                        tables = conn.execute(text("SHOW TABLES")).fetchall()
-                    tables = [t[0] for t in tables]
-                    table_combo["values"] = tables
-                    if tables:
-                        table_var.set(tables[0])
-                        on_table_selected()
-                except Exception as e:
-                    print(f"Error fetching tables: {e}")
-                    # Fallback method for SQLite databases
-                    with engine.connect() as conn:
-                        tables = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
-                    tables = [t[0] for t in tables]
-                    table_combo["values"] = tables
-                    if tables:
-                        table_var.set(tables[0])
-                        on_table_selected()
-                finally:
-                    engine.dispose()
-
+            if db_name:
+                tables = get_tables(db_name)
+                table_combo["values"] = tables
+                if tables:
+                    table_var.set(tables[0])
+                    on_table_selected()
+                else:
+                    table_var.set("")
+                    ticker_listbox.delete(0, tk.END)
+        
         def on_table_selected(event=None):
             db_name = db_var.get()
             table_name = table_var.get()
-            if not db_name or not table_name:
-                return
-            print(f"Table selected: {table_name}")
-            engine = create_connection(db_name)
-            if engine:
-                ticker_listbox.delete(0, tk.END)
-                with engine.connect() as conn:
-                    # Use text() to create an executable SQL statement and parameters binding
-                    query = text(f"SELECT DISTINCT ticker FROM {table_name} ORDER BY ticker")
-                    tickers = conn.execute(query).fetchall()
-                tickers = [t[0] for t in tickers]
-                for ticker in tickers:
-                    ticker_listbox.insert(tk.END, ticker)
-                if tickers:
-                    ticker_listbox.selection_set(0)
-                engine.dispose()
-
-        def train_model_handler():
-            global trained_model, trained_scaler
-            status_var.set("Training model...")
-            output_text.delete(1.0, "end")
-
-            db_name = db_var.get()
-            table_name = table_var.get()
-            selected_indices = ticker_listbox.curselection()
-            tickers = [ticker_listbox.get(i) for i in selected_indices]
-
-            if not tickers:
-                error_msg = "Please select at least one ticker before training"
-                status_var.set(error_msg)
-                output_text.insert("end", f"Error: {error_msg}\n")
-                messagebox.showerror("Error", error_msg)
-                return
-
-            ticker = tickers[0]
-            output_text.insert("end", f"=== Starting Model Training ===\nDatabase: {db_name}\nTable: {table_name}\nTicker: {ticker}\n\n")
-            print(f"\n=== Starting Model Training ===\nDatabase: {db_name}\nTable: {table_name}\nTicker: {ticker}")
-
-            engine = create_connection(db_name)
-            if not engine:
-                error_msg = f"Could not connect to database: {db_name}"
-                status_var.set(error_msg)
-                output_text.insert("end", f"Error: {error_msg}\n")
-                return
-
-            try:
-                ticker_escaped = ticker.replace("'", "''")
-                query = text(f"SELECT * FROM {table_name} WHERE ticker = '{ticker_escaped}'")
-                with engine.connect() as conn:
-                    result = conn.execute(query)
-                    df = pd.DataFrame(result.fetchall(), columns=result.keys())
-
-                if df.empty:
-                    error_msg = f"No data found for ticker {ticker}"
-                    status_var.set(error_msg)
-                    output_text.insert("end", f"Error: {error_msg}\n")
-                    return
-
-                # Check for required columns
-                required_columns = ['open', 'high', 'low', 'close', 'volume']
-                missing_columns = [col for col in required_columns if col not in df.columns]
-                if missing_columns:
-                    error_msg = f"Table '{table_name}' is missing required columns: {', '.join(missing_columns)}. Please select a table with stock price data (e.g., 'stocks')."
-                    status_var.set(error_msg)
-                    output_text.insert("end", f"Error: {error_msg}\n")
-                    messagebox.showerror("Error", error_msg)
-                    return
-
-                agent = StockAIAgent()
-                input_shape = (sequence_length_var.get(), len(agent.data_adapter.features))
-                agent.build_model(input_shape)
-                history = agent.train(df, epochs=epochs_var.get(), batch_size=batch_size_var.get())
-
-                if history:
-                    save_model(agent.model, agent.data_adapter.scaler, ticker)
-                    trained_model, trained_scaler = agent.model, agent.data_adapter.scaler
-                    status_var.set("Model training completed")
-                    output_text.insert("end", "Model training completed successfully\n")
-                else:
-                    status_var.set("Model training failed")
-                    output_text.insert("end", "Model training failed\n")
-            except Exception as e:
-                status_var.set("Model training failed")
-                output_text.insert("end", f"Error during training: {str(e)}\n")
-                traceback.print_exc()
-            finally:
-                engine.dispose()
-
-        def predict_handler():
-            try:
-                status_var.set("Making predictions...")
-                output_text.delete(1.0, "end")
-
-                db_name = db_var.get()
-                table_name = table_var.get()
-                selected_indices = ticker_listbox.curselection()
-                tickers = [ticker_listbox.get(i) for i in selected_indices]
-                days = days_var.get()
-
-                if not tickers:
-                    error_msg = "Please select at least one ticker"
-                    status_var.set(error_msg)
-                    output_text.insert("end", f"Error: {error_msg}\n")
-                    messagebox.showerror("Error", error_msg)
-                    return
-
-                if not trained_model:
-                    error_msg = "No trained model available. Please train a model first."
-                    status_var.set(error_msg)
-                    output_text.insert("end", f"Error: {error_msg}\n")
-                    return
-
-                ticker = tickers[0]
-                output_text.insert("end", f"=== Starting Predictions ===\nTicker: {ticker}\nDays: {days}\n\n")
-
-                engine = create_connection(db_name)
-                if not engine:
-                    error_msg = f"Could not connect to database: {db_name}"
-                    status_var.set(error_msg)
-                    output_text.insert("end", f"Error: {error_msg}\n")
-                    return
-
-                try:
-                    ticker_escaped = ticker.replace("'", "''")
-                    query = text(f"SELECT * FROM {table_name} WHERE ticker = '{ticker_escaped}'")
-                    with engine.connect() as conn:
-                        result = conn.execute(query)
-                        df = pd.DataFrame(result.fetchall(), columns=result.keys())
-
-                    if df.empty:
-                        error_msg = f"No data found for ticker {ticker}"
-                        status_var.set(error_msg)
-                        output_text.insert("end", f"Error: {error_msg}\n")
-                        return
-
-                    df['date'] = pd.to_datetime(df['date'])
-                    df = df.sort_values('date')
-                    print(f"Prediction data rows: {len(df)}")  # Debug: Confirm row count
-
-                    # Check required columns for prediction
-                    required_columns = ['open', 'high', 'low', 'close', 'volume']
-                    missing_columns = [col for col in required_columns if col not in df.columns]
-                    if missing_columns:
-                        error_msg = f"Table '{table_name}' is missing required columns: {', '.join(missing_columns)}."
-                        status_var.set(error_msg)
-                        output_text.insert("end", f"Error: {error_msg}\n")
-                        return
-
-                    agent = StockAIAgent()
-                    agent.model, agent.data_adapter.scaler = trained_model, trained_scaler
-                    agent.sequence_length = sequence_length_var.get()
-
-                    # Historical predictions
-                    historical_predictions = agent.predict(df, future_only=False)
-                    print(f"Historical predictions length: {len(historical_predictions)}")  # Debug
-
-                    # Future predictions
-                    future_predictions = agent.predict_future(df, days=days)
-                    print(f"Future predictions length: {len(future_predictions)}")  # Debug
-
-                    if historical_predictions is not None and future_predictions:
-                        sequence_length = agent.sequence_length
-                        historical_dates = df['date'].iloc[sequence_length:]  # 3236 dates
-                        print(f"Historical dates length: {len(historical_dates)}")  # Debug
-
-                        # Trim historical predictions to match historical dates
-                        historical_predictions = historical_predictions[:len(historical_dates)]  # 3236 predictions
-
-                        last_date = pd.to_datetime(df['date'].iloc[-1])
-                        future_dates = [last_date + pd.Timedelta(days=i + 1) for i in range(days)]
-
-                        fig.clear()
-                        ax = fig.add_subplot(111)
-                        ax.set_facecolor("#3E3E3E")
-                        ax.tick_params(colors="white")
-                        for spine in ax.spines.values():
-                            spine.set_color("white")
-
-                        ax.plot(df['date'], df['close'], label='Historical', color='#00FF00')
-                        ax.plot(historical_dates, historical_predictions, 'g--', label='Historical Predictions')
-                        ax.plot(future_dates[:len(future_predictions)], future_predictions, 'r--', label='Future Predictions')
-                        ax.set_title(f"{ticker} Predictions", color="white")
-                        ax.set_xlabel('Date', color="white")
-                        ax.set_ylabel('Price', color="white")
-                        ax.legend(facecolor="#2E2E2E", labelcolor="white")
-                        fig.autofmt_xdate()
-                        canvas.draw()
-                        status_var.set("Predictions completed")
-                        output_text.insert("end", "Predictions completed successfully\n")
-                    else:
-                        status_var.set("Prediction failed")
-                        output_text.insert("end", "Prediction failed\n")
-                except Exception as e:
-                    status_var.set("Prediction failed")
-                    output_text.insert("end", f"Error in prediction: {str(e)}\n")
-                    traceback.print_exc()
-                finally:
-                    engine.dispose()
-            except Exception as e:
-                status_var.set("Prediction failed")
-                output_text.insert("end", f"Error: {str(e)}\n")
-                traceback.print_exc()
+            if db_name and table_name:
+                load_tickers(db_name, table_name, ticker_listbox)
 
         db_combo.bind("<<ComboboxSelected>>", on_database_selected)
         table_combo.bind("<<ComboboxSelected>>", on_table_selected)
-        train_button.configure(command=train_model_handler)
-        predict_button.configure(command=predict_handler)
 
         on_database_selected()
         print("AI controls setup complete")
@@ -678,7 +602,7 @@ def initialize_gui(databases):
                  selectforeground=[('readonly', 'white')])
         
         # Create a custom style for Entry widgets with black text on white background
-        style.configure("EntryStyle.TEntry", foreground='black', fieldbackground='white')
+        style.configure("BlackText.TEntry", foreground="black")
         
         # Configure listbox and combobox dropdown selection colors for better contrast
         root.option_add('*TCombobox*Listbox.background', '#FFFFFF')
@@ -733,6 +657,456 @@ def save_model(model, scaler, ticker, model_path="models"):
     except Exception as e:
         print(f"Error saving model: {e}")
         return False
+
+def save_model_handler():
+    """Handle saving model with metadata"""
+    if not trained_model:
+        messagebox.showerror("Error", "No trained model available to save")
+        return
+    
+    selected_indices = ticker_listbox.curselection()
+    if not selected_indices:
+        messagebox.showerror("Error", "Please select at least one ticker")
+        return
+        
+    ticker = ticker_listbox.get(selected_indices[0])
+    model_type = model_type_var.get()
+    
+    try:
+        model_dir = "models"
+        os.makedirs(model_dir, exist_ok=True)
+        model_path = os.path.join(model_dir, f"{ticker}_{model_type.lower()}_model.keras")
+        scaler_path = os.path.join(model_dir, f"{ticker}_{model_type.lower()}_scaler.pkl")
+        
+        # Save model and scaler
+        trained_model.save(model_path)
+        with open(scaler_path, 'wb') as f:
+            pickle.dump(trained_scaler, f)
+            
+        # Save metadata
+        metadata = {
+            "ticker": ticker,
+            "model_type": model_type,
+            "sequence_length": sequence_length_var.get(),
+            "epochs": epochs_var.get(),
+            "batch_size": batch_size_var.get(),
+            "num_layers": num_layers_var.get(),
+            "neurons": neurons_var.get(),
+            "dropout": dropout_var.get(),
+            "saved_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        with open(os.path.join(model_dir, f"{ticker}_{model_type.lower()}_metadata.json"), 'w') as f:
+            json.dump(metadata, f)
+            
+        status_var.set(f"Model saved for {ticker}")
+        output_text.insert("end", f"Model saved to {model_path}\n")
+        
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to save model: {str(e)}")
+        traceback.print_exc()
+
+def load_model_handler():
+    """Handle loading a previously saved model"""
+    global trained_model, trained_scaler
+    
+    selected_indices = ticker_listbox.curselection()
+    if not selected_indices:
+        messagebox.showerror("Error", "Please select at least one ticker")
+        return
+        
+    ticker = ticker_listbox.get(selected_indices[0])
+    model_type = model_type_var.get()
+    
+    try:
+        model_dir = "models"
+        model_path = os.path.join(model_dir, f"{ticker}_{model_type.lower()}_model.keras")
+        scaler_path = os.path.join(model_dir, f"{ticker}_{model_type.lower()}_scaler.pkl")
+        metadata_path = os.path.join(model_dir, f"{ticker}_{model_type.lower()}_metadata.json")
+        
+        # Check if all required files exist
+        if not os.path.exists(model_path):
+            messagebox.showerror("Error", f"No model found for {ticker} ({model_type}) at {model_path}")
+            return
+        if not os.path.exists(scaler_path):
+            messagebox.showerror("Error", f"No scaler found for {ticker} ({model_type}) at {scaler_path}")
+            return
+        if not os.path.exists(metadata_path):
+            messagebox.showwarning("Warning", f"No metadata found for {ticker} ({model_type}) at {metadata_path}. Loading model without metadata.")
+
+        # Load the model
+        trained_model = tf.keras.models.load_model(model_path)
+        
+        # Load the scaler
+        with open(scaler_path, 'rb') as f:
+            trained_scaler = pickle.load(f)
+        
+        # Load and display metadata if available
+        metadata = {}
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            output_text.insert("end", f"Loaded model metadata:\n")
+            for key, value in metadata.items():
+                output_text.insert("end", f"- {key}: {value}\n")
+        
+        status_var.set(f"Model loaded for {ticker} ({model_type})")
+        output_text.insert("end", f"Model loaded from {model_path}\n")
+        output_text.insert("end", f"Scaler loaded from {scaler_path}\n")
+        
+        # Optionally update UI variables based on metadata
+        if metadata:
+            sequence_length_var.set(metadata.get("sequence_length", sequence_length_var.get()))
+            epochs_var.set(metadata.get("epochs", epochs_var.get()))
+            batch_size_var.set(metadata.get("batch_size", batch_size_var.get()))
+            num_layers_var.set(metadata.get("num_layers", num_layers_var.get()))
+            neurons_var.set(metadata.get("neurons", neurons_var.get()))
+            dropout_var.set(metadata.get("dropout", dropout_var.get()))
+            output_text.insert("end", "Updated training parameters from metadata\n")
+        
+    except Exception as e:
+        status_var.set("Model loading failed")
+        messagebox.showerror("Error", f"Failed to load model: {str(e)}")
+        traceback.print_exc()
+
+def train_model_handler():
+    global trained_model, trained_scaler
+    status_var.set("Training model...")
+    output_text.delete(1.0, "end")
+
+    db_name = db_var.get()
+    table_name = table_var.get()
+    selected_indices = ticker_listbox.curselection()
+    tickers = [ticker_listbox.get(i) for i in selected_indices]
+    
+    if not tickers:
+        error_msg = "Please select at least one ticker"
+        status_var.set(error_msg)
+        output_text.insert("end", f"Error: {error_msg}\n")
+        messagebox.showerror("Error", error_msg)
+        return
+
+    engine = create_connection(db_name)
+    if not engine:
+        error_msg = f"Could not connect to database: {db_name}"
+        status_var.set(error_msg)
+        output_text.insert("end", f"Error: {error_msg}\n")
+        return
+
+    try:
+        # Build query with safe parameter escaping for DuckDB
+        placeholders = ', '.join([':ticker' + str(i) for i in range(len(tickers))])
+        query = text(f"SELECT * FROM {table_name} WHERE ticker IN ({placeholders})")
+        
+        # Create parameters dictionary
+        params = {}
+        for i, ticker in enumerate(tickers):
+            params['ticker' + str(i)] = ticker
+            
+        with engine.connect() as conn:
+            result = conn.execute(query, params)
+            df = pd.DataFrame(result.fetchall(), columns=result.keys())
+
+        if df.empty:
+            error_msg = f"No data found for selected tickers"
+            status_var.set(error_msg)
+            output_text.insert("end", f"Error: {error_msg}\n")
+            return
+
+        # Check required columns for training
+        required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'ticker']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            error_msg = f"Table '{table_name}' is missing required columns: {', '.join(missing_columns)}."
+            status_var.set(error_msg)
+            output_text.insert("end", f"Error: {error_msg}\n")
+            return
+
+        df['date'] = pd.to_datetime(df['date'])
+        
+        # Get training parameters from UI
+        sequence_length = sequence_length_var.get()
+        epochs = epochs_var.get()
+        batch_size = batch_size_var.get()
+        learning_rate = learning_rate_var.get()
+        model_type = model_type_var.get()
+        num_layers = num_layers_var.get()
+        neurons = neurons_var.get()
+        dropout_rate = dropout_var.get()
+        
+        # Display training information
+        output_text.insert("end", f"Starting model training with:\n")
+        output_text.insert("end", f"- Model type: {model_type}\n")
+        output_text.insert("end", f"- Layers: {num_layers}\n")
+        output_text.insert("end", f"- Neurons: {neurons}\n")
+        output_text.insert("end", f"- Sequence length: {sequence_length}\n")
+        output_text.insert("end", f"- Epochs: {epochs}\n")
+        output_text.insert("end", f"- Batch size: {batch_size}\n")
+        output_text.insert("end", f"- Tickers: {', '.join(tickers)}\n\n")
+        output_text.update()
+        
+        # Create a data adapter with the specified sequence length
+        data_adapter = DataAdapter(sequence_length=sequence_length)  # Correct class name
+        
+        # Prepare training data
+        X_train, X_val, y_train, y_val = data_adapter.prepare_training_data(df)
+        
+        if X_train is None or y_train is None:
+            status_var.set("Training data preparation failed")
+            output_text.insert("end", "Training data preparation failed\n")
+            return
+        
+        output_text.insert("end", f"Data prepared: {X_train.shape[0]} training samples\n")
+        output_text.update()
+        
+        # Get input shape from prepared data
+        input_shape = (X_train.shape[1], X_train.shape[2])
+        
+        # Create the appropriate model based on selection
+        if model_type == "LSTM":
+            model = create_lstm_model(input_shape, neurons, num_layers, dropout_rate)
+        elif model_type == "GRU":
+            model = create_gru_model(input_shape, neurons, num_layers, dropout_rate)
+        elif model_type == "BiLSTM":
+            model = create_bilstm_model(input_shape, neurons, num_layers, dropout_rate)
+        elif model_type == "CNN-LSTM":
+            model = create_cnn_lstm_model(input_shape, filters=neurons, lstm_units=neurons, dropout_rate=dropout_rate)
+        else:
+            # Default to LSTM
+            model = create_lstm_model(input_shape, neurons, num_layers, dropout_rate)
+        
+        # Compile the model
+        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+        model.compile(optimizer=optimizer, loss='mean_squared_error')
+        
+        # Train the model
+        output_text.insert("end", "Training model... This may take a while.\n")
+        output_text.update()
+        
+        early_stopping = tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=10,
+            restore_best_weights=True
+        )
+        
+        history = model.fit(
+            X_train, y_train,
+            epochs=epochs,
+            batch_size=batch_size,
+            validation_data=(X_val, y_val),
+            callbacks=[early_stopping],
+            verbose=0  # Disable TF's verbose output
+        )
+        
+        # Store the trained model and scaler
+        trained_model = model
+        trained_scaler = data_adapter.scaler
+        
+        # Plot the training history
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.set_facecolor("#3E3E3E")
+        ax.tick_params(colors="white")
+        for spine in ax.spines.values():
+            spine.set_color("white")
+            
+        ax.plot(history.history['loss'], color='#00FF00', label='Training Loss')
+        ax.plot(history.history['val_loss'], color='#FF4444', label='Validation Loss')
+        ax.set_title(f"Training Loss - {model_type} Model", color="white")
+        ax.set_xlabel('Epoch', color="white")
+        ax.set_ylabel('Loss', color="white")
+        ax.legend(facecolor="#2E2E2E", labelcolor="white")
+        canvas.draw()
+        
+        status_var.set(f"Model training completed successfully")
+        output_text.insert("end", "Model training completed successfully\n")
+        output_text.insert("end", f"Trained for {len(history.history['loss'])} epochs\n")
+        output_text.insert("end", f"Final training loss: {history.history['loss'][-1]:.6f}\n")
+        output_text.insert("end", f"Final validation loss: {history.history['val_loss'][-1]:.6f}\n")
+    except Exception as e:
+        status_var.set("Model training failed")
+        output_text.insert("end", f"Error during training: {str(e)}\n")
+        traceback.print_exc()
+    finally:
+        engine.dispose()
+
+def load_tables(db_name, table_combo):
+    """Load tables from the specified database"""
+    try:
+        tables = get_tables(db_name)
+        table_combo["values"] = tables
+        if tables:
+            table_var.set(tables[0])
+            # Update ticker list based on the selected table
+            load_tickers(db_name, table_var.get(), ticker_listbox)
+    except Exception as e:
+        print(f"Error loading tables: {e}")
+        messagebox.showerror("Error", f"Failed to load tables: {str(e)}")
+
+def get_tables(db_name):
+    """Get list of tables from the specified database"""
+    engine = create_connection(db_name)
+    if not engine:
+        return []
+    
+    try:
+        with engine.connect() as conn:
+            # For SQLite
+            if db_name.endswith('.db'):
+                query = text("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = [row[0] for row in conn.execute(query)]
+            # For DuckDB
+            elif db_name.endswith('.duckdb'):
+                query = text("SELECT table_name FROM information_schema.tables WHERE table_schema='main'")
+                tables = [row[0] for row in conn.execute(query)]
+            else:
+                tables = []
+        return tables
+    except Exception as e:
+        print(f"Error getting tables: {e}")
+        return []
+    finally:
+        engine.dispose()
+
+def load_tickers(db_name, table_name, ticker_listbox):
+    """Load tickers from the specified table"""
+    engine = create_connection(db_name)
+    if not engine:
+        return
+    
+    try:
+        ticker_listbox.delete(0, tk.END)  # Clear existing tickers
+        
+        query = text(f"SELECT DISTINCT ticker FROM {table_name} ORDER BY ticker")
+        with engine.connect() as conn:
+            result = conn.execute(query)
+            tickers = [row[0] for row in result]
+        
+        for ticker in tickers:
+            ticker_listbox.insert(tk.END, ticker)
+            
+        status_var.set(f"Loaded {len(tickers)} tickers from {table_name}")
+    except Exception as e:
+        print(f"Error loading tickers: {e}")
+        messagebox.showerror("Error", f"Failed to load tickers: {str(e)}")
+    finally:
+        engine.dispose()
+
+def predict_handler():
+    """Handle prediction requests"""
+    try:
+        status_var.set("Making predictions...")
+        output_text.delete(1.0, "end")
+
+        db_name = db_var.get()
+        table_name = table_var.get()
+        selected_indices = ticker_listbox.curselection()
+        tickers = [ticker_listbox.get(i) for i in selected_indices]
+        days = days_var.get()
+
+        if not tickers:
+            error_msg = "Please select at least one ticker"
+            status_var.set(error_msg)
+            output_text.insert("end", f"Error: {error_msg}\n")
+            messagebox.showerror("Error", error_msg)
+            return
+
+        if not trained_model:
+            error_msg = "No trained model available. Please train a model first."
+            status_var.set(error_msg)
+            output_text.insert("end", f"Error: {error_msg}\n")
+            return
+
+        ticker = tickers[0]
+        output_text.insert("end", f"=== Starting Predictions ===\nTicker: {ticker}\nDays: {days}\n\n")
+
+        engine = create_connection(db_name)
+        if not engine:
+            error_msg = f"Could not connect to database: {db_name}"
+            status_var.set(error_msg)
+            output_text.insert("end", f"Error: {error_msg}\n")
+            return
+
+        try:
+            ticker_escaped = ticker.replace("'", "''")
+            query = text(f"SELECT * FROM {table_name} WHERE ticker = '{ticker_escaped}'")
+            with engine.connect() as conn:
+                result = conn.execute(query)
+                df = pd.DataFrame(result.fetchall(), columns=result.keys())
+
+            if df.empty:
+                error_msg = f"No data found for ticker {ticker}"
+                status_var.set(error_msg)
+                output_text.insert("end", f"Error: {error_msg}\n")
+                return
+
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date')
+            print(f"Prediction data rows: {len(df)}")  # Debug: Confirm row count
+
+            # Check required columns for prediction
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                error_msg = f"Table '{table_name}' is missing required columns: {', '.join(missing_columns)}."
+                status_var.set(error_msg)
+                output_text.insert("end", f"Error: {error_msg}\n")
+                return
+
+            agent = StockAIAgent()
+            agent.model, agent.data_adapter.scaler = trained_model, trained_scaler
+            agent.sequence_length = sequence_length_var.get()
+
+            # Historical predictions
+            historical_predictions = agent.predict(df, future_only=False)
+            print(f"Historical predictions length: {len(historical_predictions)}")  # Debug
+
+            # Future predictions
+            future_predictions = agent.predict_future(df, days=days)
+            print(f"Future predictions length: {len(future_predictions)}")  # Debug
+
+            if historical_predictions is not None and future_predictions:
+                sequence_length = agent.sequence_length
+                historical_dates = df['date'].iloc[sequence_length:]  # 3236 dates
+                print(f"Historical dates length: {len(historical_dates)}")  # Debug
+
+                # Trim historical predictions to match historical dates
+                historical_predictions = historical_predictions[:len(historical_dates)]  # 3236 predictions
+
+                last_date = pd.to_datetime(df['date'].iloc[-1])
+                future_dates = [last_date + pd.Timedelta(days=i + 1) for i in range(days)]
+
+                fig.clear()
+                ax = fig.add_subplot(111)
+                ax.set_facecolor("#3E3E3E")
+                ax.tick_params(colors="white")
+                for spine in ax.spines.values():
+                    spine.set_color("white")
+
+                ax.plot(df['date'], df['close'], label='Historical', color='#00FF00')
+                ax.plot(historical_dates, historical_predictions, 'g--', label='Historical Predictions')
+                ax.plot(future_dates[:len(future_predictions)], future_predictions, 'r--', label='Future Predictions')
+                ax.set_title(f"{ticker} Predictions", color="white")
+                ax.set_xlabel('Date', color="white")
+                ax.set_ylabel('Price', color="white")
+                ax.legend(facecolor="#2E2E2E", labelcolor="white")
+                fig.autofmt_xdate()
+                canvas.draw()
+                status_var.set("Predictions completed")
+                output_text.insert("end", "Predictions completed successfully\n")
+            else:
+                status_var.set("Prediction failed")
+                output_text.insert("end", "Prediction failed\n")
+        except Exception as e:
+            status_var.set("Prediction failed")
+            output_text.insert("end", f"Error in prediction: {str(e)}\n")
+            traceback.print_exc()
+        finally:
+            engine.dispose()
+    except Exception as e:
+        status_var.set("Prediction failed")
+        output_text.insert("end", f"Error: {str(e)}\n")
+        traceback.print_exc()
 
 def main():
     """Main function to run the application"""
