@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from config.settings import DARK_BG, LIGHT_TEXT
 from data.database import get_tables, get_tickers, find_databases
+import matplotlib.pyplot as plt
 
 class ControlPanel:
     def __init__(self, parent, databases, data_dir=None):
@@ -13,6 +14,8 @@ class ControlPanel:
         self.data_dir = data_dir
         self.train_callback = None
         self.predict_callback = None
+        self.browse_db_callback = None
+        self.table_selected_callback = None
         
         # Create frame
         self.frame = ttk.LabelFrame(parent, text="Control Panel")
@@ -48,19 +51,31 @@ class ControlPanel:
         self.db_combo.grid(row=0, column=1, sticky="ew", padx=5, pady=2)
         self.db_combo.bind("<<ComboboxSelected>>", self.on_db_selected)
         
+        # Database action buttons
+        db_buttons_frame = ttk.Frame(db_frame)
+        db_buttons_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=2)
+        
+        # Add DB button
+        self.browse_db_btn = ttk.Button(db_buttons_frame, text="Browse for DB", command=self.on_browse_db_clicked)
+        self.browse_db_btn.pack(side="left", fill="x", expand=True, padx=2, pady=2)
+        
+        # Refresh button
+        refresh_btn = ttk.Button(db_buttons_frame, text="Refresh", command=self.refresh_db_data)
+        refresh_btn.pack(side="right", fill="x", expand=True, padx=2, pady=2)
+        
         # Table selection
-        ttk.Label(db_frame, text="Table:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(db_frame, text="Table:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
         self.table_var = tk.StringVar()
         self.table_combo = ttk.Combobox(db_frame, textvariable=self.table_var, state="readonly")
-        self.table_combo.grid(row=1, column=1, sticky="ew", padx=5, pady=2)
+        self.table_combo.grid(row=2, column=1, sticky="ew", padx=5, pady=2)
         self.table_combo.bind("<<ComboboxSelected>>", self.on_table_selected)
         
         # Ticker selection
-        ttk.Label(db_frame, text="Tickers:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(db_frame, text="Tickers:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
         
         # Create a frame for the listbox and scrollbar
         ticker_frame = ttk.Frame(db_frame)
-        ticker_frame.grid(row=2, column=1, sticky="ew", padx=5, pady=2)
+        ticker_frame.grid(row=3, column=1, sticky="ew", padx=5, pady=2)
         
         # Create scrollbar
         scrollbar = ttk.Scrollbar(ticker_frame)
@@ -75,9 +90,17 @@ class ControlPanel:
         # Configure scrollbar
         scrollbar.config(command=self.ticker_listbox.yview)
         
-        # Refresh button
-        ttk.Button(db_frame, text="Refresh", command=self.refresh_db_data).grid(
-            row=3, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+        # Add Select All and Clear All buttons
+        ticker_buttons_frame = ttk.Frame(db_frame)
+        ticker_buttons_frame.grid(row=4, column=1, sticky="ew", padx=5, pady=2)
+        
+        # Select All button
+        select_all_btn = ttk.Button(ticker_buttons_frame, text="Select All", command=self.select_all_tickers)
+        select_all_btn.pack(side="left", fill="x", expand=True, padx=2, pady=2)
+        
+        # Clear All button
+        clear_all_btn = ttk.Button(ticker_buttons_frame, text="Clear All", command=self.clear_all_tickers)
+        clear_all_btn.pack(side="right", fill="x", expand=True, padx=2, pady=2)
         
     def create_model_section(self):
         """Create model configuration section"""
@@ -192,6 +215,10 @@ class ControlPanel:
         for ticker in tickers:
             self.ticker_listbox.insert(tk.END, ticker)
             
+        # Call the table selected callback if set
+        if self.table_selected_callback:
+            self.table_selected_callback(db_name, table_name, tickers)
+        
     def refresh_db_data(self):
         """Refresh database data"""
         self.databases = find_databases(self.data_dir)
@@ -199,6 +226,11 @@ class ControlPanel:
         if self.db_var.get() not in self.databases and self.databases:
             self.db_combo.current(0)
             self.on_db_selected(None)
+    
+    def on_browse_db_clicked(self):
+        """Handle browse for database button click"""
+        if self.browse_db_callback:
+            self.browse_db_callback()
             
     def on_train_clicked(self):
         """Handle train button click"""
@@ -237,6 +269,37 @@ class ControlPanel:
         """Set the callback for predict button"""
         self.predict_callback = callback
         
+    def set_browse_db_callback(self, callback):
+        """Set the callback for browse database button"""
+        self.browse_db_callback = callback
+        
     def set_status(self, status):
         """Set the status text"""
-        self.status_var.set(status) 
+        self.status_var.set(status)
+
+    def select_all_tickers(self):
+        """Select all tickers in the listbox"""
+        self.ticker_listbox.selection_set(0, tk.END)
+        
+    def clear_all_tickers(self):
+        """Clear all ticker selections in the listbox"""
+        self.ticker_listbox.selection_clear(0, tk.END)
+
+    def get_last_sequence(self, ticker):
+        """
+        Get the last sequence of data for a ticker to use for prediction
+        """ 
+
+    def set_table_selected_callback(self, callback):
+        """Set the callback for table selection"""
+        self.table_selected_callback = callback 
+
+    @property
+    def current_db(self):
+        """Get the currently selected database"""
+        return self.db_var
+        
+    @property
+    def current_table(self):
+        """Get the currently selected table"""
+        return self.table_var 
