@@ -957,6 +957,7 @@ class VisualizationPanel(ttk.Frame):
         if ticker in self.training_results:
             # Import necessary modules here to avoid circular imports
             from models.lstm_model import predict_future_prices
+            from ui.report_window import ReportWindow
             
             # Get the trained model and scaler
             model = self.training_results[ticker]['model']
@@ -982,6 +983,18 @@ class VisualizationPanel(ttk.Frame):
                     
                     # Switch to prediction tab
                     self.notebook.select(2)
+                    
+                    # Open report window with prediction details
+                    try:
+                        report_win = ReportWindow(tk.Toplevel(), 
+                                                 ticker=ticker, 
+                                                 predictions=predictions, 
+                                                 days=days, 
+                                                 model_info=self.training_results[ticker])
+                    except Exception as e:
+                        print(f"Error opening report window: {e}")
+                        messagebox.showwarning("Report Window Error", 
+                                              f"Could not open prediction report window: {str(e)}")
                 else:
                     raise ValueError("Could not find main application window")
             except Exception as e:
