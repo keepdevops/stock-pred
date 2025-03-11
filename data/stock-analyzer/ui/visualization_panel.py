@@ -31,6 +31,10 @@ class VisualizationPanel(ttk.Frame):
         self.notebook.add(self.training_tab, text="Training Results")
         self.notebook.add(self.prediction_tab, text="Predictions")
         
+        # Initialize data dictionaries
+        self.historical_data = {}
+        self.column_mappings = {}
+        
         # Initialize the historical tab
         self._init_historical_tab()
         
@@ -59,13 +63,15 @@ class VisualizationPanel(ttk.Frame):
         
         # View type selection
         ttk.Label(self.historical_control_frame, text="View:").pack(side="left", padx=5)
-        self.historical_view_var = tk.StringVar(value="Price")
-        view_combo = ttk.Combobox(self.historical_control_frame, 
+        self.historical_view_var = tk.StringVar()
+        self.historical_view_combo = ttk.Combobox(self.historical_control_frame, 
                                 textvariable=self.historical_view_var,
                                 state="readonly", width=15,
-                                values=["Price", "Volume", "Price & Volume", "Statistics"])
-        view_combo.pack(side="left", padx=5)
-        view_combo.bind("<<ComboboxSelected>>", self._on_historical_view_selected)
+                                values=["Price", "Volume", "Price & Volume", "Statistics", 
+                                        "Financial Statements", "Sentiment", "Candlestick",
+                                        "Moving Averages", "Bollinger Bands", "RSI"])
+        self.historical_view_combo.pack(side="left", padx=5)
+        self.historical_view_combo.bind("<<ComboboxSelected>>", self._on_historical_view_selected)
         
         # Create a frame for the matplotlib figure
         self.historical_frame = ttk.Frame(self.historical_tab)
@@ -106,9 +112,6 @@ class VisualizationPanel(ttk.Frame):
                 transform=ax.transAxes, fontsize=12)
         ax.set_axis_off()
         self.historical_canvas.draw()
-        
-        # Store historical data
-        self.historical_data = {}
         
     def _toggle_view_mode(self):
         """Toggle between chart and table views"""
@@ -403,85 +406,69 @@ class VisualizationPanel(ttk.Frame):
                 self.historical_canvas.draw()
             
     def _on_historical_view_selected(self, event):
-        """Handle historical view selection"""
-        # Debugging output
-        view_type = self.historical_view_var.get()
+        """Handle the event when a view is selected in the historical tab"""
+        # Get selected ticker and view
         ticker = self.historical_ticker_var.get()
-        print(f"View selected: {view_type} for ticker {ticker}")
+        view = self.historical_view_var.get()
         
-        if ticker in self.historical_data:
-            print(f"Plotting {view_type} view for {ticker}")
-            self._plot_historical_data(ticker)
-        else:
-            print(f"No data available for {ticker}")
-            
-    def _on_plot_data_clicked(self):
-        """Handle Plot Data button click"""
-        ticker = self.historical_ticker_var.get()
         if not ticker:
-            messagebox.showinfo("No Ticker Selected", "Please select a ticker to plot data.")
             return
-            
-        if ticker in self.historical_data:
+        
+        # Plot data based on selected view
+        if view:
             self._plot_historical_data(ticker)
-        else:
-            messagebox.showerror("Data Not Available", f"No data available for {ticker}.")
-            
+        
     def _plot_historical_data(self, ticker):
         """Plot historical data based on selected view"""
+        # Get selected view
+        view = self.historical_view_var.get()
+        
+        # Get data from the database
+        # This data is stored when the user selects a ticker
         if ticker not in self.historical_data:
+            print(f"No data available for {ticker}")
             return
-            
-        # Get the data
+        
         df = self.historical_data[ticker]
         
-        # Map standard column names to actual columns in the dataframe
-        column_mapping = self._get_column_mapping(df)
+        # Get the column mapping if it hasn't been done yet
+        if ticker not in self.column_mappings:
+            self.column_mappings[ticker] = self._get_column_mapping(df)
         
-        # Clear previous plot
+        # Get the column mapping
+        column_mapping = self.column_mappings[ticker]
+        
+        # Check if there is data to plot
+        if df.empty:
+            print(f"No data to plot for {ticker}")
+            return
+        
+        # Clear existing plot
         self.historical_fig.clear()
         
-        # Make sure historical frame is visible (in case it was hidden)
-        self.historical_frame.pack(fill="both", expand=True)
-        if self.table_frame.winfo_ismapped():
-            self.table_frame.pack_forget()
-        
-        # Check data format and route to appropriate plotting function
-        if column_mapping.get('format') == 'financial_statement':
-            self._plot_financial_statement_data(ticker, df, column_mapping)
-            self.historical_canvas.draw()
-            return
-            
-        if column_mapping.get('format') == 'sentiment':
-            self._plot_sentiment_data(ticker, df, column_mapping)
-            self.historical_canvas.draw()
-            return
-            
-        if not column_mapping.get('date'):
-            messagebox.showerror("Data Format Error", 
-                                 f"Cannot find date column in data for {ticker}.")
-            return
-            
-        # Get the selected view
-        view_type = self.historical_view_var.get()
-        
-        if view_type == "Price" and column_mapping.get('price'):
+        # Plot data based on selected view
+        if view == "Price":
             self._plot_price_data(ticker, df, column_mapping)
-        elif view_type == "Volume" and column_mapping.get('volume'):
+        elif view == "Volume":
             self._plot_volume_data(ticker, df, column_mapping)
-        elif view_type == "Price & Volume" and column_mapping.get('price') and column_mapping.get('volume'):
+        elif view == "Price & Volume":
             self._plot_price_and_volume_data(ticker, df, column_mapping)
-        elif view_type == "Statistics" and column_mapping.get('price'):
+        elif view == "Statistics":
             self._plot_statistics_data(ticker, df, column_mapping)
-        else:
-            # Display message if the selected view is not available
-            ax = self.historical_fig.add_subplot(111)
-            ax.text(0.5, 0.5, f"Cannot display {view_type} view - required data columns missing.", 
-                    horizontalalignment='center', verticalalignment='center',
-                    transform=ax.transAxes, fontsize=12)
-            ax.set_axis_off()
-            
-        # Draw canvas
+        elif view == "Financial Statements":
+            self._plot_financial_statement_data(ticker, df, column_mapping)
+        elif view == "Sentiment":
+            self._plot_sentiment_data(ticker, df, column_mapping)
+        elif view == "Candlestick":
+            self._plot_candlestick_data(ticker, df, column_mapping)
+        elif view == "Moving Averages":
+            self._plot_moving_averages(ticker, df, column_mapping)
+        elif view == "Bollinger Bands":
+            self._plot_bollinger_bands(ticker, df, column_mapping)
+        elif view == "RSI":
+            self._plot_rsi(ticker, df, column_mapping)
+        
+        # Update the canvas
         self.historical_canvas.draw()
     
     def _get_column_mapping(self, df):
@@ -1201,31 +1188,22 @@ class VisualizationPanel(ttk.Frame):
             self._plot_historical_data(tickers[0])
         
     def show_historical_data(self, df, ticker):
-        """
-        Store and display historical data for the given ticker
+        """Display historical data for a ticker"""
+        if df is None or df.empty:
+            print(f"No data to display for {ticker}")
+            return
         
-        Args:
-            df: DataFrame containing the historical data
-            ticker: Ticker symbol
-        """
-        # Store the data in our historical_data dictionary
-        self.historical_data[ticker] = df
+        # Store the data for later use
+        self.historical_data[ticker] = df.copy()
         
-        # If this is the ticker currently selected in the dropdown, plot it
-        current_ticker = self.historical_ticker_var.get()
-        if current_ticker == ticker:
-            self._plot_historical_data(ticker)
-        elif not current_ticker and ticker:
-            # If no ticker is currently selected, select this one
-            self.historical_ticker_var.set(ticker)
-            # This will trigger the _on_historical_ticker_selected event
+        # Get the column mapping
+        self.column_mappings[ticker] = self._get_column_mapping(df)
         
-        # Switch to the historical tab if not already there
-        if self.notebook.index("current") != 0:  # 0 is the index of the historical tab
-            self.notebook.select(0)  # Select the historical tab
+        # Display the data in the table
+        self._display_data_in_table(ticker)
         
-        # Update the historical tab with the data
-        print(f"Historical data loaded for {ticker}")
+        # Plot the data
+        self._plot_historical_data(ticker)
         
     def initialize_prediction_tab(self):
         """Initialize the prediction tab with a new method name"""
@@ -1276,4 +1254,258 @@ class VisualizationPanel(ttk.Frame):
         self.prediction_canvas.draw()
         
         # Store prediction results
-        self.prediction_results = {} 
+        self.prediction_results = {}
+        
+    def _plot_candlestick_data(self, ticker, df, column_mapping):
+        """Plot candlestick chart for price data"""
+        try:
+            from mplfinance.original_flavor import candlestick_ohlc
+            import matplotlib.dates as mdates
+            import numpy as np
+            import pandas as pd
+            
+            # Create subplot
+            ax = self.historical_fig.add_subplot(111)
+            
+            # Check if we have necessary OHLC data
+            required_cols = ['Open', 'High', 'Low', 'Close']
+            has_ohlc = all(col in column_mapping for col in required_cols)
+            
+            if not has_ohlc:
+                # If we don't have OHLC data, we'll use Close price to simulate
+                if 'Close' in column_mapping:
+                    close_col = column_mapping['Close']
+                    # Create synthetic OHLC data based on Close
+                    df_copy = df.copy()
+                    # Add small random variations for open, high, low
+                    if 'Date' in column_mapping:
+                        date_col = column_mapping['Date']
+                        df_copy['date_num'] = mdates.date2num(pd.to_datetime(df_copy[date_col]).dt.to_pydatetime())
+                        # Create synthetic OHLC using close price with small variations
+                        ohlc = []
+                        for date, row in zip(df_copy['date_num'], df_copy[close_col]):
+                            # Generate random variations within ±2%
+                            var = row * 0.02
+                            open_price = row - np.random.uniform(0, var)
+                            high_price = row + np.random.uniform(0, var)
+                            low_price = row - np.random.uniform(0, var)
+                            ohlc.append((date, open_price, high_price, low_price, row))
+                            
+                        # Plot candlestick
+                        candlestick_ohlc(ax, ohlc, width=0.6, colorup='g', colordown='r')
+                        
+                        # Format date
+                        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                        ax.xaxis.set_major_locator(mdates.WeekdayLocator())
+                        ax.set_title(f"{ticker} Candlestick Chart (Simulated from Close Price)")
+                else:
+                    ax.text(0.5, 0.5, "Insufficient data for candlestick chart", 
+                            ha='center', va='center', transform=ax.transAxes)
+                    return
+            else:
+                # We have actual OHLC data
+                if 'Date' in column_mapping:
+                    date_col = column_mapping['Date']
+                    df_copy = df.copy()
+                    df_copy['date_num'] = mdates.date2num(pd.to_datetime(df_copy[date_col]).dt.to_pydatetime())
+                    
+                    # Get OHLC columns
+                    open_col = column_mapping['Open']
+                    high_col = column_mapping['High']
+                    low_col = column_mapping['Low']
+                    close_col = column_mapping['Close']
+                    
+                    # Create OHLC data
+                    ohlc = []
+                    for i, row in df_copy.iterrows():
+                        ohlc.append((row['date_num'], 
+                                    row[open_col],
+                                    row[high_col], 
+                                    row[low_col], 
+                                    row[close_col]))
+                    
+                    # Plot candlestick
+                    candlestick_ohlc(ax, ohlc, width=0.6, colorup='g', colordown='r')
+                    
+                    # Format date
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                    ax.xaxis.set_major_locator(mdates.WeekdayLocator())
+                    ax.set_title(f"{ticker} Candlestick Chart")
+                else:
+                    ax.text(0.5, 0.5, "Date data not available for candlestick chart", 
+                            ha='center', va='center', transform=ax.transAxes)
+                    return
+            
+            # Rotate date labels for better readability
+            plt.setp(ax.get_xticklabels(), rotation=45)
+            plt.tight_layout()
+            
+        except Exception as e:
+            print(f"Error plotting candlestick data: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _plot_moving_averages(self, ticker, df, column_mapping):
+        """Plot price with multiple moving averages"""
+        try:
+            # Create subplot
+            ax = self.historical_fig.add_subplot(111)
+            
+            # Check if we have price data
+            if 'Close' in column_mapping and 'Date' in column_mapping:
+                date_col = column_mapping['Date']
+                close_col = column_mapping['Close']
+                
+                # Convert dates to datetime
+                dates = pd.to_datetime(df[date_col])
+                
+                # Plot the price
+                ax.plot(dates, df[close_col], label='Price', color='black', alpha=0.7)
+                
+                # Calculate and plot moving averages
+                ma_periods = [5, 10, 20, 50, 200]
+                colors = ['blue', 'green', 'red', 'purple', 'orange']
+                
+                for period, color in zip(ma_periods, colors):
+                    if len(df) >= period:  # Only calculate MA if we have enough data
+                        ma_col = f'MA{period}'
+                        df[ma_col] = df[close_col].rolling(window=period).mean()
+                        ax.plot(dates, df[ma_col], label=f'{period}-day MA', color=color)
+                
+                ax.set_title(f"{ticker} Price with Moving Averages")
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Price')
+                ax.legend()
+                
+                # Format axis
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+            else:
+                ax.text(0.5, 0.5, "Price data not available for moving averages", 
+                        ha='center', va='center', transform=ax.transAxes)
+                
+        except Exception as e:
+            print(f"Error plotting moving averages: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _plot_bollinger_bands(self, ticker, df, column_mapping):
+        """Plot price with Bollinger Bands"""
+        try:
+            # Create subplot
+            ax = self.historical_fig.add_subplot(111)
+            
+            # Check if we have price data
+            if 'Close' in column_mapping and 'Date' in column_mapping:
+                date_col = column_mapping['Date']
+                close_col = column_mapping['Close']
+                
+                # Convert dates to datetime
+                dates = pd.to_datetime(df[date_col])
+                
+                # Calculate Bollinger Bands
+                window = 20
+                if len(df) >= window:  # Only calculate if we have enough data
+                    # Calculate rolling mean and standard deviation
+                    df['MA'] = df[close_col].rolling(window=window).mean()
+                    df['STD'] = df[close_col].rolling(window=window).std()
+                    
+                    # Calculate upper and lower bands
+                    df['Upper'] = df['MA'] + (df['STD'] * 2)
+                    df['Lower'] = df['MA'] - (df['STD'] * 2)
+                    
+                    # Plot price and bands
+                    ax.plot(dates, df[close_col], label='Price', color='black', alpha=0.7)
+                    ax.plot(dates, df['MA'], label=f'{window}-day MA', color='blue')
+                    ax.plot(dates, df['Upper'], label='Upper Band', color='red', linestyle='--')
+                    ax.plot(dates, df['Lower'], label='Lower Band', color='green', linestyle='--')
+                    
+                    # Fill between bands
+                    ax.fill_between(dates, df['Upper'], df['Lower'], color='gray', alpha=0.2)
+                    
+                    ax.set_title(f"{ticker} Price with Bollinger Bands (20-day, 2 std)")
+                    ax.set_xlabel('Date')
+                    ax.set_ylabel('Price')
+                    ax.legend()
+                    
+                    # Format axis
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                else:
+                    ax.text(0.5, 0.5, "Not enough data for Bollinger Bands calculation", 
+                            ha='center', va='center', transform=ax.transAxes)
+            else:
+                ax.text(0.5, 0.5, "Price data not available for Bollinger Bands", 
+                        ha='center', va='center', transform=ax.transAxes)
+                
+        except Exception as e:
+            print(f"Error plotting Bollinger Bands: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _plot_rsi(self, ticker, df, column_mapping):
+        """Plot Relative Strength Index (RSI)"""
+        try:
+            # Create subplots - one for price, one for RSI
+            fig = self.historical_fig
+            ax1 = fig.add_subplot(211)  # Price chart
+            ax2 = fig.add_subplot(212, sharex=ax1)  # RSI chart
+            
+            # Check if we have price data
+            if 'Close' in column_mapping and 'Date' in column_mapping:
+                date_col = column_mapping['Date']
+                close_col = column_mapping['Close']
+                
+                # Convert dates to datetime
+                dates = pd.to_datetime(df[date_col])
+                
+                # Calculate RSI
+                window = 14  # Standard RSI period
+                if len(df) >= window+1:  # Need at least window+1 data points
+                    # Calculate price changes
+                    delta = df[close_col].diff()
+                    
+                    # Separate gains and losses
+                    gain = delta.where(delta > 0, 0)
+                    loss = -delta.where(delta < 0, 0)
+                    
+                    # Calculate average gain and loss
+                    avg_gain = gain.rolling(window=window).mean()
+                    avg_loss = loss.rolling(window=window).mean()
+                    
+                    # Calculate RS and RSI
+                    rs = avg_gain / avg_loss
+                    df['RSI'] = 100 - (100 / (1 + rs))
+                    
+                    # Plot price
+                    ax1.plot(dates, df[close_col], color='black')
+                    ax1.set_title(f"{ticker} Price")
+                    ax1.set_ylabel('Price')
+                    ax1.grid(True, alpha=0.3)
+                    
+                    # Plot RSI
+                    ax2.plot(dates, df['RSI'], color='blue')
+                    ax2.set_title(f"Relative Strength Index (RSI-{window})")
+                    ax2.set_xlabel('Date')
+                    ax2.set_ylabel('RSI')
+                    ax2.grid(True, alpha=0.3)
+                    
+                    # Add horizontal lines at 30 and 70 (overbought/oversold levels)
+                    ax2.axhline(y=30, color='green', linestyle='--')
+                    ax2.axhline(y=70, color='red', linestyle='--')
+                    ax2.set_ylim(0, 100)
+                    
+                    # Format axis
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                else:
+                    ax1.text(0.5, 0.5, "Not enough data for RSI calculation", 
+                            ha='center', va='center', transform=ax1.transAxes)
+            else:
+                ax1.text(0.5, 0.5, "Price data not available for RSI", 
+                        ha='center', va='center', transform=ax1.transAxes)
+                
+        except Exception as e:
+            print(f"Error plotting RSI: {e}")
+            import traceback
+            traceback.print_exc() 
