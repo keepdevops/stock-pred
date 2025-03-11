@@ -38,9 +38,12 @@ def configure_styles(root=None):
         fieldbackground=[("!disabled", "white")]
     )
     
-    # Configure dropdown lists in comboboxes to have black text
+    # Configure dropdown lists in comboboxes to have white text on black background
     if root:
-        root.option_add('*TCombobox*Listbox.foreground', 'black')
+        root.option_add('*TCombobox*Listbox.background', 'black')
+        root.option_add('*TCombobox*Listbox.foreground', 'white')
+        root.option_add('*TCombobox*Listbox.selectBackground', '#0078d7')
+        root.option_add('*TCombobox*Listbox.selectForeground', 'white')
     
     # Make the selected text in comboboxes black
     style.map('TCombobox', 

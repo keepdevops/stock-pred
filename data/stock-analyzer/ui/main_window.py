@@ -16,6 +16,7 @@ from ui.visualization_panel import VisualizationPanel
 from config.settings import WINDOW_WIDTH, WINDOW_HEIGHT, DARK_BG
 from data.database import find_databases
 from ui.styles import configure_styles
+from ui.ui_utils import configure_dropdown_styles
 
 class StockAnalyzerApp(tk.Tk):
     def __init__(self):
@@ -86,6 +87,7 @@ class StockAnalyzerApp(tk.Tk):
         
         # Configure styles
         self.style = configure_styles(self)
+        configure_dropdown_styles(self)
         
         # Set up event bindings
         self.control_panel.set_train_callback(self.on_train)

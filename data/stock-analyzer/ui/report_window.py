@@ -87,7 +87,7 @@ class ReportWindow:
             direction = "increase" if change >= 0 else "decrease"
             summary = ttk.Label(header_frame, 
                                text=f"Predicted to {direction} from ${start_price:.2f} to ${end_price:.2f} (${change:.2f}, {pct_change:.2f}%)",
-                               font=("Helvetica", 10, "bold"))
+                               font=("Helvetica", 12, "bold"))
             summary.pack(anchor="w", pady=(10, 0))
     
     def _create_price_section(self):
