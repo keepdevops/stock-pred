@@ -16,6 +16,9 @@ class ControlPanel:
         self.predict_callback = None
         self.browse_db_callback = None
         self.table_selected_callback = None
+        self.save_model_callback = None
+        self.load_model_callback = None
+        self.view_model_callback = None
         
         # Create frame
         self.frame = ttk.LabelFrame(parent, text="Control Panel")
@@ -33,8 +36,14 @@ class ControlPanel:
         # Prediction configuration
         self.create_prediction_section()
         
+        # Training Results
+        self.create_training_results_section()
+        
         # Action buttons
         self.create_action_section()
+        
+        # Initial refreshes
+        self.refresh_models()  # Add this line to populate models on startup
         
     def create_database_section(self):
         """Create database selection section"""
@@ -175,6 +184,43 @@ class ControlPanel:
         days_spin = ttk.Spinbox(pred_frame, from_=1, to=365, textvariable=self.days_var, style="BlackText.TSpinbox")
         days_spin.grid(row=0, column=1, sticky="ew", padx=5, pady=2)
         
+    def create_training_results_section(self):
+        """Create training results section with model listbox"""
+        results_frame = ttk.LabelFrame(self.frame, text="Training Results")
+        results_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Create a frame for the listbox and scrollbar
+        model_frame = ttk.Frame(results_frame)
+        model_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Create scrollbar
+        scrollbar = ttk.Scrollbar(model_frame)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Label for trained models
+        ttk.Label(results_frame, text="Trained Models:").pack(anchor="w", padx=5, pady=2)
+        
+        # Create listbox
+        self.model_listbox = tk.Listbox(model_frame, 
+                                        yscrollcommand=scrollbar.set,
+                                        bg="white", fg="black", height=4)
+        self.model_listbox.pack(side="left", fill="both", expand=True)
+        
+        # Configure scrollbar
+        scrollbar.config(command=self.model_listbox.yview)
+        
+        # Button frame
+        button_frame = ttk.Frame(results_frame)
+        button_frame.pack(fill="x", padx=5, pady=5)
+        
+        # View button
+        self.view_model_btn = ttk.Button(button_frame, text="View", command=self.on_view_model_clicked)
+        self.view_model_btn.pack(side="left", fill="x", expand=True, padx=2, pady=2)
+        
+        # Refresh button
+        refresh_models_btn = ttk.Button(button_frame, text="Refresh", command=self.refresh_models)
+        refresh_models_btn.pack(side="right", fill="x", expand=True, padx=2, pady=2)
+        
     def create_action_section(self):
         """Create action buttons section"""
         action_frame = ttk.Frame(self.frame)
@@ -183,6 +229,14 @@ class ControlPanel:
         # Train button
         self.train_btn = ttk.Button(action_frame, text="Train Model", command=self.on_train_clicked)
         self.train_btn.pack(fill="x", pady=2)
+        
+        # Save model button
+        self.save_model_btn = ttk.Button(action_frame, text="Save Model", command=self.on_save_model_clicked)
+        self.save_model_btn.pack(fill="x", pady=2)
+        
+        # Load model button
+        self.load_model_btn = ttk.Button(action_frame, text="Load Model", command=self.on_load_model_clicked)
+        self.load_model_btn.pack(fill="x", pady=2)
         
         # Predict button
         self.predict_btn = ttk.Button(action_frame, text="Make Predictions", command=self.on_predict_clicked)
@@ -261,6 +315,51 @@ class ControlPanel:
             }
             self.predict_callback(params)
             
+    def on_save_model_clicked(self):
+        """Handle save model button click"""
+        print("Save Model button clicked")
+        if self.save_model_callback:
+            # Show acknowledgment that model is being saved to the models directory
+            self.set_status("Saving model to 'models' directory...")
+            print("Saving model to 'models' directory...")
+            messagebox.showinfo("Saving Model", "Model will be saved to the 'models' directory")
+            
+            try:
+                success = self.save_model_callback()
+                if success:
+                    print("Model saved successfully to 'models' directory")
+                    messagebox.showinfo("Success", "Model saved successfully to 'models' directory!")
+                    self.set_status("Model saved successfully to 'models' directory")
+                else:
+                    print("Failed to save model to 'models' directory")
+                    messagebox.showerror("Error", "Failed to save model to 'models' directory")
+                    self.set_status("Failed to save model to 'models' directory")
+            except Exception as e:
+                print(f"Error while saving model: {str(e)}")
+                messagebox.showerror("Error", f"An error occurred while saving the model: {str(e)}")
+                self.set_status(f"Error: {str(e)}")
+        
+    def on_load_model_clicked(self):
+        """Handle load model button click"""
+        print("Load Model button clicked")
+        if self.load_model_callback:
+            self.set_status("Loading model...")
+            print("Loading model...")
+            try:
+                success = self.load_model_callback()
+                if success:
+                    print("Model loaded successfully")
+                    messagebox.showinfo("Success", "Model loaded successfully!")
+                    self.set_status("Model loaded successfully")
+                else:
+                    print("Failed to load model")
+                    messagebox.showerror("Error", "Failed to load model")
+                    self.set_status("Failed to load model")
+            except Exception as e:
+                print(f"Error while loading model: {str(e)}")
+                messagebox.showerror("Error", f"An error occurred while loading the model: {str(e)}")
+                self.set_status(f"Error: {str(e)}")
+            
     def set_train_callback(self, callback):
         """Set the callback for train button"""
         self.train_callback = callback
@@ -303,3 +402,54 @@ class ControlPanel:
     def current_table(self):
         """Get the currently selected table"""
         return self.table_var 
+
+    def set_save_model_callback(self, callback):
+        """Set the callback for save model button"""
+        self.save_model_callback = callback
+        
+    def set_load_model_callback(self, callback):
+        """Set the callback for load model button"""
+        self.load_model_callback = callback 
+
+    def on_view_model_clicked(self):
+        """Handle view model button click"""
+        print("View Model button clicked")
+        selected_indices = self.model_listbox.curselection()
+        
+        if not selected_indices:
+            messagebox.showinfo("Information", "Please select a model from the list")
+            return
+        
+        selected_model = self.model_listbox.get(selected_indices[0])
+        print(f"Selected model: {selected_model}")
+        
+        if self.view_model_callback:
+            self.set_status(f"Viewing model: {selected_model}")
+            self.view_model_callback(selected_model)
+
+    def set_view_model_callback(self, callback):
+        """Set the callback for viewing a model"""
+        self.view_model_callback = callback
+
+    def refresh_models(self):
+        """Refresh the list of trained models"""
+        print("Refreshing model list")
+        self.model_listbox.delete(0, tk.END)
+        
+        # This is a placeholder - you'll need to implement the actual model discovery
+        # in your application code and provide it via a callback
+        import os
+        models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+        
+        if os.path.exists(models_dir):
+            model_files = [f for f in os.listdir(models_dir) if f.endswith('.h5') or f.endswith('.keras')]
+            for model_file in model_files:
+                self.model_listbox.insert(tk.END, model_file)
+        
+        if self.model_listbox.size() == 0:
+            self.model_listbox.insert(tk.END, "No models found")
+            self.view_model_btn.config(state="disabled")
+        else:
+            self.view_model_btn.config(state="normal")
+        
+        self.set_status("Model list refreshed") 
