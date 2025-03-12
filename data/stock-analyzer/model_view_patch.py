@@ -4,62 +4,74 @@ Model View Patch - Enhances model viewing to support .keras files
 import os
 import glob
 import tensorflow as tf
+from set_ticker import set_ticker_for_training
 
 def find_model_file(model_name, model_dir):
-    """Find a model file with the new naming pattern"""
+    """Find a model file with .keras extension or without"""
     print(f"Looking for model: {model_name} in {model_dir}")
     
-    # Check for exact match with new naming pattern
-    exact_path = os.path.join(model_dir, f"{model_name}_model.keras")
-    if os.path.exists(exact_path):
-        print(f"Found exact model match at: {exact_path}")
-        return exact_path
+    # Check with .keras extension first
+    keras_path = os.path.join(model_dir, f"{model_name}.keras")
+    if os.path.exists(keras_path):
+        print(f"Found model at {keras_path}")
+        return keras_path
         
-    # List of possible paths to check
-    paths_to_check = [
-        os.path.join(model_dir, f"{model_name}.keras"),           # Model with .keras extension
-        os.path.join(model_dir, model_name),                      # Model without extension
-        os.path.join(model_dir, f"{model_name}_lstm_model.keras"),# New pattern with lstm
-        os.path.join(model_dir, f"{model_name}_gru_model.keras"), # New pattern with gru
-        *glob.glob(os.path.join(model_dir, f"{model_name}_*.keras")), # Any model with ticker prefix
-    ]
+    # Check for ticker_model_type.keras pattern
+    model_with_type_path = os.path.join(model_dir, f"{model_name}_lstm_model.keras")
+    if os.path.exists(model_with_type_path):
+        print(f"Found model at {model_with_type_path}")
+        return model_with_type_path
+        
+    # Check without extension (legacy)
+    base_path = os.path.join(model_dir, model_name)
+    if os.path.exists(base_path):
+        print(f"Found legacy model at {base_path}")
+        return base_path
     
-    # Check each path
-    for path in paths_to_check:
-        if os.path.exists(path):
-            print(f"Found model at: {path}")
-            return path
+    # Check all files with ticker prefix
+    pattern = os.path.join(model_dir, f"{model_name}_*.keras")
+    keras_files = glob.glob(pattern)
+    if keras_files:
+        print(f"Found model at {keras_files[0]}")
+        return keras_files[0]
     
-    print(f"No model found for {model_name}")
+    # Not found
     return None
 
-def find_history_file(model_path, model_name, model_dir):
-    """Find the history file for a given model file"""
+def find_history_file(model_path, model_dir=None, model_name=None):
+    """Find the history file for a given model path"""
+    if not model_path:
+        return None
+        
     print(f"Looking for history for model: {model_path}")
     
-    # Direct replacement for new naming pattern
+    # If model ends with _model.keras
     if model_path.endswith('_model.keras'):
         history_path = model_path.replace('_model.keras', '_model_history.pkl')
         if os.path.exists(history_path):
-            print(f"Found history at: {history_path}")
+            print(f"Found history at {history_path}")
             return history_path
     
-    # List of possible history paths
-    paths_to_check = [
-        model_path.replace('.keras', '_history.pkl') if model_path.endswith('.keras') else f"{model_path}_history.pkl",
-        os.path.join(model_dir, f"{model_name}_history.pkl"),
-        os.path.join(model_dir, f"{model_name}.history"),
-        os.path.join(model_dir, f"{model_name}_lstm_model_history.pkl"), # New pattern with lstm
-        os.path.join(model_dir, f"{model_name}_gru_model_history.pkl"),  # New pattern with gru
-    ]
+    # If model ends with .keras
+    if model_path.endswith('.keras'):
+        history_path = model_path.replace('.keras', '_history.pkl')
+        if os.path.exists(history_path):
+            print(f"Found history at {history_path}")
+            return history_path
     
-    # Check each path
-    for path in paths_to_check:
-        if os.path.exists(path):
-            print(f"Found history at: {path}")
-            return path
+    # Try standard format with _history.pkl suffix
+    history_path = f"{model_path}_history.pkl"
+    if os.path.exists(history_path):
+        print(f"Found history at {history_path}")
+        return history_path
+        
+    # Try standard format with .history suffix
+    history_path = f"{model_path}.history"
+    if os.path.exists(history_path):
+        print(f"Found history at {history_path}")
+        return history_path
     
-    print(f"No history found for {model_name}")
+    # Not found
     return None
 
 def load_model_with_extension(model_path):
@@ -103,7 +115,7 @@ def monkey_patch_model_controller():
                 print(f"Model {model_name} not found")
                 return None
                 
-            history_path = find_history_file(model_path, model_name, self.models_directory)
+            history_path = find_history_file(model_path, self.models_directory, model_name)
             
             # Load the model and history
             model = load_model_with_extension(model_path)
@@ -133,3 +145,9 @@ def apply_view_model_patch():
     print("| Enhanced to find ticker_lstm_model.keras files  |")
     print("=================================================\n")
     monkey_patch_model_controller() 
+
+def _train_model(self, ticker, epochs, *args, **kwargs):
+    # Set ticker before training
+    set_ticker_for_training(ticker)
+    
+    # Rest of your training code... 

@@ -11,6 +11,8 @@ import scipy.stats as stats
 import tensorflow as tf
 from tensorflow.keras.models import Model
 from model_save_patch import apply_model_save_patch
+from model_view_patch import apply_view_model_patch
+from training_panel_patch import apply_training_panel_patch
 
 # Add the current directory to the Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -60,7 +62,17 @@ print("| TensorFlow Model.save() patched successfully    |")
 print("| All models will now be saved with .keras format |")
 print("=================================================\n")
 
+# Apply auto-save patch
 apply_model_save_patch()
+
+# Try to apply training panel patch (but don't crash if it fails)
+try:
+    apply_training_panel_patch()
+except Exception as e:
+    print(f"Warning: Could not apply training panel patch: {e}")
+    print("Model saving will still work, but ticker detection might be limited.")
+
+apply_view_model_patch()
 
 from ui.main_window import StockAnalyzerApp
 from controllers.model_controller import ModelController
