@@ -557,38 +557,117 @@ class VisualizationPanel(ttk.Frame):
         return mapping
         
     def _plot_price_data(self, ticker, df, column_mapping):
-        """Plot price data"""
-        # Create subplot
-        ax = self.historical_fig.add_subplot(111)
-        
-        date_col = column_mapping['date']
-        price_col = column_mapping['price']
-        
-        # Plot closing/settlement prices
-        ax.plot(df[date_col], df[price_col], label='Price', color='blue', linewidth=2)
-        
-        # Plot high and low as a light fill if available
-        if column_mapping.get('high') and column_mapping.get('low'):
-            ax.fill_between(df[date_col], df[column_mapping['low']], df[column_mapping['high']], 
-                           alpha=0.2, color='blue')
-        
-        # Add title and labels
-        data_type = "Price"
-        if price_col in ['settlement', 'Settlement']:
-            data_type = "Settlement Price"
-        
-        ax.set_title(f'{ticker} - Historical {data_type} Data')
-        ax.set_xlabel('Date')
-        ax.set_ylabel(data_type)
-        ax.grid(True)
-        ax.legend()
-        
-        # Rotate date labels
-        plt.setp(ax.get_xticklabels(), rotation=45)
-        
-        # Tight layout
-        self.historical_fig.tight_layout()
-        
+        """Plot price data for time series without metric column"""
+        try:
+            print(f"Plotting price data for {ticker}")
+            
+            # Create a chart frame if it doesn't exist
+            if not hasattr(self, 'chart_frame'):
+                self.chart_frame = ttk.Frame(self)
+                self.chart_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Clear previous widgets
+            for widget in self.chart_frame.winfo_children():
+                widget.destroy()
+            
+            # Check if dataframe is empty
+            if df is None or df.empty:
+                self._show_no_data_message(ticker)
+                return
+            
+            # Get the columns for plotting
+            date_col = column_mapping.get('date', 'date')
+            close_col = column_mapping.get('close', 'close')
+            open_col = column_mapping.get('open', 'open')
+            high_col = column_mapping.get('high', 'high')
+            low_col = column_mapping.get('low', 'low')
+            volume_col = column_mapping.get('volume', 'volume')
+            
+            # Extract data
+            dates = df[date_col].tolist()
+            close_values = df[close_col].tolist()
+            
+            # Create matplotlib figure
+            import matplotlib
+            matplotlib.use("TkAgg")
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+            
+            fig = Figure(figsize=(10, 8), dpi=100)
+            
+            # Add price subplot
+            ax1 = fig.add_subplot(211)
+            ax1.plot(dates, close_values, 'b-', label=f'{ticker} Close Price')
+            
+            # Format x-axis labels
+            ax1.set_title(f'{ticker} Price History')
+            ax1.set_ylabel('Price')
+            ax1.grid(True)
+            ax1.legend()
+            
+            # If we have volume data, add a volume subplot
+            if volume_col in df.columns:
+                volumes = df[volume_col].tolist()
+                ax2 = fig.add_subplot(212)
+                ax2.bar(dates, volumes, color='g', alpha=0.5, label='Volume')
+                ax2.set_title(f'{ticker} Volume')
+                ax2.set_xlabel('Date')
+                ax2.set_ylabel('Volume')
+                ax2.grid(True)
+                ax2.legend()
+            
+            fig.tight_layout()
+            
+            # Create canvas
+            canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+            # Add toolbar
+            toolbar_frame = ttk.Frame(self.chart_frame)
+            toolbar_frame.pack(fill=tk.X)
+            toolbar = NavigationToolbar2Tk(canvas, toolbar_frame)
+            toolbar.update()
+            
+        except Exception as e:
+            print(f"Error plotting price data for {ticker}: {e}")
+            self._show_no_data_message(ticker)
+
+    def _show_no_data_message(self, ticker):
+        """Show a message when no data is available for plotting"""
+        try:
+            # Create chart frame if it doesn't exist
+            if not hasattr(self, 'chart_frame'):
+                self.chart_frame = ttk.Frame(self)
+                self.chart_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Clear previous widgets
+            for widget in self.chart_frame.winfo_children():
+                widget.destroy()
+            
+            # Create message frame
+            message_frame = ttk.Frame(self.chart_frame)
+            message_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+            
+            # Display no data message
+            ttk.Label(
+                message_frame, 
+                text=f"No data available for {ticker}",
+                font=("Arial", 14, "bold")
+            ).pack(pady=10)
+            
+            ttk.Label(
+                message_frame,
+                text="Please select a different ticker or timeframe.",
+                font=("Arial", 10)
+            ).pack(pady=5)
+            
+        except Exception as e:
+            print(f"Error showing no data message: {e}")
+            # Last resort fallback
+            import tkinter as tk
+            tk.Label(self, text=f"Error displaying data for {ticker}: {e}").pack(pady=20)
+
     def _plot_volume_data(self, ticker, df, column_mapping):
         """Plot volume data"""
         # Create subplot
@@ -715,130 +794,139 @@ class VisualizationPanel(ttk.Frame):
         self.historical_fig.tight_layout(rect=[0, 0.1, 1, 1])
         
     def _plot_financial_statement_data(self, ticker, df, column_mapping):
-        """Plot financial statement data in long format"""
-        # Filter data for the selected ticker
-        ticker_data = df[df['ticker'] == ticker].copy()
-        
-        if ticker_data.empty:
-            # Show message if no data for this ticker
-            ax = self.historical_fig.add_subplot(111)
-            ax.text(0.5, 0.5, f"No financial data available for {ticker}.", 
-                    horizontalalignment='center', verticalalignment='center', 
-                    transform=ax.transAxes, fontsize=12)
-            ax.set_axis_off()
-            return
-            
-        # Get unique dates and sort them
-        dates = sorted(ticker_data['date'].unique())
-        
-        # If there are too many dates, use the most recent ones
-        if len(dates) > 10:
-            dates = dates[-10:]  # Last 10 dates
-            ticker_data = ticker_data[ticker_data['date'].isin(dates)]
-        
-        # Get unique metrics and sort them
-        metrics = sorted(ticker_data['metric'].unique())
-        
-        # If there are too many metrics, focus on the important ones
-        important_metrics = [
-            'revenue', 'net_income', 'total_assets', 'total_liabilities',
-            'cash', 'debt', 'equity', 'earnings_per_share', 'dividend',
-            'operating_income', 'gross_profit'
-        ]
-        
-        # Filter for important metrics if we have too many
-        if len(metrics) > 15:
-            # Keep only important metrics that are in our data
-            filtered_metrics = [m for m in important_metrics if m in metrics]
-            
-            # If we found some, use those, otherwise use the first 10
-            if filtered_metrics:
-                metrics = filtered_metrics
-            else:
-                metrics = metrics[:10]
-                
-            ticker_data = ticker_data[ticker_data['metric'].isin(metrics)]
-        
-        # Check if we still have data after filtering
-        if ticker_data.empty:
-            ax = self.historical_fig.add_subplot(111)
-            ax.text(0.5, 0.5, f"No relevant financial data found for {ticker}.", 
-                    horizontalalignment='center', verticalalignment='center', 
-                    transform=ax.transAxes, fontsize=12)
-            ax.set_axis_off()
-            return
-        
-        # Create a pivot table for easier plotting
         try:
-            pivot_data = ticker_data.pivot_table(
-                index='date', 
-                columns='metric', 
-                values='value',
-                aggfunc='first'  # In case of duplicates
-            )
+            # Check that the required column exists
+            if 'metric' not in df.columns:
+                self._plot_price_data(ticker, df, column_mapping)
+                return
             
-            # Reset index to make date a column
-            pivot_data = pivot_data.reset_index()
-        except Exception as e:
-            print(f"Error creating pivot table: {e}")
-            ax = self.historical_fig.add_subplot(111)
-            ax.text(0.5, 0.5, f"Error processing data: {str(e)}", 
-                    horizontalalignment='center', verticalalignment='center', 
-                    transform=ax.transAxes, fontsize=12)
-            ax.set_axis_off()
-            return
+            # Filter data for the selected ticker
+            ticker_data = df[df['ticker'] == ticker].copy()
             
-        # Create a figure with multiple subplots for important metrics
-        n_metrics = len(pivot_data.columns) - 1  # Subtract 1 for date column
-        
-        if n_metrics == 0:
-            ax = self.historical_fig.add_subplot(111)
-            ax.text(0.5, 0.5, f"No metrics available for {ticker}.", 
-                    horizontalalignment='center', verticalalignment='center', 
-                    transform=ax.transAxes, fontsize=12)
-            ax.set_axis_off()
-            return
+            if ticker_data.empty:
+                # Show message if no data for this ticker
+                ax = self.historical_fig.add_subplot(111)
+                ax.text(0.5, 0.5, f"No financial data available for {ticker}.", 
+                        horizontalalignment='center', verticalalignment='center', 
+                        transform=ax.transAxes, fontsize=12)
+                ax.set_axis_off()
+                return
             
-        # Determine grid layout based on number of metrics
-        if n_metrics <= 4:
-            rows, cols = 2, 2
-        elif n_metrics <= 6:
-            rows, cols = 2, 3
-        elif n_metrics <= 9:
-            rows, cols = 3, 3
-        else:
-            rows, cols = 4, 3  # Maximum 12 metrics
+            # Get unique dates and sort them
+            dates = sorted(ticker_data['date'].unique())
             
-        # Create subplots
-        for i, metric in enumerate(pivot_data.columns[1:]):  # Skip date column
-            if i >= rows * cols:
-                break  # Don't create more subplots than our grid allows
+            # If there are too many dates, use the most recent ones
+            if len(dates) > 10:
+                dates = dates[-10:]  # Last 10 dates
+                ticker_data = ticker_data[ticker_data['date'].isin(dates)]
+            
+            # Get unique metrics and sort them
+            metrics = sorted(ticker_data['metric'].unique())
+            
+            # If there are too many metrics, focus on the important ones
+            important_metrics = [
+                'revenue', 'net_income', 'total_assets', 'total_liabilities',
+                'cash', 'debt', 'equity', 'earnings_per_share', 'dividend',
+                'operating_income', 'gross_profit'
+            ]
+            
+            # Filter for important metrics if we have too many
+            if len(metrics) > 15:
+                # Keep only important metrics that are in our data
+                filtered_metrics = [m for m in important_metrics if m in metrics]
                 
-            ax = self.historical_fig.add_subplot(rows, cols, i+1)
+                # If we found some, use those, otherwise use the first 10
+                if filtered_metrics:
+                    metrics = filtered_metrics
+                else:
+                    metrics = metrics[:10]
+                    
+                ticker_data = ticker_data[ticker_data['metric'].isin(metrics)]
             
-            # Plot the metric
-            ax.bar(pivot_data['date'], pivot_data[metric], color='blue', alpha=0.7)
+            # Check if we still have data after filtering
+            if ticker_data.empty:
+                ax = self.historical_fig.add_subplot(111)
+                ax.text(0.5, 0.5, f"No relevant financial data found for {ticker}.", 
+                        horizontalalignment='center', verticalalignment='center', 
+                        transform=ax.transAxes, fontsize=12)
+                ax.set_axis_off()
+                return
             
-            # Format title and labels
-            formatted_metric = metric.replace('_', ' ').title()
-            ax.set_title(formatted_metric, fontsize=10)
+            # Create a pivot table for easier plotting
+            try:
+                pivot_data = ticker_data.pivot_table(
+                    index='date', 
+                    columns='metric', 
+                    values='value',
+                    aggfunc='first'  # In case of duplicates
+                )
+                
+                # Reset index to make date a column
+                pivot_data = pivot_data.reset_index()
+            except Exception as e:
+                print(f"Error creating pivot table: {e}")
+                ax = self.historical_fig.add_subplot(111)
+                ax.text(0.5, 0.5, f"Error processing data: {str(e)}", 
+                        horizontalalignment='center', verticalalignment='center', 
+                        transform=ax.transAxes, fontsize=12)
+                ax.set_axis_off()
+                return
             
-            # Format y-axis with K, M, B suffixes for large numbers
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(self._format_currency))
+            # Create a figure with multiple subplots for important metrics
+            n_metrics = len(pivot_data.columns) - 1  # Subtract 1 for date column
             
-            # Rotate date labels if we have more than 3 dates
-            if len(pivot_data['date']) > 3:
-                plt.setp(ax.get_xticklabels(), rotation=45, fontsize=8)
+            if n_metrics == 0:
+                ax = self.historical_fig.add_subplot(111)
+                ax.text(0.5, 0.5, f"No metrics available for {ticker}.", 
+                        horizontalalignment='center', verticalalignment='center', 
+                        transform=ax.transAxes, fontsize=12)
+                ax.set_axis_off()
+                return
             
-            # Set tight layout within each subplot
-            ax.grid(True, linestyle='--', alpha=0.6)
-        
-        # Add title
-        self.historical_fig.suptitle(f"{ticker} - Financial Metrics", fontsize=14)
-        
-        # Adjust layout
-        self.historical_fig.tight_layout()
-        self.historical_fig.subplots_adjust(top=0.9)  # Make room for the suptitle
+            # Determine grid layout based on number of metrics
+            if n_metrics <= 4:
+                rows, cols = 2, 2
+            elif n_metrics <= 6:
+                rows, cols = 2, 3
+            elif n_metrics <= 9:
+                rows, cols = 3, 3
+            else:
+                rows, cols = 4, 3  # Maximum 12 metrics
+            
+            # Create subplots
+            for i, metric in enumerate(pivot_data.columns[1:]):  # Skip date column
+                if i >= rows * cols:
+                    break  # Don't create more subplots than our grid allows
+                
+                ax = self.historical_fig.add_subplot(rows, cols, i+1)
+                
+                # Plot the metric
+                ax.bar(pivot_data['date'], pivot_data[metric], color='blue', alpha=0.7)
+                
+                # Format title and labels
+                formatted_metric = metric.replace('_', ' ').title()
+                ax.set_title(formatted_metric, fontsize=10)
+                
+                # Format y-axis with K, M, B suffixes for large numbers
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(self._format_currency))
+                
+                # Rotate date labels if we have more than 3 dates
+                if len(pivot_data['date']) > 3:
+                    plt.setp(ax.get_xticklabels(), rotation=45, fontsize=8)
+                
+                # Set tight layout within each subplot
+                ax.grid(True, linestyle='--', alpha=0.6)
+            
+            # Add title
+            self.historical_fig.suptitle(f"{ticker} - Financial Metrics", fontsize=14)
+            
+            # Adjust layout
+            self.historical_fig.tight_layout()
+            self.historical_fig.subplots_adjust(top=0.9)  # Make room for the suptitle
+            
+        except Exception as e:
+            print(f"Error creating financial data table: {e}")
+            self._show_no_data_message(ticker)
     
     def _format_currency(self, x, pos):
         """Format large numbers with K, M, B suffixes"""
