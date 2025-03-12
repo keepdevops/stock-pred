@@ -422,10 +422,7 @@ class ControlPanel:
             scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
             scrollable_frame = ttk.Frame(canvas)
             
-            scrollable_frame.bind(
-                "<Configure>",
-                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-            )
+            self._setup_scrolling(main_frame, canvas, scrollable_frame)
             
             canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
             canvas.configure(yscrollcommand=scrollbar.set)
@@ -728,3 +725,14 @@ class ControlPanel:
         # Note: We've removed the Save Model button
         
         # ... other buttons ... 
+
+    def _setup_scrolling(self, container, canvas, scrollable_frame):
+        """Set up scrolling for the canvas"""
+        # Only apply scrollable configuration to tkinter Canvas objects, not matplotlib figures
+        if isinstance(canvas, tk.Canvas):  # Check if it's a tkinter Canvas
+            scrollable_frame.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+        
+        # Rest of your scrolling setup code... 
