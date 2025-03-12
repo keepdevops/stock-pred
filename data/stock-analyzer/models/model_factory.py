@@ -26,12 +26,16 @@ class ModelFactory:
     
     @staticmethod
     def save_model(model, path, metadata=None):
-        """Save model and metadata"""
+        """Save a model with the keras format"""
+        # Ensure path has .keras extension
+        if not path.endswith('.keras'):
+            path = path + '.keras'
+        
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(path), exist_ok=True)
         
         # Save the model
-        model.save(path)
+        model.save(path, save_format='keras')
         
         # Save metadata if provided
         if metadata:
