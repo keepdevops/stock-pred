@@ -1,0 +1,17 @@
+name: stockmarket
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - tensorflow
+  - duckdb
+  - sqlalchemy
+  - pandas
+  - matplotlib
+  - tk
+  - numpy
+  - scikit-learn
+  - pip
+  - pip:
+    - python-dotenv
+    - alpaca-trade-api 
