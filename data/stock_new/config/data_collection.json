@@ -1,0 +1,63 @@
+{
+    "system_config": {
+        "version": "1.0.0",
+        "description": "Data Collection Configuration",
+        "date": "2025-03-17"
+    },
+    "data_collection": {
+        "tickers": [
+            "AAPL",
+            "GOOG",
+            "MSFT"
+        ],
+        "historical": {
+            "enabled": true,
+            "points": 720,
+            "start_date": "2023-03-17",
+            "end_date": "2025-03-17"
+        },
+        "realtime": {
+            "enabled": false,
+            "source": "yahoo",
+            "available_sources": [
+                {
+                    "name": "yahoo",
+                    "type": "http",
+                    "retry_attempts": 3,
+                    "retry_backoff_base": 2
+                },
+                {
+                    "name": "alpaca",
+                    "type": "websocket",
+                    "api_key": "YOUR_API_KEY",
+                    "secret_key": "YOUR_SECRET_KEY",
+                    "retry_attempts": 3,
+                    "retry_backoff_base": 2
+                }
+            ]
+        },
+        "parallel_processing": {
+            "enabled": true,
+            "max_workers": 10
+        }
+    },
+    "data_processing": {
+        "database": {
+            "type": "duckdb",
+            "path": "data/market_data.duckdb",
+            "index_columns": [
+                "date"
+            ]
+        }
+    },
+    "logging": {
+        "enabled": true,
+        "files": [
+            {
+                "name": "data_collection",
+                "path": "logs/data_collection.log",
+                "level": "INFO"
+            }
+        ]
+    }
+} 
