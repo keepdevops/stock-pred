@@ -1,0 +1,79 @@
+{
+  "models": {
+    "LSTM": {
+      "layers": [
+        {"type": "LSTM", "units": 50, "return_sequences": true},
+        {"type": "LSTM", "units": 50},
+        {"type": "Dense", "units": 1}
+      ],
+      "training": {
+        "epochs": 100,
+        "batch_size": 32,
+        "validation_split": 0.2
+      }
+    },
+    "GRU": {
+      "layers": [
+        {"type": "GRU", "units": 50, "return_sequences": true},
+        {"type": "GRU", "units": 50},
+        {"type": "Dense", "units": 1}
+      ],
+      "training": {
+        "epochs": 100,
+        "batch_size": 32,
+        "validation_split": 0.2
+      }
+    },
+    "BiLSTM": {
+      "layers": [
+        {"type": "Bidirectional", "layer": {"type": "LSTM", "units": 50}},
+        {"type": "Dense", "units": 1}
+      ],
+      "training": {
+        "epochs": 100,
+        "batch_size": 32,
+        "validation_split": 0.2
+      }
+    }
+  },
+  "data_processing": {
+    "sequence_length": 10,
+    "features": [
+      "close",
+      "volume",
+      "RSI",
+      "MACD"
+    ],
+    "technical_indicators": {
+      "RSI": {"window": 14},
+      "MACD": {"fast": 12, "slow": 26, "signal": 9},
+      "BB": {"window": 20, "std": 2}
+    },
+    "normalization": "min-max"
+  },
+  "visualization": {
+    "plot_types": [
+      "candlestick",
+      "line",
+      "technical"
+    ],
+    "colors": {
+      "actual": "#2196F3",
+      "predicted": "#F44336",
+      "up": "#4CAF50",
+      "down": "#F44336"
+    }
+  },
+  "trading": {
+    "strategies": {
+      "tiered_sell": {
+        "profit_tiers": [5, 8, 9],
+        "stop_loss": -2
+      }
+    },
+    "risk_management": {
+      "max_position_size": 0.1,
+      "max_open_trades": 5
+    }
+  }
+} 
