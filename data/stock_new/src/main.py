@@ -1,16 +1,18 @@
 import sys
+import logging
 from pathlib import Path
 import tkinter as tk
+from tkinter import messagebox
 
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-sys.path.append(str(project_root))
+# Adjust Python path to include src directory
+sys.path.append(str(Path(__file__).parent.parent))
 
-# Local imports
+from src.config.config_manager import ConfigurationManager
 from src.modules.gui import StockGUI
 from src.modules.database import DatabaseConnector
-from src.modules.data_adapter import DataAdapter
+from src.modules.data_loader import DataLoader
 from src.modules.stock_ai_agent import StockAIAgent
+from src.modules.trading.real_trading_agent import RealTradingAgent
 
 def find_databases(base_path: Path = Path.cwd() / "data") -> list[Path]:
     """Find all .duckdb files in the data directory."""
@@ -19,7 +21,7 @@ def find_databases(base_path: Path = Path.cwd() / "data") -> list[Path]:
 def initialize_components(root: tk.Tk) -> StockGUI:
     """Initialize all system components and return GUI instance."""
     db_connector = DatabaseConnector()
-    data_adapter = DataAdapter()
+    data_adapter = DataLoader()
     ai_agent = StockAIAgent(data_adapter)
     return StockGUI(root, db_connector, data_adapter, ai_agent)
 
