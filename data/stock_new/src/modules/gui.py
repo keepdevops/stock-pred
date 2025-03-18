@@ -1,18 +1,16 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
-import mplfinance as mpf
+import logging
 from typing import List, Dict, Any, Optional
 import pandas as pd
-from datetime import datetime
 import numpy as np
 
-from ..modules.database import DatabaseConnector
-from ..modules.data_adapter import DataAdapter
-from ..modules.stock_ai_agent import StockAIAgent
-from ..modules.trading.real_trading_agent import RealTradingAgent
+from src.config.config_manager import ConfigurationManager
+from src.modules.database import DatabaseConnector
+from src.modules.data_loader import DataLoader
+from src.modules.stock_ai_agent import StockAIAgent
+from src.modules.trading.real_trading_agent import RealTradingAgent
+from src.utils.visualization import StockVisualizer
 
 class StockGUI:
     """Main GUI interface for the Stock Market Analyzer."""
@@ -21,7 +19,7 @@ class StockGUI:
         self,
         root: tk.Tk,
         db_connector: DatabaseConnector,
-        data_adapter: DataAdapter,
+        data_adapter: DataLoader,
         ai_agent: StockAIAgent
     ):
         self.root = root

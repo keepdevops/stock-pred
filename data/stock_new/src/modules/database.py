@@ -5,6 +5,7 @@ from pathlib import Path
 import duckdb
 import logging
 from datetime import datetime
+from src.modules.trading.real_trading_agent import RealTradingAgent, TradeConfig
 
 class DatabaseConnector:
     """Handles database connections and queries for stock data."""
