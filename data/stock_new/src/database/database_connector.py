@@ -1,8 +1,193 @@
 import duckdb
 import pandas as pd
 import logging
+import os
 from pathlib import Path
 from typing import Optional, List, Dict
+from datetime import datetime
+import yfinance as yf
+
+class DataCollector:
+    def __init__(self, db_path="data/market_data.duckdb"):
+        """Initialize the database connection."""
+        self.db_path = db_path
+        self.logger = logging.getLogger(__name__)
+        self.conn = None
+        self.connect()
+        self.initialize_tables()
+
+    def __del__(self):
+        """Cleanup database connection."""
+        if hasattr(self, 'conn') and self.conn:
+            self.conn.close()
+
+    def connect(self):
+        """Establish database connection."""
+        try:
+            self.logger.info(f"Connected to database: {self.db_path}")
+            self.conn = duckdb.connect(self.db_path)
+        except Exception as e:
+            self.logger.error(f"Failed to connect to database: {e}")
+            raise
+
+    def initialize_tables(self):
+        """Initialize database tables."""
+        try:
+            # Create tables if they don't exist
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS stock_data (
+                    date DATE,
+                    ticker VARCHAR(20) NOT NULL,  -- Increased length for cleaned symbols
+                    open DOUBLE,
+                    high DOUBLE,
+                    low DOUBLE,
+                    close DOUBLE,
+                    adj_close DOUBLE,
+                    volume BIGINT,
+                    PRIMARY KEY (date, ticker)
+                )
+            """)
+            
+            self.logger.info("Database tables initialized successfully")
+            
+            # Log the table structure
+            result = self.conn.execute("""
+                SELECT column_name, data_type, is_nullable, column_default, 
+                       numeric_precision, numeric_scale
+                FROM information_schema.columns 
+                WHERE table_name = 'stock_data'
+                ORDER BY ordinal_position
+            """).fetchall()
+            
+            self.logger.info(f"Table structure: {result}")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing database: {str(e)}")
+            return False
+
+    def download_yfinance_data(self, ticker, start_date, end_date):
+        """Download stock data from Yahoo Finance."""
+        try:
+            # Download data
+            self.logger.info(f"Downloading data for {ticker} from {start_date} to {end_date}")
+            stock = yf.Ticker(ticker)
+            df = stock.history(start=start_date, end=end_date)
+            
+            # Reset index to make Date a column
+            df = df.reset_index()
+            
+            # Rename columns to match database schema
+            df.columns = [col.lower() for col in df.columns]
+            df = df.rename(columns={'stock splits': 'splits'})
+            
+            # Add ticker column
+            df['ticker'] = ticker
+            
+            # Ensure correct column order
+            df = df[['date', 'ticker', 'open', 'high', 'low', 'close', 'adj close', 'volume']]
+            
+            # Save to database
+            self.save_ticker_data(df)
+            
+            self.logger.info(f"Successfully downloaded and saved data for {ticker}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to download data for {ticker}: {e}")
+            raise
+
+    def save_ticker_data(self, df):
+        """Save ticker data to database."""
+        try:
+            if df.empty:
+                self.logger.warning("Empty DataFrame received, skipping save")
+                return False
+            
+            # Log incoming data
+            self.logger.info(f"Saving data - Shape: {df.shape}")
+            
+            # Get ticker
+            ticker = df['ticker'].iloc[0]
+            
+            try:
+                # Start transaction
+                self.conn.execute("BEGIN TRANSACTION")
+                
+                # Delete existing data
+                self.conn.execute("""
+                    DELETE FROM stock_data 
+                    WHERE ticker = ?
+                """, [ticker])
+                
+                # Insert new data
+                self.conn.execute("""
+                    INSERT INTO stock_data (
+                        date, ticker, open, high, low, close, adj_close, volume
+                    ) SELECT 
+                        date, ticker, open, high, low, close, adj_close, volume 
+                    FROM df
+                """)
+                
+                # Commit transaction
+                self.conn.execute("COMMIT")
+                
+                # Verify the save
+                count = self.conn.execute("""
+                    SELECT COUNT(*) FROM stock_data WHERE ticker = ?
+                """, [ticker]).fetchone()[0]
+                
+                self.logger.info(f"Saved {count} rows for {ticker}")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Database error for {ticker}: {str(e)}")
+                self.conn.execute("ROLLBACK")
+                return False
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save ticker data: {str(e)}")
+            return False
+
+    def import_csv_file(self, file_path):
+        """Import data from CSV file."""
+        try:
+            # Read CSV file
+            df = pd.read_csv(file_path)
+            
+            # Process and save data
+            self.save_ticker_data(df)
+            
+            self.logger.info(f"Successfully imported data from {file_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to import CSV file: {e}")
+            raise
+
+    def get_ticker_data(self, ticker, start_date=None, end_date=None):
+        """Retrieve ticker data from database."""
+        try:
+            query = """
+                SELECT * FROM stock_data 
+                WHERE ticker = ?
+            """
+            params = [ticker]
+            
+            if start_date:
+                query += " AND date >= ?"
+                params.append(start_date)
+            
+            if end_date:
+                query += " AND date <= ?"
+                params.append(end_date)
+                
+            query += " ORDER BY date"
+            
+            return self.conn.execute(query, params).fetchdf()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve data for {ticker}: {e}")
+            raise
 
 class DatabaseConnector:
     def __init__(self):
@@ -30,8 +215,8 @@ class DatabaseConnector:
             # Create stock data table with correct schema
             self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS stock_data (
-                date TIMESTAMP NOT NULL,
-                ticker VARCHAR NOT NULL,
+                date DATE,
+                ticker VARCHAR(20) NOT NULL,  -- Increased length for cleaned symbols
                 open DOUBLE,
                 high DOUBLE,
                 low DOUBLE,
