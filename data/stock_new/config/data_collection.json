@@ -8,7 +8,57 @@
         "tickers": [
             "AAPL",
             "GOOG",
-            "MSFT"
+            "MSFT",
+            "TSLA",
+            "F",
+            "XOM",
+            "INTC",
+            "CSCO",
+            "ADBE",
+            "NFLX",
+            "PYPL",
+            "EBAY",
+            "QCOM",
+            "TXN",
+            "COST",
+            "PEP",
+            "CMCSA",
+            "SBUX",
+            "ISRG",
+            "MRNA",
+            "GILD",
+            "ZM",
+            "WBA",
+            "NDAQ",
+            "AMZN",
+            "GOOGL",
+            "META",
+            "NVDA",
+            "AMD",
+            "ILMN",
+            "REGN",
+            "VRTX",
+            "BIDU",
+            "JD",
+            "PDD",
+            "KHC",
+            "MAR",
+            "CTAS",
+            "CSX",
+            "ROST",
+            "DLTR",
+            "FAST",
+            "LULU",
+            "ORLY",
+            "PCAR",
+            "SNPS",
+            "CDNS",
+            "WDAY",
+            "TEAM",
+            "DDOG",
+            "ZS",
+            "XEL",
+            "A"
         ],
         "historical": {
             "enabled": true,
@@ -24,15 +74,17 @@
                     "name": "yahoo",
                     "type": "http",
                     "retry_attempts": 3,
-                    "retry_backoff_base": 2
+                    "retry_backoff_base": 2,
+                    "api_key": null,
+                    "secret_key": null
                 },
                 {
                     "name": "alpaca",
                     "type": "websocket",
-                    "api_key": "YOUR_API_KEY",
-                    "secret_key": "YOUR_SECRET_KEY",
                     "retry_attempts": 3,
-                    "retry_backoff_base": 2
+                    "retry_backoff_base": 2,
+                    "api_key": "YOUR_API_KEY",
+                    "secret_key": "YOUR_SECRET_KEY"
                 }
             ]
         },
@@ -42,6 +94,32 @@
         }
     },
     "data_processing": {
+        "cleaning": {
+            "lowercase": true,
+            "remove_special_chars": true,
+            "standardize_dates": "YYYY-MM-DD",
+            "fill_missing": "0"
+        },
+        "validation": {
+            "enabled": true,
+            "batch_size": 10,
+            "required_columns": [
+                "date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume"
+            ],
+            "date_format": "YYYY-MM-DD",
+            "numeric_fields": [
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume"
+            ]
+        },
         "database": {
             "type": "duckdb",
             "path": "data/market_data.duckdb",
@@ -60,4 +138,4 @@
             }
         ]
     }
-} 
+}
