@@ -1,8 +1,10 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import logging
 from typing import Optional
 from datetime import datetime, timedelta
+from pathlib import Path
+import os
 
 from config.config_manager import ConfigurationManager
 from modules.database import DatabaseConnector
@@ -38,6 +40,9 @@ class StockGUI:
         self.model_type = tk.StringVar(value="LSTM")
         self.trading_enabled = tk.BooleanVar(value=False)
         self.realtime_enabled = tk.BooleanVar(value=False)
+        
+        # Add database path tracking
+        self.current_db_path = None
         
         # Setup GUI components
         self.setup_gui()
@@ -85,20 +90,50 @@ class StockGUI:
         ).grid(row=0, column=2, padx=5)
     
     def setup_data_section(self):
-        """Setup data management section."""
+        """Setup data management section with database loader."""
         frame = ttk.LabelFrame(self.main_frame, text="Data Management", padding="5")
         frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
         
-        # Historical data controls
+        # Database controls
+        db_frame = ttk.Frame(frame)
+        db_frame.grid(row=0, column=0, columnspan=3, sticky="ew", pady=5)
+        
+        ttk.Label(db_frame, text="Database:").grid(row=0, column=0, padx=5)
+        self.db_path_var = tk.StringVar(value="No database loaded")
+        ttk.Label(
+            db_frame,
+            textvariable=self.db_path_var,
+            wraplength=300
+        ).grid(row=0, column=1, padx=5)
+        
+        # Database buttons
+        btn_frame = ttk.Frame(db_frame)
+        btn_frame.grid(row=1, column=0, columnspan=2, pady=5)
+        
         ttk.Button(
-            frame,
+            btn_frame,
+            text="Open Database",
+            command=self.open_database
+        ).grid(row=0, column=0, padx=5)
+        
+        ttk.Button(
+            btn_frame,
+            text="Create New Database",
+            command=self.create_database
+        ).grid(row=0, column=1, padx=5)
+        
+        # Existing data controls
+        control_frame = ttk.Frame(frame)
+        control_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=5)
+        
+        ttk.Button(
+            control_frame,
             text="Load Historical",
             command=self.load_historical_data
         ).grid(row=0, column=0, padx=5)
         
-        # Realtime toggle
         ttk.Checkbutton(
-            frame,
+            control_frame,
             text="Enable Realtime",
             variable=self.realtime_enabled,
             command=self.toggle_realtime
@@ -303,4 +338,119 @@ class StockGUI:
         
         # Pack widgets
         tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y") 
+        scrollbar.pack(side="right", fill="y")
+    
+    def open_database(self):
+        """Open an existing database file."""
+        try:
+            # Ask for database file
+            file_types = [
+                ("DuckDB files", "*.duckdb"),
+                ("SQLite files", "*.db *.sqlite *.sqlite3"),
+                ("All files", "*.*")
+            ]
+            
+            db_path = filedialog.askopenfilename(
+                title="Open Database",
+                filetypes=file_types,
+                initialdir=os.path.expanduser("~")
+            )
+            
+            if not db_path:
+                return
+            
+            # Validate database
+            if self.validate_database(db_path):
+                self.load_database(db_path)
+            else:
+                messagebox.showerror(
+                    "Error",
+                    "Invalid database format or missing required tables"
+                )
+            
+        except Exception as e:
+            self.logger.error(f"Error opening database: {str(e)}")
+            messagebox.showerror("Error", f"Failed to open database: {str(e)}")
+    
+    def create_database(self):
+        """Create a new database file."""
+        try:
+            # Ask for save location
+            file_types = [
+                ("DuckDB files", "*.duckdb"),
+                ("SQLite files", "*.db")
+            ]
+            
+            db_path = filedialog.asksaveasfilename(
+                title="Create Database",
+                filetypes=file_types,
+                initialdir=os.path.expanduser("~"),
+                defaultextension=".duckdb"
+            )
+            
+            if not db_path:
+                return
+            
+            # Create and initialize database
+            self.load_database(db_path, create_new=True)
+            
+        except Exception as e:
+            self.logger.error(f"Error creating database: {str(e)}")
+            messagebox.showerror("Error", f"Failed to create database: {str(e)}")
+    
+    def validate_database(self, db_path: str) -> bool:
+        """Validate database structure."""
+        try:
+            # Create temporary connection to validate
+            temp_db = DatabaseConnector(
+                db_path=db_path,
+                logger=self.logger
+            )
+            
+            # Check for required tables
+            required_tables = {"stock_data", "predictions"}
+            existing_tables = set(temp_db.get_tables())
+            
+            temp_db.close()
+            
+            return required_tables.issubset(existing_tables)
+            
+        except Exception as e:
+            self.logger.error(f"Error validating database: {str(e)}")
+            return False
+    
+    def load_database(self, db_path: str, create_new: bool = False) -> None:
+        """Load or create a database."""
+        try:
+            # Close existing connection if any
+            if hasattr(self, 'db') and self.db:
+                self.db.close()
+            
+            # Create new database connection
+            self.db = DatabaseConnector(
+                db_path=db_path,
+                logger=logging.getLogger("Database")
+            )
+            
+            # Initialize if new
+            if create_new:
+                self.db.initialize_tables()
+            
+            # Update components with new database
+            self.data_loader.db = self.db
+            self.ai_agent.db = self.db
+            self.trading_agent.db = self.db
+            
+            # Update display
+            self.current_db_path = db_path
+            self.db_path_var.set(f"Current: {Path(db_path).name}")
+            
+            # Update status
+            self.status_var.set(f"{'Created' if create_new else 'Loaded'} database: {Path(db_path).name}")
+            
+            # Refresh data display if any
+            self.refresh_data()
+            
+        except Exception as e:
+            self.logger.error(f"Error loading database: {str(e)}")
+            messagebox.showerror("Error", f"Failed to load database: {str(e)}") 
