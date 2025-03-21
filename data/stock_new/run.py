@@ -4,14 +4,15 @@ import tkinter as tk
 import os
 import sys
 from pathlib import Path
+from datetime import datetime, timedelta
 
 # Add the project root directory to Python path
-project_root = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, project_root)
+project_root = Path(__file__).parent
+sys.path.append(str(project_root))
 
 from src.gui.data_collector_gui import DataCollectorGUI
-from src.config.config_manager import ConfigManager
-from src.database.database_connector import DataCollector
+from src.config.config_manager import ConfigManager, DataCollectionConfig
+from src.database.database_manager import DatabaseManager
 
 class Config:
     def __init__(self, config_path="config.json"):
@@ -84,49 +85,40 @@ class Config:
             }
         }
 
-def setup_logging(config):
+def setup_logging():
     """Setup logging configuration."""
-    log_path = Path(config.get('logging.file_path', 'logs/app.log'))
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    # Create logs directory
+    Path('logs').mkdir(exist_ok=True)
     
-    logging.basicConfig(
-        level=config.get('logging.level', 'INFO'),
-        format=config.get('logging.format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s'),
-        handlers=[
-            logging.FileHandler(log_path),
-            logging.StreamHandler()
-        ]
-    )
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    # Create handlers
+    console_handler = logging.StreamHandler()
+    file_handler = logging.FileHandler('logs/app.log')
+    
+    # Create formatters
+    log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(log_format)
+    file_handler.setFormatter(log_format)
+    
+    # Add handlers
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    
+    return logger
 
 def main():
-    try:
-        # Load configuration
-        config = Config()
-        
-        # Setup logging
-        setup_logging(config)
-        
-        # Create database directory if it doesn't exist
-        db_path = Path(config.get('database.path'))
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Initialize database
-        db = DataCollector(str(db_path))
-        
-        # Create and configure root window
-        root = tk.Tk()
-        root.title(config.get('gui.window.title', 'Stock Market Data Collector'))
-        root.geometry(f"{config.get('gui.window.width', 800)}x{config.get('gui.window.height', 600)}")
-        
-        # Initialize GUI
-        app = DataCollectorGUI(root, config, db)
-        
-        # Start application
-        root.mainloop()
-        
-    except Exception as e:
-        logging.getLogger(__name__).error(f"Error in main: {e}", exc_info=True)
-        raise
+    # Setup logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger()
+
+    # Initialize database manager
+    db_manager = DatabaseManager()
+
+    # Create and run GUI
+    app = DataCollectorGUI(db_manager=db_manager, logger=logger)
+    app.run()  # This line is crucial to show the GUI
 
 if __name__ == "__main__":
     main() 
