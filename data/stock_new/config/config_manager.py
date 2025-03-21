@@ -153,270 +153,76 @@ class DataProcessingConfig:
 class ConfigurationManager:
     """Manages application configuration."""
     
-    def __init__(self, config_path: str = "config/data_collection.json"):
-        self.config_path = Path(config_path)
+    def __init__(self, config_path: str = "config/system_config.json"):
         self.logger = logging.getLogger("ConfigManager")
-        
-        if not self.config_path.exists():
-            self.create_default_config()
-        
-        self.load_configuration()
+        self.config_path = config_path
+        self.config = self.load_config()
     
-    def create_default_config(self) -> None:
-        """Create default configuration file."""
-        default_config = {
-            "system_config": {
-                "version": "1.0.0",
-                "description": "Configuration for market data collection",
-                "date": "2025-03-17"
-            },
-            "data_collection": {
-                "tickers": ["AAPL", "GOOG", "MSFT"],
-                "historical": {
-                    "enabled": True,
-                    "points": 720,
-                    "start_date": "2023-03-17",
-                    "end_date": "2025-03-17"
-                },
-                "realtime": {
-                    "enabled": False,
-                    "source": "yahoo",
-                    "available_sources": [
-                        {
-                            "name": "yahoo",
-                            "type": "http",
-                            "retry_attempts": 3,
-                            "retry_backoff_base": 2
-                        }
-                    ]
-                },
-                "parallel_processing": {
-                    "enabled": True,
-                    "max_workers": 10
-                }
-            },
-            "data_processing": {
-                "cleaning": {
-                    "lowercase": True,
-                    "remove_special_chars": True,
-                    "standardize_dates": "YYYY-MM-DD",
-                    "fill_missing": "0"
-                },
-                "validation": {
-                    "enabled": True,
-                    "batch_size": 10,
-                    "required_columns": [
-                        "date", "open", "high", "low", "close", "volume"
-                    ],
-                    "date_format": "YYYY-MM-DD",
-                    "numeric_fields": [
-                        "open", "high", "low", "close", "volume"
-                    ]
-                },
-                "database": {
-                    "type": "duckdb",
-                    "path": "data/market_data.duckdb",
-                    "index_columns": ["date"]
-                }
-            },
-            "gui_settings": {
-                "theme": "clam",
-                "available_themes": ["clam", "alt", "default"],
-                "window_size": "800x600"
-            },
-            "ticker_mixing": {
-                "combinations": [
-                    {
-                        "name": "tech_portfolio",
-                        "tickers": ["AAPL", "GOOG"],
-                        "fields": ["date", "close"],
-                        "filters": {"date": "> '2024-01-01'"},
-                        "aggregations": {"close": "AVG"}
-                    }
-                ],
-                "output_format": "csv",
-                "output_path": "data/"
-            },
-            "logging": {
-                "enabled": True,
-                "files": [
-                    {
-                        "name": "data_collection",
-                        "path": "logs/data_collection.log",
-                        "level": "INFO"
-                    }
-                ]
-            }
-        }
-        
-        self.config_path.parent.mkdir(exist_ok=True)
-        with open(self.config_path, 'w') as f:
-            json.dump(default_config, f, indent=4)
-        
-        self.logger.info(f"Created default configuration file: {self.config_path}")
-    
-    def load_configuration(self) -> None:
+    def load_config(self):
         """Load configuration from JSON file."""
         try:
-            with open(self.config_path) as f:
-                config_data = json.load(f)
+            config_file = Path(self.config_path)
             
-            # System Config
-            self.system_config = SystemConfig(**config_data["system_config"])
+            if not config_file.exists():
+                self.create_default_config()
             
-            # Data Collection Config
-            dc_config = config_data["data_collection"]
-            self.data_collection = DataCollectionConfig(
-                tickers=dc_config["tickers"],
-                historical=HistoricalConfig(**dc_config["historical"]),
-                realtime=RealtimeConfig(
-                    enabled=dc_config["realtime"]["enabled"],
-                    source=dc_config["realtime"]["source"],
-                    available_sources=[
-                        DataSourceConfig(**src) 
-                        for src in dc_config["realtime"]["available_sources"]
-                    ]
-                ),
-                parallel_processing=ParallelConfig(**dc_config["parallel_processing"])
-            )
-            
-            # Cache Config (optional)
-            self.cache_settings = CacheConfig()
-            if "cache_settings" in config_data:
-                self.cache_settings = CacheConfig(**config_data["cache_settings"])
-            
-            # Data Processing Config (with defaults)
-            self.data_processing = DataProcessingConfig()
-            if "data_processing" in config_data:
-                dp_config = config_data["data_processing"]
-                if "cleaning" in dp_config:
-                    self.data_processing.cleaning = CleaningConfig(**dp_config["cleaning"])
-                if "validation" in dp_config:
-                    self.data_processing.validation = ValidationConfig(**dp_config["validation"])
-                if "database" in dp_config:
-                    self.data_processing.database = DatabaseConfig(**dp_config["database"])
-            
-            # Ticker Mixing Config (optional)
-            self.ticker_mixing = TickerMixingConfig()
-            if "ticker_mixing" in config_data:
-                tm_config = config_data["ticker_mixing"]
-                combinations = [
-                    TickerMixingCombination(**combo)
-                    for combo in tm_config.get("combinations", [])
-                ]
-                self.ticker_mixing = TickerMixingConfig(
-                    combinations=combinations,
-                    output_format=tm_config.get("output_format", "csv"),
-                    output_path=tm_config.get("output_path", "data/")
-                )
-            
-            # GUI Settings (optional)
-            self.gui_settings = GuiConfig()
-            if "gui_settings" in config_data:
-                self.gui_settings = GuiConfig(**config_data["gui_settings"])
-            
-            # Logging Config
-            log_config = config_data.get("logging", {
-                "enabled": True,
-                "files": [{
-                    "name": "data_collection",
-                    "path": "logs/data_collection.log",
-                    "level": "INFO"
-                }]
-            })
-            self.logging = LoggingConfig(
-                enabled=log_config["enabled"],
-                files=[LogFileConfig(**f) for f in log_config["files"]]
-            )
+            with open(config_file, 'r') as f:
+                config = json.load(f)
             
             self.logger.info("Configuration loaded successfully")
+            return config
             
         except Exception as e:
-            self.logger.error(f"Error loading configuration: {str(e)}")
-            raise
+            self.logger.error(f"Error loading configuration: {e}")
+            return self.get_default_config()
     
-    def save_configuration(self) -> None:
-        """Save current configuration to file."""
-        try:
-            config_data = {
-                "system_config": {
-                    "version": self.system_config.version,
-                    "description": self.system_config.description,
-                    "date": self.system_config.date
-                },
-                "data_collection": {
-                    "tickers": self.data_collection.tickers,
-                    "historical": {
-                        "enabled": self.data_collection.historical.enabled,
-                        "points": self.data_collection.historical.points,
-                        "start_date": self.data_collection.historical.start_date,
-                        "end_date": self.data_collection.historical.end_date
-                    },
-                    "realtime": {
-                        "enabled": self.data_collection.realtime.enabled,
-                        "source": self.data_collection.realtime.source,
-                        "available_sources": [
-                            {
-                                "name": src.name,
-                                "type": src.type,
-                                "retry_attempts": src.retry_attempts,
-                                "retry_backoff_base": src.retry_backoff_base,
-                                "api_key": src.api_key,
-                                "secret_key": src.secret_key
-                            }
-                            for src in self.data_collection.realtime.available_sources
-                        ]
-                    },
-                    "parallel_processing": {
-                        "enabled": self.data_collection.parallel_processing.enabled,
-                        "max_workers": self.data_collection.parallel_processing.max_workers
-                    }
-                },
-                "data_processing": {
-                    "cleaning": {
-                        "lowercase": self.data_processing.cleaning.lowercase,
-                        "remove_special_chars": self.data_processing.cleaning.remove_special_chars,
-                        "standardize_dates": self.data_processing.cleaning.standardize_dates,
-                        "fill_missing": self.data_processing.cleaning.fill_missing
-                    },
-                    "validation": {
-                        "enabled": self.data_processing.validation.enabled,
-                        "batch_size": self.data_processing.validation.batch_size,
-                        "required_columns": self.data_processing.validation.required_columns,
-                        "date_format": self.data_processing.validation.date_format,
-                        "numeric_fields": self.data_processing.validation.numeric_fields
-                    },
-                    "database": {
-                        "type": self.data_processing.database.type,
-                        "path": self.data_processing.database.path,
-                        "index_columns": self.data_processing.database.index_columns
-                    }
-                },
-                "logging": {
-                    "enabled": self.logging.enabled,
-                    "files": [
-                        {
-                            "name": f.name,
-                            "path": f.path,
-                            "level": f.level
-                        }
-                        for f in self.logging.files
-                    ]
-                }
+    def create_default_config(self):
+        """Create default configuration file."""
+        config = self.get_default_config()
+        
+        config_file = Path(self.config_path)
+        config_file.parent.mkdir(exist_ok=True)
+        
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=4)
+    
+    def get_default_config(self):
+        """Get default configuration."""
+        return {
+            "database": {
+                "path": "data/market_data.duckdb",
+                "type": "duckdb"
+            },
+            "data_collection": {
+                "period": "2y",
+                "interval": "1d",
+                "retries": 3,
+                "retry_delay": 5
+            },
+            "gui": {
+                "window_size": "1200x800",
+                "theme": "default"
             }
-            
-            with open(self.config_path, 'w') as f:
-                json.dump(config_data, f, indent=4)
-            
-            self.logger.info("Configuration saved successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Error saving configuration: {str(e)}")
-            raise
+        }
+
+    @property
+    def database(self):
+        """Get database configuration."""
+        return self.config.get("database", {})
+
+    @property
+    def data_collection(self):
+        """Get data collection configuration."""
+        return self.config.get("data_collection", {})
+
+    @property
+    def gui(self):
+        """Get GUI configuration."""
+        return self.config.get("gui", {})
 
     def get_data_source_config(self, source_name: str) -> Optional[DataSourceConfig]:
         """Get configuration for a specific data source."""
-        for source in self.data_collection.realtime.available_sources:
+        for source in self.data_collection.get("realtime", {}).get("available_sources", []):
             if source.name == source_name:
                 return source
         return None 
