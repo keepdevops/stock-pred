@@ -1,0 +1,6 @@
+data_collection:
+  db_path: "data/market_data.duckdb"
+  period: "2y"
+  interval: "1d"
+  start_date: "2020-01-01"
+  end_date: "2025-03-19" 

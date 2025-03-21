@@ -1,0 +1,25 @@
+{
+    "database": {
+        "type": "duckdb",
+        "path": "data/market_data.duckdb"
+    },
+    "data_collection": {
+        "period": "1y",
+        "interval": "1d",
+        "retries": 3,
+        "retry_delay": 5
+    },
+    "ml_params": {
+        "window_size": 60,
+        "prediction_days": 30,
+        "test_size": 0.2,
+        "batch_size": 32,
+        "epochs": 100,
+        "learning_rate": 0.001,
+        "dropout_rate": 0.2
+    },
+    "gui": {
+        "theme": "default",
+        "window_size": "1024x768"
+    }
+}
