@@ -5,14 +5,12 @@ import tkinter as tk
 from tkinter import messagebox
 import polars as pl
 import json
-
-# Adjust Python path to include src directory
-sys.path.append(str(Path(__file__).parent.parent))
-
-from src.config.config_manager import ConfigurationManager
+from src.stock_market_analyzer import StockMarketAnalyzer
+from src.database.database_connector import DatabaseConnector
+from src.database.nasdaq_database import NasdaqDatabase
+from .config.config_manager import ConfigManager
 from src.modules.gui import StockGUI
-from src.modules.database import DatabaseConnector
-from src.modules.data_loader import DataLoader
+from .data.data_loader import DataLoader
 from src.modules.stock_ai_agent import StockAIAgent
 from src.modules.trading.real_trading_agent import RealTradingAgent
 from data_collection_module import DataCollector
@@ -21,6 +19,12 @@ from database_conversion_module import DatabaseConverter
 from ticker_mixing_module import TickerMixer
 from gui_module import DataCollectorGUI
 from normalization_module import TickerNormalizer
+import os
+from datetime import datetime, timedelta
+from src.database.database_manager import DatabaseManager
+
+# Adjust Python path to include src directory
+sys.path.append(str(Path(__file__).parent.parent))
 
 def setup_logging():
     """Setup logging configuration"""
@@ -141,23 +145,64 @@ def analyze_with_advanced_normalization(ticker: str, start_date: str, end_date: 
     
     return results
 
-def main():
-    # Setup logging
-    setup_logging()
-    
+def initialize_databases():
+    """Initialize market data and NASDAQ symbols databases."""
     try:
-        # Create and run GUI
-        root = tk.Tk()
-        app = DataCollectorGUI(root)
-        root.mainloop()
+        # Create data directory if it doesn't exist
+        data_dir = Path("data")
+        data_dir.mkdir(exist_ok=True)
+
+        # Initialize market data database
+        market_db = DatabaseConnector(
+            db_path=data_dir / "market_data.duckdb"
+        )
+
+        # Initialize NASDAQ symbols database
+        nasdaq_db = NasdaqDatabase(
+            db_path=data_dir / "nasdaq_symbols.duckdb"
+        )
+
+        return market_db, nasdaq_db
+
     except Exception as e:
-        logging.error(f"Error in main application: {e}")
+        logging.error(f"Error initializing databases: {e}")
+        raise
+
+def ensure_directories():
+    """Ensure required directories exist."""
+    directories = ['data', 'config', 'logs']
+    for directory in directories:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+
+def main():
+    try:
+        db_manager = DatabaseManager()
+        
+        # Verify table structure
+        if not db_manager.verify_table_structure():
+            logging.error("Database table structure is incorrect")
+            return
+            
+        # Initialize GUI with new database connection
+        gui = DataCollectorGUI(db_manager)
+        
+        # Set date range
+        gui.set_date_range(
+            start_date=(datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d'),
+            end_date=datetime.now().strftime('%Y-%m-%-d')
+        )
+        
+        # Load and process tickers
+        gui.load_and_update_tickers()
+        gui.process_tickers()
+        
+    except Exception as e:
+        logging.error(f"Error in main: {str(e)}")
     finally:
-        # Ensure proper cleanup
-        try:
-            root.destroy()
-        except:
-            pass
+        # Ensure database connection is properly closed
+        if 'db_manager' in locals():
+            db_manager.close()
 
 if __name__ == "__main__":
     main() 
