@@ -11,49 +11,71 @@ from config.config_manager import ConfigurationManager
 class DataLoader:
     """Handles loading and managing stock data."""
     
-    def __init__(
-        self,
-        db_connector: DatabaseConnector,
-        config: ConfigurationManager,
-        logger: Optional[logging.Logger] = None
-    ):
-        self.db = db_connector
+    def __init__(self, config):
+        self.logger = logging.getLogger("DataLoader")
         self.config = config
-        self.logger = logger or logging.getLogger(__name__)
+        self.period = config.get('period', '2y')
+        self.interval = config.get('interval', '1d')
         self._stop_realtime = False
     
-    def collect_historical_data(self, ticker: str) -> Optional[pd.DataFrame]:
+    def collect_historical_data(self, symbol: str) -> Optional[pd.DataFrame]:
         """Collect historical data for a given ticker."""
         try:
-            self.logger.info(f"Collecting historical data for {ticker}")
+            self.logger.info(f"Collecting historical data for {symbol}")
             
-            # Get configuration
-            hist_config = self.config.data_collection.historical
+            # Create Ticker object
+            ticker = yf.Ticker(symbol)
             
-            # Download data
-            stock = yf.Ticker(ticker)
-            df = stock.history(
-                start=hist_config.start_date,
-                end=hist_config.end_date
+            # Get historical data using configuration
+            df = ticker.history(
+                period=self.period,
+                interval=self.interval
             )
             
             if df.empty:
-                self.logger.warning(f"No historical data found for {ticker}")
+                self.logger.warning(f"No data available for {symbol}")
                 return None
             
-            # Process the data
-            df = df.reset_index()
-            df.columns = df.columns.str.lower()
+            # Process DataFrame
+            df = self._process_dataframe(df, symbol)
             
-            # Save to database
-            self.db.save_ticker_data(ticker, df)
-            
-            self.logger.info(f"Successfully collected historical data for {ticker}")
+            self.logger.info(f"Successfully collected {len(df)} records for {symbol}")
             return df
             
         except Exception as e:
-            self.logger.error(f"Error collecting historical data for {ticker}: {str(e)}")
+            self.logger.error(f"Error collecting historical data for {symbol}: {e}")
             return None
+    
+    def _process_dataframe(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Process the downloaded DataFrame."""
+        # Reset index to make date a column
+        df = df.reset_index()
+        
+        # Rename columns to match database schema
+        column_mapping = {
+            'Date': 'date',
+            'Open': 'open',
+            'High': 'high',
+            'Low': 'low',
+            'Close': 'close',
+            'Volume': 'volume'
+        }
+        df = df.rename(columns=column_mapping)
+        
+        # Add ticker column
+        df['ticker'] = symbol
+        
+        # Use 'close' as 'adj_close' since recent data is already adjusted
+        df['adj_close'] = df['close']
+        
+        # Select and order columns
+        columns = ['date', 'ticker', 'open', 'high', 'low', 'close', 'adj_close', 'volume']
+        df = df[columns]
+        
+        # Remove any timezone information from date
+        df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
+        
+        return df
     
     def collect_historical_data_parallel(self, tickers: List[str]) -> None:
         """Collect historical data for multiple tickers in parallel."""

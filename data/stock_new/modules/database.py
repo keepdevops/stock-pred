@@ -3,108 +3,121 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import duckdb
 import pandas as pd
+import os
+import signal
+import psutil
 
 class DatabaseConnector:
     """Handles database connections and operations."""
     
-    def __init__(
-        self,
-        db_path: str,
-        logger: Optional[logging.Logger] = None
-    ):
-        self.db_path = db_path
-        self.logger = logger or logging.getLogger(__name__)
-        self.conn = None
-        self.connect()
+    def __init__(self, config):
+        self.logger = logging.getLogger("modules.database")
+        # Extract the database path from config
+        self.db_path = config.get('path', 'data/market_data.duckdb')
+        self.connection = None
+        self.connect(force=True)  # Add force parameter
     
-    def connect(self) -> None:
+    def connect(self, force=False):
         """Establish database connection."""
         try:
-            # Create directory if it doesn't exist
             db_dir = Path(self.db_path).parent
-            db_dir.mkdir(parents=True, exist_ok=True)
+            db_dir.mkdir(exist_ok=True)
             
-            # Connect to database
-            self.conn = duckdb.connect(database=self.db_path)
+            if force:
+                self._release_db_locks()
+            
+            self.connection = duckdb.connect(str(self.db_path))
+            self.initialize_tables()
             self.logger.info(f"Connected to database: {self.db_path}")
             
-            # Initialize tables if they don't exist
-            self._initialize_tables()
-            
         except Exception as e:
-            self.logger.error(f"Error connecting to database: {str(e)}")
+            self.logger.error(f"Error connecting to database: {e}")
             raise
     
-    def _initialize_tables(self) -> None:
+    def _release_db_locks(self):
+        """Release any existing locks on the database."""
+        try:
+            db_path = Path(self.db_path).resolve()
+            
+            # Find processes that might have the database open
+            current_pid = os.getpid()
+            
+            for proc in psutil.process_iter(['pid', 'name', 'open_files']):
+                try:
+                    if proc.pid == current_pid:
+                        continue
+                        
+                    # Check if process has the database file open
+                    for file in proc.open_files() or []:
+                        if Path(file.path).resolve() == db_path:
+                            self.logger.info(f"Found process holding database lock: {proc.pid}")
+                            # Try to terminate the process
+                            os.kill(proc.pid, signal.SIGTERM)
+                            self.logger.info(f"Released lock from process: {proc.pid}")
+                            
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+                    
+            # Additional cleanup: remove lock file if it exists
+            lock_file = Path(str(self.db_path) + ".lock")
+            if lock_file.exists():
+                lock_file.unlink()
+                self.logger.info("Removed database lock file")
+                
+        except Exception as e:
+            self.logger.warning(f"Error releasing database locks: {e}")
+    
+    def initialize_tables(self):
         """Initialize database tables."""
         try:
-            # Create stock data table
-            self.conn.execute("""
+            # Create stock_data table if it doesn't exist
+            self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS stock_data (
-                    date TIMESTAMP,
-                    ticker VARCHAR,
+                    date DATE NOT NULL,
+                    ticker VARCHAR NOT NULL,
                     open DOUBLE,
                     high DOUBLE,
                     low DOUBLE,
                     close DOUBLE,
+                    adj_close DOUBLE,
                     volume BIGINT,
                     PRIMARY KEY (date, ticker)
                 )
             """)
             
-            # Create predictions table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS predictions (
-                    date TIMESTAMP,
-                    ticker VARCHAR,
-                    predicted_price DOUBLE,
-                    confidence DOUBLE,
-                    model_type VARCHAR,
-                    PRIMARY KEY (date, ticker, model_type)
-                )
-            """)
-            
-            # Create technical indicators table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS technical_indicators (
-                    date TIMESTAMP,
-                    ticker VARCHAR,
-                    indicator_name VARCHAR,
-                    value DOUBLE,
-                    PRIMARY KEY (date, ticker, indicator_name)
-                )
-            """)
-            
-            # Create trading history table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS trading_history (
-                    trade_id BIGINT PRIMARY KEY,
-                    date TIMESTAMP,
-                    ticker VARCHAR,
-                    action VARCHAR,
-                    quantity DOUBLE,
-                    price DOUBLE,
-                    total_value DOUBLE
-                )
-            """)
-            
-            # Create sequence for trade_id
-            self.conn.execute("""
-                CREATE SEQUENCE IF NOT EXISTS trading_history_trade_id_seq
-                START 1 INCREMENT 1
-            """)
-            
+            # Log table structure
+            table_info = self.connection.execute("DESCRIBE stock_data").fetchall()
             self.logger.info("Database tables initialized")
+            self.logger.info(f"Table structure: {table_info}")
             
         except Exception as e:
-            self.logger.error(f"Error initializing tables: {str(e)}")
+            self.logger.error(f"Error initializing tables: {e}")
             raise
     
-    def close(self) -> None:
+    def execute_query(self, query, params=None):
+        """Execute a query and return results as DataFrame."""
+        try:
+            if params:
+                result = self.connection.execute(query, params).fetchdf()
+            else:
+                result = self.connection.execute(query).fetchdf()
+            return result
+        except Exception as e:
+            self.logger.error(f"Error executing query: {e}")
+            raise
+    
+    def close(self):
         """Close database connection."""
-        if self.conn:
-            self.conn.close()
-            self.logger.info("Database connection closed")
+        if self.connection:
+            try:
+                self.connection.close()
+                self.logger.info("Database connection closed")
+            except Exception as e:
+                self.logger.error(f"Error closing database connection: {e}")
+    
+    def __del__(self):
+        """Ensure connection is closed when object is deleted."""
+        self.close()
     
     def save_ticker_data(
         self,
@@ -121,13 +134,13 @@ class DatabaseConnector:
             # Insert data
             if realtime:
                 # For realtime data, we might want to update existing records
-                self.conn.execute("""
+                self.connection.execute("""
                     INSERT OR REPLACE INTO stock_data
                     SELECT * FROM df
                 """)
             else:
                 # For historical data, ignore duplicates
-                self.conn.execute("""
+                self.connection.execute("""
                     INSERT OR IGNORE INTO stock_data
                     SELECT * FROM df
                 """)
@@ -149,7 +162,7 @@ class DatabaseConnector:
         try:
             total_value = quantity * price
             
-            self.conn.execute("""
+            self.connection.execute("""
                 INSERT INTO trading_history (
                     trade_id, date, ticker, action, quantity, price, total_value
                 )
@@ -186,7 +199,7 @@ class DatabaseConnector:
             
             query += " ORDER BY date"
             
-            result = self.conn.execute(query, params).fetchdf()
+            result = self.connection.execute(query, params).fetchdf()
             return result if not result.empty else None
             
         except Exception as e:
@@ -218,7 +231,7 @@ class DatabaseConnector:
             
             query += " ORDER BY date DESC"
             
-            return self.conn.execute(query, params).fetchdf()
+            return self.connection.execute(query, params).fetchdf()
             
         except Exception as e:
             self.logger.error(f"Error retrieving trading history: {str(e)}")
@@ -227,7 +240,7 @@ class DatabaseConnector:
     def get_tables(self) -> List[str]:
         """Get list of tables in the database."""
         try:
-            tables = self.conn.execute("""
+            tables = self.connection.execute("""
                 SELECT table_name 
                 FROM information_schema.tables 
                 WHERE table_schema = 'main'
@@ -236,76 +249,11 @@ class DatabaseConnector:
         except Exception:
             # Try SQLite syntax if DuckDB fails
             try:
-                tables = self.conn.execute("""
+                tables = self.connection.execute("""
                     SELECT name FROM sqlite_master 
                     WHERE type='table'
                 """).fetchdf()
                 return tables['name'].tolist()
             except Exception as e:
                 self.logger.error(f"Error getting tables: {str(e)}")
-                return []
-    
-    def initialize_tables(self) -> None:
-        """Initialize database tables."""
-        try:
-            # Create stock data table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS stock_data (
-                    date TIMESTAMP,
-                    ticker VARCHAR,
-                    open DOUBLE,
-                    high DOUBLE,
-                    low DOUBLE,
-                    close DOUBLE,
-                    volume BIGINT,
-                    PRIMARY KEY (date, ticker)
-                )
-            """)
-            
-            # Create predictions table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS predictions (
-                    date TIMESTAMP,
-                    ticker VARCHAR,
-                    predicted_price DOUBLE,
-                    confidence DOUBLE,
-                    model_type VARCHAR,
-                    PRIMARY KEY (date, ticker, model_type)
-                )
-            """)
-            
-            # Create technical indicators table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS technical_indicators (
-                    date TIMESTAMP,
-                    ticker VARCHAR,
-                    indicator_name VARCHAR,
-                    value DOUBLE,
-                    PRIMARY KEY (date, ticker, indicator_name)
-                )
-            """)
-            
-            # Create trading history table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS trading_history (
-                    trade_id BIGINT PRIMARY KEY,
-                    date TIMESTAMP,
-                    ticker VARCHAR,
-                    action VARCHAR,
-                    quantity DOUBLE,
-                    price DOUBLE,
-                    total_value DOUBLE
-                )
-            """)
-            
-            # Create sequence for trade_id
-            self.conn.execute("""
-                CREATE SEQUENCE IF NOT EXISTS trading_history_trade_id_seq
-                START 1 INCREMENT 1
-            """)
-            
-            self.logger.info("Database tables initialized")
-            
-        except Exception as e:
-            self.logger.error(f"Error initializing tables: {str(e)}")
-            raise 
+                return [] 
