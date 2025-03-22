@@ -64,7 +64,7 @@ class DataLoader:
                     adj_close FLOAT,
                     volume FLOAT,
                     ticker VARCHAR,
-                    updated_at DATETIME
+                    date DATETIME
                 )
                 """)
             
@@ -144,7 +144,7 @@ class DataLoader:
                         adj_close FLOAT,
                         volume FLOAT,
                         ticker VARCHAR,
-                        updated_at DATETIME
+                        da DATETIME
                     )
                     """)
                 
@@ -207,7 +207,7 @@ class DataLoader:
                         adj_close FLOAT,
                         volume FLOAT,
                         ticker VARCHAR,
-                        updated_at DATETIME
+                        date DATETIME
                     )
                     """)
                     

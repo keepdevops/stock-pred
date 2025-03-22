@@ -304,7 +304,7 @@ class DatabaseConnector:
         
         try:
             query = f"""
-            SELECT date, open, high, low, close, adj_close, volume, ticker, updated_at
+            SELECT date, open, high, low, close, adj_close, volume, ticker, adj_close
             FROM {table}
             ORDER BY date, ticker
             """
@@ -396,7 +396,7 @@ class DatabaseConnector:
                         adj_close FLOAT,
                         volume FLOAT,
                         ticker VARCHAR,
-                        updated_at DATETIME
+                        dDATETIME
                     )
                     """))
                     

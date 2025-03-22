@@ -4,6 +4,8 @@ import logging
 from typing import List, Dict, Any, Optional
 import pandas as pd
 import numpy as np
+import threading
+import time
 
 from src.config.config_manager import ConfigurationManager
 from src.modules.database import DatabaseConnector
@@ -11,381 +13,300 @@ from src.modules.data_loader import DataLoader
 from src.modules.stock_ai_agent import StockAIAgent
 from src.modules.trading.real_trading_agent import RealTradingAgent
 from src.utils.visualization import StockVisualizer
+from ..database.nasdaq_database import NasdaqDatabase
 
 class StockGUI:
     """Main GUI interface for the Stock Market Analyzer."""
     
-    def __init__(
-        self,
-        root: tk.Tk,
-        db_connector: DatabaseConnector,
-        data_adapter: DataLoader,
-        ai_agent: StockAIAgent
-    ):
+    def __init__(self, root, config_manager, db, data_loader):
         self.root = root
-        self.db_connector = db_connector
-        self.data_adapter = data_adapter
-        self.ai_agent = ai_agent
+        self.config = config_manager
+        self.db = db
+        self.data_loader = data_loader
+        self.logger = logging.getLogger("GUI")
         
-        # Initialize trading agent as None (will be created when needed)
-        self.trading_agent: Optional[RealTradingAgent] = None
+        # Initialize NASDAQ database
+        self.nasdaq_db = NasdaqDatabase()
         
-        # Setup GUI components
-        self.setup_main_frames()
-        self.setup_left_panel()
-        self.setup_right_panel()
-        self.setup_status_bar()
+        # Store available tickers
+        self.available_tickers = []
+        self.realtime_running = False
+        self.realtime_thread = None
+        self.collection_interval = 60  # seconds
+        
+        self._setup_gui()
+        self.load_nasdaq_tickers()
     
-    def setup_main_frames(self):
-        """Create main frame layout."""
-        # Left panel (controls)
-        self.left_frame = ttk.Frame(self.root, padding="5")
-        self.left_frame.pack(side=tk.LEFT, fill=tk.Y)
+    def _setup_gui(self):
+        """Setup GUI components."""
+        # Main container
+        self.main_container = ttk.Frame(self.root)
+        self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Left frame for ticker selection
+        self.left_frame = ttk.Frame(self.main_container)
+        self.left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
+
+        # Ticker Selection Section
+        self.ticker_frame = ttk.LabelFrame(self.left_frame, text="Ticker Selection")
+        self.ticker_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Search/Filter
+        self.search_frame = ttk.Frame(self.ticker_frame)
+        self.search_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(self.search_frame, text="Filter:").pack(side=tk.LEFT)
         
-        # Right panel (plots)
-        self.right_frame = ttk.Frame(self.root, padding="5")
-        self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        
-        # Status bar
-        self.status_frame = ttk.Frame(self.root)
-        self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
-    
-    def setup_left_panel(self):
-        """Setup all controls in the left panel."""
-        # Database selection
-        db_frame = ttk.LabelFrame(self.left_frame, text="Database", padding="5")
-        db_frame.pack(fill=tk.X, pady=5)
-        
-        self.db_combo = ttk.Combobox(db_frame, state="readonly")
-        self.db_combo.pack(fill=tk.X)
-        self.db_combo.bind("<<ComboboxSelected>>", self.on_database_selected)
-        
-        # Sector selection
-        sector_frame = ttk.LabelFrame(self.left_frame, text="Sector", padding="5")
-        sector_frame.pack(fill=tk.X, pady=5)
-        
-        self.sector_combo = ttk.Combobox(sector_frame, state="readonly")
-        self.sector_combo.pack(fill=tk.X)
-        self.sector_combo.bind("<<ComboboxSelected>>", self.on_sector_selected)
-        
-        # Ticker selection
-        ticker_frame = ttk.LabelFrame(self.left_frame, text="Tickers", padding="5")
-        ticker_frame.pack(fill=tk.X, pady=5)
-        
-        self.ticker_listbox = tk.Listbox(ticker_frame, selectmode=tk.MULTIPLE)
-        self.ticker_listbox.pack(fill=tk.X)
-        
-        # Feature selection
-        feature_frame = ttk.LabelFrame(self.left_frame, text="Features", padding="5")
-        feature_frame.pack(fill=tk.X, pady=5)
-        
-        self.feature_vars = {}
-        for feature in ['close', 'volume', 'RSI', 'MACD']:
-            var = tk.BooleanVar(value=True if feature == 'close' else False)
-            self.feature_vars[feature] = var
-            ttk.Checkbutton(
-                feature_frame,
-                text=feature,
-                variable=var
-            ).pack(anchor=tk.W)
-        
-        # Model configuration
-        model_frame = ttk.LabelFrame(self.left_frame, text="Model", padding="5")
-        model_frame.pack(fill=tk.X, pady=5)
-        
-        ttk.Label(model_frame, text="Type:").pack(anchor=tk.W)
-        self.model_combo = ttk.Combobox(
-            model_frame,
-            values=['LSTM', 'GRU', 'BiLSTM', 'CNN-LSTM', 'Transformer'],
-            state="readonly"
+        self.search_var = tk.StringVar()
+        self.search_var.trace('w', self.filter_tickers)
+        self.search_entry = ttk.Entry(
+            self.search_frame, 
+            textvariable=self.search_var
         )
-        self.model_combo.set('LSTM')
-        self.model_combo.pack(fill=tk.X)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+
+        # Ticker Listbox with Scrollbar
+        self.listbox_frame = ttk.Frame(self.ticker_frame)
+        self.listbox_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        self.ticker_listbox = tk.Listbox(
+            self.listbox_frame,
+            selectmode=tk.EXTENDED,
+            exportselection=False,
+            width=30,
+            height=20
+        )
+        self.ticker_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.ticker_listbox.bind('<<ListboxSelect>>', self.on_ticker_select)
+
+        scrollbar = ttk.Scrollbar(
+            self.listbox_frame,
+            orient=tk.VERTICAL,
+            command=self.ticker_listbox.yview
+        )
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.ticker_listbox.config(yscrollcommand=scrollbar.set)
+
+        # Selection info
+        self.selection_label = ttk.Label(self.ticker_frame, text="Selected: 0")
+        self.selection_label.pack(pady=5)
+
+        # Ticker Details
+        self.details_frame = ttk.LabelFrame(self.ticker_frame, text="Ticker Details")
+        self.details_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Label(model_frame, text="Epochs:").pack(anchor=tk.W)
-        self.epochs_var = tk.StringVar(value="100")
-        ttk.Entry(model_frame, textvariable=self.epochs_var).pack(fill=tk.X)
-        
-        # Action buttons
-        button_frame = ttk.Frame(self.left_frame)
-        button_frame.pack(fill=tk.X, pady=5)
-        
-        ttk.Button(
-            button_frame,
-            text="Train Model",
-            command=self.train_model_handler
-        ).pack(fill=tk.X, pady=2)
-        
-        ttk.Button(
-            button_frame,
-            text="Predict",
-            command=self.predict_handler
-        ).pack(fill=tk.X, pady=2)
-        
-        ttk.Button(
-            button_frame,
-            text="Start Trading",
-            command=self.start_trading_handler
-        ).pack(fill=tk.X, pady=2)
-        
-        # Status text area
-        self.status_text = tk.Text(self.left_frame, height=5, width=30)
-        self.status_text.pack(fill=tk.X, pady=5)
-    
-    def setup_right_panel(self):
-        """Setup plotting area in right panel."""
-        # Create notebook for multiple plots
-        self.plot_notebook = ttk.Notebook(self.right_frame)
-        self.plot_notebook.pack(fill=tk.BOTH, expand=True)
-        
-        # Historical data tab
-        self.hist_frame = ttk.Frame(self.plot_notebook)
-        self.plot_notebook.add(self.hist_frame, text="Historical")
-        
-        self.hist_figure = Figure(figsize=(8, 6))
-        self.hist_canvas = FigureCanvasTkAgg(self.hist_figure, self.hist_frame)
-        self.hist_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # Training results tab
-        self.train_frame = ttk.Frame(self.plot_notebook)
-        self.plot_notebook.add(self.train_frame, text="Training")
-        
-        self.train_figure = Figure(figsize=(8, 6))
-        self.train_canvas = FigureCanvasTkAgg(self.train_figure, self.train_frame)
-        self.train_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # Predictions tab
-        self.pred_frame = ttk.Frame(self.plot_notebook)
-        self.plot_notebook.add(self.pred_frame, text="Predictions")
-        
-        self.pred_figure = Figure(figsize=(8, 6))
-        self.pred_canvas = FigureCanvasTkAgg(self.pred_figure, self.pred_frame)
-        self.pred_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-    
-    def setup_status_bar(self):
-        """Setup status bar at bottom."""
-        self.status_var = tk.StringVar()
-        self.status_label = ttk.Label(
-            self.status_frame,
+        self.details_text = tk.Text(self.details_frame, height=4, wrap=tk.WORD)
+        self.details_text.pack(fill=tk.X, padx=5, pady=5)
+        self.details_text.config(state=tk.DISABLED)
+
+        # Right frame for charts and analysis (placeholder)
+        self.right_frame = ttk.Frame(self.main_container)
+        self.right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+
+        # Status bar
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_bar = ttk.Label(
+            self.root,
             textvariable=self.status_var,
             relief=tk.SUNKEN
         )
-        self.status_label.pack(fill=tk.X)
-        self.status_var.set("Ready")
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
     
-    def on_database_selected(self, event):
-        """Handle database selection."""
-        db_path = self.db_combo.get()
-        if db_path:
-            if self.db_connector.create_connection(db_path):
-                # Update sector list
-                tables = self.db_connector.get_tables()
-                self.sector_combo['values'] = tables
-                self.status_var.set(f"Connected to {db_path}")
-            else:
-                messagebox.showerror("Error", f"Could not connect to {db_path}")
-    
-    def on_sector_selected(self, event):
-        """Handle sector selection."""
-        sector = self.sector_combo.get()
-        if sector:
-            # Update ticker list
-            tickers = self.db_connector.get_unique_tickers(sector)
+    def load_nasdaq_tickers(self):
+        """Load tickers from NASDAQ database."""
+        try:
+            self.status_var.set("Loading NASDAQ tickers...")
+            self.root.update()
+            
+            self.available_tickers = self.nasdaq_db.get_all_symbols()
+            
+            if not self.available_tickers:
+                raise ValueError("No tickers loaded from NASDAQ database")
+            
             self.ticker_listbox.delete(0, tk.END)
-            for ticker in tickers:
+            for ticker in self.available_tickers:
                 self.ticker_listbox.insert(tk.END, ticker)
             
-            self.status_var.set(f"Loaded tickers for {sector}")
-    
-    def train_model_handler(self):
-        """Handle model training."""
-        try:
-            # Get selected tickers
-            selected_tickers = [
-                self.ticker_listbox.get(idx)
-                for idx in self.ticker_listbox.curselection()
-            ]
-            
-            if not selected_tickers:
-                messagebox.showwarning("Warning", "Please select at least one ticker")
-                return
-            
-            # Get selected features
-            features = [
-                feat for feat, var in self.feature_vars.items()
-                if var.get()
-            ]
-            
-            if not features:
-                messagebox.showwarning("Warning", "Please select at least one feature")
-                return
-            
-            # Get model parameters
-            model_type = self.model_combo.get()
-            epochs = int(self.epochs_var.get())
-            
-            # Start training
-            self.status_var.set("Training model...")
-            self.status_text.insert(tk.END, f"Training {model_type} model...\n")
-            
-            # Get data
-            sector = self.sector_combo.get()
-            df = self.db_connector.load_tickers(sector)
-            df = df[df['ticker'].isin(selected_tickers)]
-            
-            # Prepare data
-            train_data = self.data_adapter.prepare_training_data(df, features)
-            
-            # Train model
-            history = self.ai_agent.train(
-                train_data.X_train,
-                train_data.y_train,
-                validation_data=(train_data.X_val, train_data.y_val),
-                epochs=epochs
-            )
-            
-            # Plot training results
-            self.plot_training_results(history)
-            
-            self.status_var.set("Training completed")
-            self.status_text.insert(tk.END, "Training completed\n")
+            self.status_var.set(f"Loaded {len(self.available_tickers)} NASDAQ tickers")
+            self.logger.info(f"Successfully loaded {len(self.available_tickers)} NASDAQ tickers")
             
         except Exception as e:
-            messagebox.showerror("Error", f"Training error: {str(e)}")
-            self.status_var.set("Training failed")
-    
-    def predict_handler(self):
-        """Handle predictions."""
+            error_msg = f"Error loading NASDAQ tickers: {e}"
+            self.logger.error(error_msg)
+            self.status_var.set("Error loading NASDAQ tickers")
+            messagebox.showerror("Error", error_msg)
+
+    def filter_tickers(self, *args):
+        """Filter tickers based on search text."""
+        search_text = self.search_var.get().upper()
+        self.ticker_listbox.delete(0, tk.END)
+        
+        filtered_tickers = [ticker for ticker in self.available_tickers if search_text in ticker.upper()]
+        for ticker in filtered_tickers:
+            self.ticker_listbox.insert(tk.END, ticker)
+
+    def on_ticker_select(self, event):
+        """Handle ticker selection event."""
         try:
-            # Get selected ticker (use first selected)
-            selected_idx = self.ticker_listbox.curselection()
-            if not selected_idx:
-                messagebox.showwarning("Warning", "Please select a ticker")
-                return
+            selected = self.get_selected_tickers()
+            self.selection_label.config(text=f"Selected: {len(selected)}")
             
-            ticker = self.ticker_listbox.get(selected_idx[0])
-            
-            # Get prediction days
-            days = 30  # Could add input for this
-            
-            # Get data
-            sector = self.sector_combo.get()
-            df = self.db_connector.load_tickers(sector)
-            df = df[df['ticker'] == ticker]
-            
-            # Make predictions
-            self.status_var.set("Making predictions...")
-            
-            # Historical predictions
-            hist_pred = self.ai_agent.predict(
-                self.data_adapter.prepare_prediction_data(df)
-            )
-            
-            # Future predictions
-            future_pred = self.ai_agent.predict_future(
-                self.data_adapter.prepare_prediction_data(df),
-                days=days
-            )
-            
-            # Plot predictions
-            self.plot_predictions(df, hist_pred, future_pred)
-            
-            self.status_var.set("Predictions completed")
-            
+            # Show details for the last selected ticker
+            if selected:
+                last_selected = selected[-1]
+                info = self.nasdaq_db.get_symbol_info(last_selected)
+                if info:
+                    details = (
+                        f"Symbol: {info.get('Symbol', 'N/A')}\n"
+                        f"Name: {info.get('Name', 'N/A')}\n"
+                        f"Sector: {info.get('Sector', 'N/A')}\n"
+                        f"Industry: {info.get('Industry', 'N/A')}"
+                    )
+                    
+                    self.details_text.config(state=tk.NORMAL)
+                    self.details_text.delete(1.0, tk.END)
+                    self.details_text.insert(tk.END, details)
+                    self.details_text.config(state=tk.DISABLED)
+                    
         except Exception as e:
-            messagebox.showerror("Error", f"Prediction error: {str(e)}")
-            self.status_var.set("Prediction failed")
-    
-    def start_trading_handler(self):
-        """Handle live trading initialization."""
+            self.logger.error(f"Error updating selection: {e}")
+
+    def get_selected_tickers(self):
+        """Get list of selected tickers."""
+        return [self.ticker_listbox.get(idx) for idx in self.ticker_listbox.curselection()]
+
+    def start_realtime_collection(self):
+        """Start real-time data collection."""
         try:
-            if not self.trading_agent:
-                # Get API credentials (should be from secure config)
-                api_key = "YOUR_API_KEY"
-                api_secret = "YOUR_API_SECRET"
-                
-                # Initialize trading agent
-                self.trading_agent = RealTradingAgent(
-                    self.ai_agent,
-                    api_key,
-                    api_secret,
-                    "https://paper-api.alpaca.markets",
-                    budget=10000.0
-                )
-                
-                self.status_var.set("Trading agent initialized")
-                self.status_text.insert(tk.END, "Trading agent initialized\n")
-            
-            # Start trading monitoring
-            self.monitor_trading()
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Trading error: {str(e)}")
-            self.status_var.set("Trading initialization failed")
-    
-    def monitor_trading(self):
-        """Monitor trading status."""
-        if self.trading_agent:
+            # Get collection interval
             try:
-                # Get trading status
-                status = self.trading_agent.monitor_trades()
+                self.collection_interval = int(self.interval_var.get())
+                if self.collection_interval < 30:
+                    raise ValueError("Interval must be at least 30 seconds")
+            except ValueError as e:
+                messagebox.showerror("Error", str(e))
+                self.realtime_var.set(False)
+                return
+
+            # Get selected tickers
+            selected_tickers = self.get_selected_tickers()
+            if not selected_tickers:
+                messagebox.showwarning("Warning", "Please select tickers for real-time collection")
+                self.realtime_var.set(False)
+                return
+
+            self.realtime_running = True
+            self.realtime_thread = threading.Thread(
+                target=self._realtime_collection_loop,
+                args=(selected_tickers,),
+                daemon=True
+            )
+            self.realtime_thread.start()
+
+            self.logger.info("Real-time collection started")
+            self.status_var.set("Real-time collection active")
+            
+        except Exception as e:
+            self.logger.error(f"Error starting real-time collection: {e}")
+            messagebox.showerror("Error", f"Failed to start real-time collection: {e}")
+            self.realtime_var.set(False)
+
+    def stop_realtime_collection(self):
+        """Stop real-time data collection."""
+        try:
+            self.realtime_running = False
+            if self.realtime_thread:
+                self.realtime_thread.join(timeout=5)
+            self.realtime_thread = None
+            
+            self.logger.info("Real-time collection stopped")
+            self.status_var.set("Real-time collection stopped")
+            
+        except Exception as e:
+            self.logger.error(f"Error stopping real-time collection: {e}")
+            messagebox.showerror("Error", f"Failed to stop real-time collection: {e}")
+
+    def _realtime_collection_loop(self, tickers):
+        """Real-time collection loop."""
+        while self.realtime_running:
+            try:
+                for ticker in tickers:
+                    if not self.realtime_running:
+                        break
+                        
+                    self.status_var.set(f"Collecting data for {ticker}")
+                    self.root.update()
+                    
+                    df = self.data_loader.collect_historical_data(ticker)
+                    if df is not None:
+                        self.db.save_stock_data(df, ticker)
+                        
+                self.status_var.set("Waiting for next collection cycle")
+                self.root.update()
                 
-                # Update status
-                status_text = (
-                    f"Equity: ${status.get('equity', 0):.2f} | "
-                    f"P&L: ${status.get('total_pl', 0):.2f} | "
-                    f"Positions: {status.get('open_positions', 0)}"
-                )
-                self.status_var.set(status_text)
-                
-                # Schedule next update
-                self.root.after(60000, self.monitor_trading)  # Update every minute
-                
+                # Wait for next interval
+                start_time = time.time()
+                while self.realtime_running and (time.time() - start_time) < self.collection_interval:
+                    time.sleep(1)
+                    
             except Exception as e:
-                self.status_text.insert(tk.END, f"Trading error: {str(e)}\n")
-    
-    def plot_training_results(self, history: Dict[str, List[float]]):
-        """Plot training history."""
-        self.train_figure.clear()
-        ax = self.train_figure.add_subplot(111)
-        
-        ax.plot(history['loss'], label='Training Loss')
-        ax.plot(history['val_loss'], label='Validation Loss')
-        
-        ax.set_title('Model Training History')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Loss')
-        ax.legend()
-        
-        self.train_canvas.draw()
-    
-    def plot_predictions(
-        self,
-        df: pd.DataFrame,
-        historical_pred: np.ndarray,
-        future_pred: np.ndarray
-    ):
-        """Plot historical and future predictions."""
-        self.pred_figure.clear()
-        ax = self.pred_figure.add_subplot(111)
-        
-        # Plot historical data
-        ax.plot(df['close'], label='Actual', color='blue')
-        
-        # Plot historical predictions
-        pred_dates = df.index[len(df)-len(historical_pred):]
-        ax.plot(pred_dates, historical_pred, label='Historical Predictions', color='green')
-        
-        # Plot future predictions
-        future_dates = pd.date_range(
-            start=df.index[-1],
-            periods=len(future_pred)+1
-        )[1:]
-        ax.plot(future_dates, future_pred, label='Future Predictions', color='red')
-        
-        ax.set_title('Stock Price Predictions')
-        ax.set_xlabel('Date')
-        ax.set_ylabel('Price')
-        ax.legend()
-        
-        self.pred_canvas.draw() 
+                self.logger.error(f"Error in real-time collection: {e}")
+                if self.realtime_running:
+                    self.status_var.set(f"Collection error: {str(e)}")
+                    self.root.update()
+                    time.sleep(5)
+
+    def toggle_realtime(self):
+        """Toggle real-time collection."""
+        if self.realtime_var.get():
+            self.start_realtime_collection()
+        else:
+            self.stop_realtime_collection()
+
+    def load_selected_data(self):
+        """Load data for selected tickers."""
+        selected_tickers = self.get_selected_tickers()
+        if not selected_tickers:
+            messagebox.showwarning("Warning", "Please select tickers to load")
+            return
+
+        try:
+            self.status_var.set("Loading selected ticker data...")
+            self.root.update()
+
+            # Construct query for selected tickers
+            placeholders = ','.join(['?' for _ in selected_tickers])
+            query = f"""
+                SELECT date, ticker, open, high, low, close, adj_close, volume
+                FROM stock_data
+                WHERE ticker IN ({placeholders})
+                ORDER BY ticker, date
+            """
+
+            # Load data
+            with self.db.get_connection() as conn:
+                df = conn.execute(query, selected_tickers).fetchdf()
+
+            if df.empty:
+                raise ValueError("No data found for selected tickers")
+
+            # Process the data (implement your analysis logic here)
+            self.process_loaded_data(df)
+            
+            self.status_var.set(f"Loaded data for {len(selected_tickers)} tickers")
+            self.logger.info(f"Successfully loaded data for {len(selected_tickers)} tickers")
+            
+        except Exception as e:
+            self.logger.error(f"Error loading data: {e}")
+            self.status_var.set("Error loading data")
+            messagebox.showerror("Error", f"Failed to load data: {e}")
+
+    def process_loaded_data(self, df):
+        """Process the loaded data for analysis."""
+        # Implement your data processing and analysis logic here
+        # This could include:
+        # - Calculating technical indicators
+        # - Updating charts
+        # - Performing analysis
+        # - Updating the GUI with results
+        pass 
