@@ -418,7 +418,7 @@ pyqt
 pyqt@5
 python-matplotlib
 python-packaging
-python-tk@3.9
+python-tk@3.9:
 python@3.13
 python@3.9
 qhull

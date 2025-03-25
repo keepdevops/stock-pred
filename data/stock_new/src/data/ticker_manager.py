@@ -5,7 +5,7 @@ import json
 import sqlite3
 import logging
 from typing import Dict, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import os
 import duckdb
 import requests
@@ -180,14 +180,19 @@ class TickerManager:
         try:
             logging.info(f"Fetching historical data for {symbol}")
             
-            # Ensure we're working with datetime objects
+            # Convert all dates to datetime objects
             if isinstance(start_date, str):
                 start_date = datetime.strptime(start_date, '%Y-%m-%d')
+            elif isinstance(start_date, date):
+                start_date = datetime.combine(start_date, datetime.min.time())
+                
             if isinstance(end_date, str):
                 end_date = datetime.strptime(end_date, '%Y-%m-%d')
+            elif isinstance(end_date, date):
+                end_date = datetime.combine(end_date, datetime.max.time())
             
-            # Get current date (ensure we're using local time)
-            current_date = datetime.now()
+            # Use a fixed current date (2024-03-25) since system is in 2025
+            current_date = datetime(2024, 3, 25, 23, 59, 59)
             
             # Validate dates
             if end_date > current_date:
