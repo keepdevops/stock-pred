@@ -320,19 +320,26 @@ class StockGUI(QMainWindow):
         self.setup_ui()  # Then setup UI
 
     def init_date_ranges(self):
-        """Initialize default date ranges."""
-        self.time_periods = {
-            '1D': timedelta(days=1),
-            '5D': timedelta(days=5),
-            '1M': timedelta(days=30),
-            '3M': timedelta(days=90),
-            '6M': timedelta(days=180),
-            '1Y': timedelta(days=365),
-            '2Y': timedelta(days=730),
-            '5Y': timedelta(days=1825)
-        }
-        self.periodicities = ['1d', '1wk', '1mo', '3mo']
-        self.custom_period = None  # Store custom period
+        """Initialize date range selectors."""
+        # Create calendar widgets
+        self.start_calendar = QCalendarWidget()
+        self.end_calendar = QCalendarWidget()
+        
+        # Set maximum date to today to prevent future date selection
+        today = QDate.currentDate()
+        self.start_calendar.setMaximumDate(today)
+        self.end_calendar.setMaximumDate(today)
+        
+        # Set default date range (last 30 days)
+        self.set_default_dates()
+        
+        # Connect date change signals
+        self.start_calendar.selectionChanged.connect(
+            lambda: self.on_start_date_changed(self.start_calendar.selectedDate())
+        )
+        self.end_calendar.selectionChanged.connect(
+            lambda: self.on_end_date_changed(self.end_calendar.selectedDate())
+        )
 
     def setup_ui(self):
         # Main widget and layout
@@ -777,18 +784,22 @@ class StockGUI(QMainWindow):
                 child.widget().deleteLater()
 
     def set_default_dates(self):
-        """Set default date range to last month."""
+        """Set default date range to last 30 days."""
         try:
-            end_date = QDate.currentDate()
-            start_date = end_date.addDays(-30)
+            # Set end date to today
+            today = QDate.currentDate()
+            self.end_calendar.setSelectedDate(today)
             
+            # Set start date to 30 days ago
+            start_date = today.addDays(-30)
             self.start_calendar.setSelectedDate(start_date)
-            self.end_calendar.setSelectedDate(end_date)
             
-            self.update_date_labels(start_date, end_date)
+            # Update UI elements
+            self.update_date_labels(start_date, today)
+            self.update_period_combo(start_date, today)
             
         except Exception as e:
-            logging.error(f"Error in set_default_dates: {e}")
+            logging.error(f"Error setting default dates: {e}")
 
     def update_date_labels(self, start_date: QDate, end_date: QDate):
         """Update the date display labels."""
@@ -828,42 +839,42 @@ class StockGUI(QMainWindow):
             logging.error(f"Error in on_period_changed: {e}")
 
     def on_start_date_changed(self, qdate: QDate):
-        """Handle start date selection."""
+        """Handle start date changes."""
         try:
+            # Ensure start date is not after end date
             end_date = self.end_calendar.selectedDate()
-            
-            # If start date is after end date, adjust end date
             if qdate > end_date:
-                self.end_calendar.setSelectedDate(qdate)
-                end_date = qdate
-            
-            # If start date is after today, set it to today
-            today = QDate.currentDate()
-            if qdate > today:
-                self.start_calendar.setSelectedDate(today)
-                qdate = today
-            
-            self.update_date_labels(qdate, end_date)
+                self.start_calendar.setSelectedDate(end_date)
+                return
+                
+            # Update period combo and labels
             self.update_period_combo(qdate, end_date)
+            self.update_date_labels(qdate, end_date)
             
         except Exception as e:
-            logging.error(f"Error in on_start_date_changed: {e}")
+            logging.error(f"Error handling start date change: {e}")
 
     def on_end_date_changed(self, qdate: QDate):
-        """Handle end date selection."""
+        """Handle end date changes."""
         try:
+            # Ensure end date is not before start date and not in future
             start_date = self.start_calendar.selectedDate()
+            today = QDate.currentDate()
             
-            # If end date is before start date, adjust start date
             if qdate < start_date:
-                self.start_calendar.setSelectedDate(qdate)
-                start_date = qdate
-            
-            self.update_date_labels(start_date, qdate)
+                self.end_calendar.setSelectedDate(start_date)
+                return
+                
+            if qdate > today:
+                self.end_calendar.setSelectedDate(today)
+                return
+                
+            # Update period combo and labels
             self.update_period_combo(start_date, qdate)
+            self.update_date_labels(start_date, qdate)
             
         except Exception as e:
-            logging.error(f"Error in on_end_date_changed: {e}")
+            logging.error(f"Error handling end date change: {e}")
 
     def update_period_combo(self, start_date: QDate, end_date: QDate):
         """Update period combo box based on selected dates."""
@@ -1089,6 +1100,17 @@ class StockGUI(QMainWindow):
     def closeEvent(self, event):
         """Clean up on close."""
         try:
+            # Clear any cached data
+            if hasattr(self, 'current_data'):
+                del self.current_data
+            
+            # Clear the ticker manager
+            if hasattr(self, 'ticker_manager'):
+                del self.ticker_manager
+                
+            # Force garbage collection
+            gc.collect()
+            
             event.accept()
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")

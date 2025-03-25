@@ -5,7 +5,7 @@ import json
 import sqlite3
 import logging
 from typing import Dict, Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import duckdb
 import requests
@@ -180,6 +180,35 @@ class TickerManager:
         try:
             logging.info(f"Fetching historical data for {symbol}")
             
+            # Ensure we're working with datetime objects
+            if isinstance(start_date, str):
+                start_date = datetime.strptime(start_date, '%Y-%m-%d')
+            if isinstance(end_date, str):
+                end_date = datetime.strptime(end_date, '%Y-%m-%d')
+            
+            # Get current date (ensure we're using local time)
+            current_date = datetime.now()
+            
+            # Validate dates
+            if end_date > current_date:
+                logging.warning(f"Adjusting end date from {end_date} to current date {current_date}")
+                end_date = current_date
+            
+            if start_date > current_date:
+                logging.warning(f"Start date {start_date} is in the future. Using 30 days before end date.")
+                start_date = end_date - timedelta(days=30)
+                
+            if start_date > end_date:
+                logging.warning(f"Start date {start_date} is after end date {end_date}. Swapping dates.")
+                start_date, end_date = end_date, start_date
+            
+            # Ensure we're not requesting too much data
+            max_days = 365 * 2  # 2 years
+            if (end_date - start_date).days > max_days:
+                logging.warning(f"Date range too large. Limiting to {max_days} days.")
+                start_date = end_date - timedelta(days=max_days)
+            
+            logging.info(f"Fetching data for {symbol} from {start_date} to {end_date}")
             ticker = yf.Ticker(symbol)
             df = ticker.history(
                 start=start_date,
