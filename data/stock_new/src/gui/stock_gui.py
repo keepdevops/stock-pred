@@ -314,6 +314,23 @@ class MultiTickerSelector(QWidget):
 class StockGUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        # Initialize time periods before other setup
+        self.time_periods = {
+            '1D': timedelta(days=1),
+            '5D': timedelta(days=5),
+            '1M': timedelta(days=30),
+            '3M': timedelta(days=90),
+            '6M': timedelta(days=180),
+            '1Y': timedelta(days=365),
+            '2Y': timedelta(days=730),
+            '5Y': timedelta(days=1825)
+        }
+        self.periodicities = ['1d', '1wk', '1mo', '3mo']
+        self.custom_period = None  # Store custom period
+        
+        # Set fixed current date since system is in 2025
+        self.current_date = datetime(2024, 3, 25, 23, 59, 59)
+        
         self.ticker_manager = TickerManager()
         self.selected_tickers = set()
         self.init_date_ranges()  # Initialize date ranges first
@@ -325,10 +342,14 @@ class StockGUI(QMainWindow):
         self.start_calendar = QCalendarWidget()
         self.end_calendar = QCalendarWidget()
         
-        # Set maximum date to today to prevent future date selection
-        today = QDate.currentDate()
-        self.start_calendar.setMaximumDate(today)
-        self.end_calendar.setMaximumDate(today)
+        # Create date labels
+        self.start_date_label = QLabel("Start: ")
+        self.end_date_label = QLabel("End: ")
+        
+        # Set maximum date to our fixed current date
+        current_qdate = QDate(2024, 3, 25)  # Use fixed date since system is in 2025
+        self.start_calendar.setMaximumDate(current_qdate)
+        self.end_calendar.setMaximumDate(current_qdate)
         
         # Set default date range (last 30 days)
         self.set_default_dates()
@@ -786,17 +807,17 @@ class StockGUI(QMainWindow):
     def set_default_dates(self):
         """Set default date range to last 30 days."""
         try:
-            # Set end date to today
-            today = QDate.currentDate()
-            self.end_calendar.setSelectedDate(today)
+            # Set end date to our fixed current date
+            current_date = QDate(2024, 3, 25)  # Use fixed date since system is in 2025
+            self.end_calendar.setSelectedDate(current_date)
             
             # Set start date to 30 days ago
-            start_date = today.addDays(-30)
+            start_date = current_date.addDays(-30)
             self.start_calendar.setSelectedDate(start_date)
             
             # Update UI elements
-            self.update_date_labels(start_date, today)
-            self.update_period_combo(start_date, today)
+            self.update_date_labels(start_date, current_date)
+            self.update_period_combo(start_date, current_date)
             
         except Exception as e:
             logging.error(f"Error setting default dates: {e}")
@@ -857,16 +878,16 @@ class StockGUI(QMainWindow):
     def on_end_date_changed(self, qdate: QDate):
         """Handle end date changes."""
         try:
-            # Ensure end date is not before start date and not in future
+            # Ensure end date is not before start date and not after our fixed current date
             start_date = self.start_calendar.selectedDate()
-            today = QDate.currentDate()
+            current_date = QDate(2024, 3, 25)  # Use fixed date since system is in 2025
             
             if qdate < start_date:
                 self.end_calendar.setSelectedDate(start_date)
                 return
                 
-            if qdate > today:
-                self.end_calendar.setSelectedDate(today)
+            if qdate > current_date:
+                self.end_calendar.setSelectedDate(current_date)
                 return
                 
             # Update period combo and labels
@@ -921,24 +942,28 @@ class StockGUI(QMainWindow):
             return
 
         try:
-            start_date = self.start_calendar.selectedDate().toPyDate()
-            end_date = self.end_calendar.selectedDate().toPyDate()
+            # Convert QDate to datetime objects
+            start_date = datetime.combine(
+                self.start_calendar.selectedDate().toPyDate(),
+                datetime.min.time()
+            )
+            end_date = datetime.combine(
+                self.end_calendar.selectedDate().toPyDate(),
+                datetime.max.time()
+            )
             
             # Validate date range
             if start_date > end_date:
                 self.status_label.setText("Invalid date range")
                 return
             
-            # Ensure end date includes the full day
-            end_date = datetime.combine(end_date, datetime.max.time())
-            
             interval = self.get_selected_periodicity()
 
             self.fetch_button.setEnabled(False)
             self.export_button.setEnabled(False)
             self.status_label.setText(
-                f"Fetching {interval} data from {start_date.strftime('%Y-%m-%d')} "
-                f"to {end_date.strftime('%Y-%m-%d')}..."
+                f"Fetching {interval} data from {start_date.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"to {end_date.strftime('%Y-%m-%d %H:%M:%S')}..."
             )
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)

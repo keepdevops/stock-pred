@@ -13,23 +13,48 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                            QComboBox, QCheckBox)
 from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
+import time
 
 def setup_logging():
     """Set up logging configuration."""
     # Create logs directory if it doesn't exist
     os.makedirs('logs', exist_ok=True)
     
-    # Create log filename with timestamp
-    log_filename = f'logs/stock_market_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    # Create log filename with timestamp using local time
+    current_time = datetime.now()
+    log_filename = f'logs/stock_market_{current_time.strftime("%Y%m%d_%H%M%S")}.log'
     
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(log_filename)
-        ]
+    # Create custom formatter with local timezone
+    class LocalTimeFormatter(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            ct = datetime.fromtimestamp(record.created)
+            if datefmt:
+                s = ct.strftime(datefmt)
+            else:
+                s = ct.strftime("%Y-%m-%d %H:%M:%S")
+            return s
+    
+    # Configure logging with custom formatter
+    formatter = LocalTimeFormatter(
+        fmt='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
+    
+    # Set up handlers
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    logging.root.setLevel(logging.INFO)
+    logging.root.handlers = []  # Clear any existing handlers
+    logging.root.addHandler(console_handler)
+    logging.root.addHandler(file_handler)
+    
+    # Log timezone information
+    logging.info(f"Logging started. Local timezone: {time.tzname[0]}")
 
 def setup_database():
     """Initialize DuckDB database and required tables."""
