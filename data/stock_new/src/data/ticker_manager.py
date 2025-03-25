@@ -174,71 +174,165 @@ class TickerManager:
         """Get a list of test symbols."""
         return ['AAPL', 'MSFT', 'GOOGL']
 
-    def get_historical_data(self, symbol: str, start_date: datetime, 
-                          end_date: datetime, interval: str = '1d') -> Optional[pd.DataFrame]:
-        """Get detailed historical data including technical indicators."""
-        try:
-            logging.info(f"Fetching historical data for {symbol}")
+    def get_historical_data(self, ticker: str, start_date: datetime, end_date: datetime, interval: str = '1d') -> pd.DataFrame:
+        """
+        Get historical data for a ticker with improved error handling and validation.
+        """
+        logging.info(f"Fetching historical data for {ticker}")
+        
+        # Convert dates to datetime if they're strings
+        if isinstance(start_date, str):
+            start_date = pd.to_datetime(start_date)
+        if isinstance(end_date, str):
+            end_date = pd.to_datetime(end_date)
             
-            # Convert all dates to datetime objects
-            if isinstance(start_date, str):
-                start_date = datetime.strptime(start_date, '%Y-%m-%d')
-            elif isinstance(start_date, date):
-                start_date = datetime.combine(start_date, datetime.min.time())
-                
-            if isinstance(end_date, str):
-                end_date = datetime.strptime(end_date, '%Y-%m-%d')
-            elif isinstance(end_date, date):
-                end_date = datetime.combine(end_date, datetime.max.time())
+        # Set fixed current date since system is in 2025
+        current_date = datetime(2024, 3, 25, 23, 59, 59)
+        
+        # Adjust end date if it's after current date
+        if end_date > current_date:
+            logging.warning(f"Adjusting end date from {end_date} to current date {current_date}")
+            end_date = current_date
             
-            # Use a fixed current date (2024-03-25) since system is in 2025
-            current_date = datetime(2024, 3, 25, 23, 59, 59)
+        # Ensure we have at least a 7-day range to avoid yfinance API issues
+        min_days = 7
+        if (end_date - start_date).days < min_days:
+            start_date = end_date - timedelta(days=min_days)
+            logging.info(f"Adjusting start date to ensure minimum {min_days}-day range: {start_date}")
             
-            # Validate dates
-            if end_date > current_date:
-                logging.warning(f"Adjusting end date from {end_date} to current date {current_date}")
-                end_date = current_date
+        # Ensure start date is not in the future
+        if start_date > current_date:
+            start_date = current_date - timedelta(days=30)
+            logging.warning(f"Start date was in future, adjusted to {start_date}")
             
-            if start_date > current_date:
-                logging.warning(f"Start date {start_date} is in the future. Using 30 days before end date.")
-                start_date = end_date - timedelta(days=30)
-                
-            if start_date > end_date:
-                logging.warning(f"Start date {start_date} is after end date {end_date}. Swapping dates.")
-                start_date, end_date = end_date, start_date
+        # Ensure start date is before end date
+        if start_date > end_date:
+            start_date = end_date - timedelta(days=30)
+            logging.warning(f"Start date was after end date, adjusted to {start_date}")
             
-            # Ensure we're not requesting too much data
-            max_days = 365 * 2  # 2 years
-            if (end_date - start_date).days > max_days:
-                logging.warning(f"Date range too large. Limiting to {max_days} days.")
-                start_date = end_date - timedelta(days=max_days)
+        # Limit maximum date range to 2 years
+        max_days = 365 * 2
+        if (end_date - start_date).days > max_days:
+            start_date = end_date - timedelta(days=max_days)
+            logging.warning(f"Date range too large, adjusted start date to {start_date}")
             
-            logging.info(f"Fetching data for {symbol} from {start_date} to {end_date}")
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(
-                start=start_date,
-                end=end_date,
-                interval=interval,
-                auto_adjust=True
-            )
-            
-            if df.empty:
-                logging.warning(f"No historical data found for {symbol}")
-                return None
+        logging.info(f"Fetching data for {ticker} from {start_date} to {end_date}")
+        
+        # Create empty DataFrame with correct structure
+        empty_df = pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 
+                                       'Symbol', 'Daily_Return', 'Volatility',
+                                       'SMA_20', 'SMA_50', 'SMA_200', 'EMA_12', 'EMA_26',
+                                       'MACD', 'MACD_Signal', 'RSI', 'BB_Middle', 'BB_Upper',
+                                       'BB_Lower', 'Volume_MA', 'Volume_Ratio'])
 
-            # Add technical indicators
-            df = self.add_technical_indicators(df)
-            
-            # Add basic info
-            info = ticker.fast_info
-            df['Symbol'] = symbol
-            df['Market_Cap'] = info.market_cap if hasattr(info, 'market_cap') else 0
-            
-            return df
+        # Create a session with custom headers and timeouts
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
+        session.timeout = (5, 10)  # (connect timeout, read timeout)
 
-        except Exception as e:
-            logging.error(f"Error fetching historical data for {symbol}: {e}")
-            return None
+        # Initialize retry mechanism
+        max_attempts = 3
+        attempt = 0
+        backoff_factor = 2
+        initial_wait = 3
+
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                # First validate if the ticker exists using Yahoo Finance quote endpoint
+                validation_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=1d&interval=1d"
+                validation_response = session.get(validation_url, timeout=5)
+                
+                if validation_response.status_code != 200:
+                    logging.error(f"Ticker {ticker} appears to be invalid (Status code: {validation_response.status_code})")
+                    return empty_df
+                
+                validation_data = validation_response.json()
+                if 'chart' not in validation_data or 'error' in validation_data:
+                    logging.error(f"Ticker {ticker} validation failed: {validation_data.get('error', 'Unknown error')}")
+                    return empty_df
+
+                # Convert dates to Unix timestamp for API
+                period1 = int(start_date.timestamp())
+                period2 = int(end_date.timestamp())
+                
+                # Construct Yahoo Finance API URL with all necessary parameters
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+                params = {
+                    'period1': period1,
+                    'period2': period2,
+                    'interval': interval,
+                    'events': 'history',
+                    'includeAdjustedClose': True
+                }
+                
+                response = session.get(url, params=params, timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
+                        result = data['chart']['result'][0]
+                        
+                        # Extract timestamp and price data
+                        timestamps = pd.to_datetime(result['timestamp'], unit='s')
+                        quotes = result['indicators']['quote'][0]
+                        
+                        # Create DataFrame with all available data
+                        df = pd.DataFrame({
+                            'Date': timestamps,
+                            'Open': quotes.get('open', []),
+                            'High': quotes.get('high', []),
+                            'Low': quotes.get('low', []),
+                            'Close': quotes.get('close', []),
+                            'Volume': quotes.get('volume', []),
+                            'Symbol': ticker
+                        })
+                        
+                        # Remove any rows with NaN values
+                        df = df.dropna()
+                        
+                        if not df.empty:
+                            # Calculate additional metrics
+                            df['Daily_Return'] = df['Close'].pct_change()
+                            df['Volatility'] = df['Daily_Return'].rolling(window=20).std()
+                            
+                            # Add technical indicators
+                            df = self.add_technical_indicators(df)
+                            
+                            # Convert Date to string format
+                            df['Date'] = df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                            
+                            return df
+                    
+                    logging.warning(f"No valid data in response for {ticker}")
+                    
+                elif response.status_code == 429:
+                    logging.warning(f"Rate limit hit for {ticker}, waiting before retry...")
+                    time.sleep(initial_wait * (backoff_factor ** (attempt - 1)))
+                    continue
+                    
+                else:
+                    logging.error(f"Failed to fetch data for {ticker}: HTTP {response.status_code}")
+                    
+            except requests.exceptions.Timeout:
+                logging.warning(f"Timeout while fetching {ticker}, attempt {attempt}")
+                if attempt < max_attempts:
+                    wait_time = initial_wait * (backoff_factor ** (attempt - 1))
+                    time.sleep(wait_time)
+                continue
+                
+            except Exception as e:
+                logging.error(f"Error fetching data for {ticker}: {str(e)}")
+                if attempt < max_attempts:
+                    wait_time = initial_wait * (backoff_factor ** (attempt - 1))
+                    time.sleep(wait_time)
+                continue
+        
+        logging.error(f"Failed to fetch data for {ticker} after {max_attempts} attempts")
+        return empty_df
 
     def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add technical indicators to the dataframe."""
@@ -289,35 +383,34 @@ class TickerManager:
             all_data = []
             total = len(symbols)
             
-            for symbol in symbols:
+            for i, symbol in enumerate(symbols):
                 try:
                     df = self.get_historical_data(symbol, start_date, end_date, interval)
-                    if df is not None:
-                        # Reset index to make date a column
-                        df = df.reset_index()
+                    if not df.empty:
                         all_data.append(df)
                     
-                    # Add delay to prevent rate limiting
-                    time.sleep(0.5)
+                    # Add longer delay between symbols to prevent rate limiting
+                    if i < total - 1:  # Don't wait after the last symbol
+                        time.sleep(2)  # Increased delay between symbols
                     
                 except Exception as e:
                     logging.error(f"Error processing {symbol}: {e}")
                     continue
             
             if not all_data:
-                return pd.DataFrame()
+                # Return empty DataFrame with correct structure
+                return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 
+                                          'Symbol', 'Daily_Return', 'Volatility'])
                 
             # Combine all data
-            combined_df = pd.concat(all_data, axis=0)
-            
-            # Convert date column to string for easier export
-            combined_df['Date'] = combined_df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
-            
+            combined_df = pd.concat(all_data, axis=0, ignore_index=True)
             return combined_df
 
         except Exception as e:
             logging.error(f"Error in get_quotes_df: {e}")
-            return pd.DataFrame()
+            # Return empty DataFrame with correct structure
+            return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 
+                                      'Symbol', 'Daily_Return', 'Volatility'])
 
     def export_to_csv(self, df: pd.DataFrame, filename: str) -> str:
         """Export data to CSV."""

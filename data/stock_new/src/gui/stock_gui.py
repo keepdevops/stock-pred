@@ -314,7 +314,8 @@ class MultiTickerSelector(QWidget):
 class StockGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        # Initialize time periods before other setup
+        
+        # Initialize basic attributes
         self.time_periods = {
             '1D': timedelta(days=1),
             '5D': timedelta(days=5),
@@ -326,15 +327,30 @@ class StockGUI(QMainWindow):
             '5Y': timedelta(days=1825)
         }
         self.periodicities = ['1d', '1wk', '1mo', '3mo']
-        self.custom_period = None  # Store custom period
+        self.custom_period = None
         
         # Set fixed current date since system is in 2025
         self.current_date = datetime(2024, 3, 25, 23, 59, 59)
         
+        # Initialize managers and data first
         self.ticker_manager = TickerManager()
         self.selected_tickers = set()
-        self.init_date_ranges()  # Initialize date ranges first
-        self.setup_ui()  # Then setup UI
+        
+        # Create the main UI
+        self.setup_ui()
+        
+        # Initialize date ranges
+        self.init_date_ranges()
+        
+        # Set window properties
+        self.setWindowTitle("Stock Quote Viewer")
+        self.setGeometry(100, 100, 1200, 800)
+        
+        # Apply styles
+        self.apply_styles()
+        
+        # Initialize first category
+        self.on_category_changed(self.category_combo.currentText())
 
     def init_date_ranges(self):
         """Initialize date range selectors."""
@@ -363,11 +379,26 @@ class StockGUI(QMainWindow):
         )
 
     def setup_ui(self):
-        # Main widget and layout
+        """Setup the main UI elements."""
+        # Create main widget and layout
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
-
+        
+        # Create status label and progress bar first
+        self.status_label = QLabel("Ready")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        
+        # Create period combo box
+        self.period_combo = QComboBox()
+        self.period_combo.addItems(self.time_periods.keys())
+        self.period_combo.currentTextChanged.connect(self.on_period_changed)
+        
+        # Create date labels
+        self.start_date_label = QLabel("Start: ")
+        self.end_date_label = QLabel("End: ")
+        
         # Left panel for ticker selection
         left_panel = QFrame()
         left_layout = QVBoxLayout(left_panel)
@@ -540,14 +571,6 @@ class StockGUI(QMainWindow):
 
         # Set default dates
         self.set_default_dates()
-
-        # Initialize first category
-        self.on_category_changed(self.category_combo.currentText())
-
-        # Window setup
-        self.setWindowTitle("Stock Quote Viewer")
-        self.setGeometry(100, 100, 1200, 800)
-        self.apply_styles()
 
     def apply_styles(self):
         """Apply dark mode styling."""
@@ -809,15 +832,25 @@ class StockGUI(QMainWindow):
         try:
             # Set end date to our fixed current date
             current_date = QDate(2024, 3, 25)  # Use fixed date since system is in 2025
-            self.end_calendar.setSelectedDate(current_date)
             
-            # Set start date to 30 days ago
-            start_date = current_date.addDays(-30)
-            self.start_calendar.setSelectedDate(start_date)
+            # Block signals during update
+            self.start_calendar.blockSignals(True)
+            self.end_calendar.blockSignals(True)
             
-            # Update UI elements
-            self.update_date_labels(start_date, current_date)
-            self.update_period_combo(start_date, current_date)
+            try:
+                # Update calendars
+                self.end_calendar.setSelectedDate(current_date)
+                start_date = current_date.addDays(-30)
+                self.start_calendar.setSelectedDate(start_date)
+                
+                # Update UI elements
+                self.update_date_labels(start_date, current_date)
+                self.update_period_combo(start_date, current_date)
+                
+            finally:
+                # Always unblock signals
+                self.start_calendar.blockSignals(False)
+                self.end_calendar.blockSignals(False)
             
         except Exception as e:
             logging.error(f"Error setting default dates: {e}")
@@ -838,6 +871,9 @@ class StockGUI(QMainWindow):
                 f"Date Range: {days_between} days selected"
             )
             
+            # Ensure the period combo reflects the current selection
+            self.update_period_combo(start_date, end_date)
+            
         except Exception as e:
             logging.error(f"Error in update_date_labels: {e}")
 
@@ -847,14 +883,31 @@ class StockGUI(QMainWindow):
             if period.startswith('Custom'):
                 return
                 
-            end_date = QDate.currentDate()
+            # Use our fixed current date instead of system date
+            end_date = QDate(2024, 3, 25)  # Fixed date since system is in 2025
             delta = self.time_periods[period]
             start_date = end_date.addDays(-delta.days)
             
-            self.start_calendar.setSelectedDate(start_date)
-            self.end_calendar.setSelectedDate(end_date)
+            # Block signals to prevent recursive calls
+            self.start_calendar.blockSignals(True)
+            self.end_calendar.blockSignals(True)
             
-            self.update_date_labels(start_date, end_date)
+            try:
+                # Update both calendars
+                self.start_calendar.setSelectedDate(start_date)
+                self.end_calendar.setSelectedDate(end_date)
+                
+                # Update the date labels
+                self.update_date_labels(start_date, end_date)
+                
+                # Update the status with the date range
+                days_between = start_date.daysTo(end_date)
+                self.status_label.setText(f"Date Range: {days_between} days selected")
+                
+            finally:
+                # Always unblock signals
+                self.start_calendar.blockSignals(False)
+                self.end_calendar.blockSignals(False)
             
         except Exception as e:
             logging.error(f"Error in on_period_changed: {e}")
@@ -862,15 +915,25 @@ class StockGUI(QMainWindow):
     def on_start_date_changed(self, qdate: QDate):
         """Handle start date changes."""
         try:
-            # Ensure start date is not after end date
-            end_date = self.end_calendar.selectedDate()
-            if qdate > end_date:
-                self.start_calendar.setSelectedDate(end_date)
-                return
+            # Block signals to prevent recursive calls
+            self.start_calendar.blockSignals(True)
+            self.end_calendar.blockSignals(True)
+            
+            try:
+                # Ensure start date is not after end date
+                end_date = self.end_calendar.selectedDate()
+                if qdate > end_date:
+                    self.start_calendar.setSelectedDate(end_date)
+                    qdate = end_date
                 
-            # Update period combo and labels
-            self.update_period_combo(qdate, end_date)
-            self.update_date_labels(qdate, end_date)
+                # Update period combo and labels
+                self.update_period_combo(qdate, end_date)
+                self.update_date_labels(qdate, end_date)
+                
+            finally:
+                # Always unblock signals
+                self.start_calendar.blockSignals(False)
+                self.end_calendar.blockSignals(False)
             
         except Exception as e:
             logging.error(f"Error handling start date change: {e}")
@@ -878,21 +941,31 @@ class StockGUI(QMainWindow):
     def on_end_date_changed(self, qdate: QDate):
         """Handle end date changes."""
         try:
-            # Ensure end date is not before start date and not after our fixed current date
-            start_date = self.start_calendar.selectedDate()
-            current_date = QDate(2024, 3, 25)  # Use fixed date since system is in 2025
+            # Block signals to prevent recursive calls
+            self.start_calendar.blockSignals(True)
+            self.end_calendar.blockSignals(True)
             
-            if qdate < start_date:
-                self.end_calendar.setSelectedDate(start_date)
-                return
+            try:
+                # Ensure end date is not before start date and not after our fixed current date
+                start_date = self.start_calendar.selectedDate()
+                current_date = QDate(2024, 3, 25)  # Use fixed date since system is in 2025
                 
-            if qdate > current_date:
-                self.end_calendar.setSelectedDate(current_date)
-                return
+                if qdate < start_date:
+                    self.end_calendar.setSelectedDate(start_date)
+                    qdate = start_date
+                    
+                if qdate > current_date:
+                    self.end_calendar.setSelectedDate(current_date)
+                    qdate = current_date
+                    
+                # Update period combo and labels
+                self.update_period_combo(start_date, qdate)
+                self.update_date_labels(start_date, qdate)
                 
-            # Update period combo and labels
-            self.update_period_combo(start_date, qdate)
-            self.update_date_labels(start_date, qdate)
+            finally:
+                # Always unblock signals
+                self.start_calendar.blockSignals(False)
+                self.end_calendar.blockSignals(False)
             
         except Exception as e:
             logging.error(f"Error handling end date change: {e}")
