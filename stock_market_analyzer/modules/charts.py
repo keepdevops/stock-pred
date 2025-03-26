@@ -6,6 +6,7 @@ import pandas as pd
 from typing import List, Dict, Any
 import logging
 from datetime import datetime
+import numpy as np
 
 class StockChart(QWidget):
     """Widget for displaying stock price charts."""
@@ -16,25 +17,40 @@ class StockChart(QWidget):
         self.setup_chart()
         
     def setup_chart(self):
-        """Set up the chart components."""
-        # Create matplotlib figure
-        self.figure, self.ax = plt.subplots()
-        self.canvas = FigureCanvas(self.figure)
+        """Set up the chart with matplotlib."""
+        self.figure = plt.figure(figsize=(8, 6))
+        self.ax = self.figure.add_subplot(111)
+        self.ax.set_title('Stock Price')
+        self.ax.set_xlabel('Date')
+        self.ax.set_ylabel('Price')
+        self.ax.grid(True)
         
-        # Set layout
+        # Initialize data arrays
+        self.dates = []
+        self.prices = []
+        self.predictions = []
+        self.prediction_dates = []
+        
+        # Add canvas to layout
         layout = QVBoxLayout(self)
+        self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
         
     def update_data(self, data: pd.DataFrame):
         """Update the chart with new data."""
         try:
-            # Clear existing plot
+            # Clear existing data
             self.ax.clear()
             
-            # Plot price data
-            self.ax.plot(data['date'], data['close'], label='Price')
+            # Plot historical data
+            self.ax.plot(data.index, data['close'], label='Historical', color='blue')
             
-            # Customize plot
+            # Plot predictions if available
+            if self.predictions:
+                self.ax.plot(self.prediction_dates, self.predictions, 
+                           label='Predictions', color='red', linestyle='--')
+            
+            # Set labels and title
             self.ax.set_title('Stock Price')
             self.ax.set_xlabel('Date')
             self.ax.set_ylabel('Price')
@@ -44,8 +60,10 @@ class StockChart(QWidget):
             # Rotate x-axis labels for better readability
             plt.xticks(rotation=45)
             
-            # Adjust layout and draw
+            # Adjust layout to prevent label cutoff
             self.figure.tight_layout()
+            
+            # Update canvas
             self.canvas.draw()
             
         except Exception as e:
@@ -55,23 +73,79 @@ class StockChart(QWidget):
         """Add a real-time data point to the chart."""
         try:
             # Convert QDateTime to Python datetime
-            py_datetime = timestamp.toPyDateTime() if isinstance(timestamp, QDateTime) else timestamp
+            py_datetime = timestamp.toPyDateTime()
             
-            # Add new point to the plot
-            self.ax.plot(py_datetime, price, 'ro')
+            # Add new point
+            self.dates.append(py_datetime)
+            self.prices.append(price)
             
-            # Update y-axis limits if needed
-            current_ylim = self.ax.get_ylim()
-            if price < current_ylim[0]:
-                self.ax.set_ylim(price * 0.95, current_ylim[1])
-            elif price > current_ylim[1]:
-                self.ax.set_ylim(current_ylim[0], price * 1.05)
-                
-            # Draw the updated plot
+            # Update plot
+            self.ax.clear()
+            self.ax.plot(self.dates, self.prices, label='Real-time', color='blue')
+            
+            # Plot predictions if available
+            if self.predictions:
+                self.ax.plot(self.prediction_dates, self.predictions, 
+                           label='Predictions', color='red', linestyle='--')
+            
+            # Update labels and title
+            self.ax.set_title('Stock Price')
+            self.ax.set_xlabel('Date')
+            self.ax.set_ylabel('Price')
+            self.ax.grid(True)
+            self.ax.legend()
+            
+            # Rotate x-axis labels
+            plt.xticks(rotation=45)
+            
+            # Adjust layout
+            self.figure.tight_layout()
+            
+            # Update canvas
             self.canvas.draw()
             
         except Exception as e:
             self.logger.error(f"Error adding real-time point: {e}")
+            
+    def add_predictions(self, predictions: np.ndarray):
+        """Add predictions to the chart."""
+        try:
+            # Generate prediction dates (next 5 days)
+            last_date = self.dates[-1] if self.dates else datetime.now()
+            self.prediction_dates = [last_date + pd.Timedelta(days=i) for i in range(1, len(predictions) + 1)]
+            
+            # Store predictions
+            self.predictions = predictions.flatten()
+            
+            # Update plot
+            self.ax.clear()
+            
+            # Plot historical data
+            if self.dates and self.prices:
+                self.ax.plot(self.dates, self.prices, label='Historical', color='blue')
+            
+            # Plot predictions
+            self.ax.plot(self.prediction_dates, self.predictions, 
+                        label='Predictions', color='red', linestyle='--')
+            
+            # Update labels and title
+            self.ax.set_title('Stock Price with Predictions')
+            self.ax.set_xlabel('Date')
+            self.ax.set_ylabel('Price')
+            self.ax.grid(True)
+            self.ax.legend()
+            
+            # Rotate x-axis labels
+            plt.xticks(rotation=45)
+            
+            # Adjust layout
+            self.figure.tight_layout()
+            
+            # Update canvas
+            self.canvas.draw()
+            
+        except Exception as e:
+            self.logger.error(f"Error adding predictions: {e}")
 
 class TechnicalIndicatorChart(StockChart):
     """Widget for displaying technical indicators."""

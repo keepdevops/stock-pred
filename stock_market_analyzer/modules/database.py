@@ -1,74 +1,79 @@
-import sqlite3
-import logging
-from pathlib import Path
+import duckdb
 import pandas as pd
+import logging
+from datetime import datetime, timedelta
 
-class DatabaseConnector:
-    def __init__(self, config):
+class Database:
+    def __init__(self, db_path="stock_data.duckdb"):
+        self.db_path = db_path
         self.logger = logging.getLogger(__name__)
-        self.db_path = Path(config.get('path', 'stocks.db'))
-        self.db_type = config.get('type', 'sqlite')
-        
         self.setup_database()
         
     def setup_database(self):
-        """Set up the database and create necessary tables."""
+        """Set up the database schema."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Create stocks table
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS stocks (
-                        symbol TEXT,
-                        date DATE,
-                        open REAL,
-                        high REAL,
-                        low REAL,
-                        close REAL,
-                        volume INTEGER,
-                        adj_close REAL,
-                        PRIMARY KEY (symbol, date)
-                    )
-                """)
-                
-                # Create trading history table
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS trading_history (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        symbol TEXT,
-                        type TEXT,
-                        size REAL,
-                        price REAL,
-                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                conn.commit()
-                self.logger.info("Database setup completed successfully")
-                
-        except Exception as e:
-            self.logger.error(f"Database setup failed: {e}")
-            raise
+            self.conn = duckdb.connect(self.db_path)
             
-    def insert_stock_data(self, symbol: str, data: pd.DataFrame):
-        """Insert stock data into the database."""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                # Convert DataFrame to SQL-friendly format
-                data['symbol'] = symbol
-                data.to_sql('stocks', conn, if_exists='append', index=False)
-                
-            self.logger.info(f"Successfully inserted data for {symbol}")
+            # Create tables
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS stock_data (
+                    date DATE,
+                    symbol VARCHAR,
+                    open DOUBLE,
+                    high DOUBLE,
+                    low DOUBLE,
+                    close DOUBLE,
+                    volume BIGINT,
+                    PRIMARY KEY (date, symbol)
+                )
+            """)
+            
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS predictions (
+                    date DATE,
+                    symbol VARCHAR,
+                    predicted_price DOUBLE,
+                    model_name VARCHAR,
+                    PRIMARY KEY (date, symbol, model_name)
+                )
+            """)
+            
+            self.logger.info("Database setup completed successfully")
             
         except Exception as e:
-            self.logger.error(f"Error inserting stock data: {e}")
+            self.logger.error(f"Error setting up database: {e}")
             raise
             
-    def get_stock_data(self, symbol: str, start_date: str = None, end_date: str = None):
+    def save_stock_data(self, data: pd.DataFrame, symbol: str):
+        """Save stock data to the database."""
+        try:
+            # Ensure data has the correct columns
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            if not all(col in data.columns for col in required_columns):
+                raise ValueError("Data missing required columns")
+                
+            # Add symbol column
+            data['symbol'] = symbol
+            
+            # Save to database
+            self.conn.execute("""
+                INSERT OR REPLACE INTO stock_data 
+                SELECT * FROM data
+            """, {'data': data})
+            
+            self.logger.info(f"Saved {len(data)} records for {symbol}")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving stock data: {e}")
+            raise
+            
+    def get_stock_data(self, symbol: str, start_date=None, end_date=None):
         """Retrieve stock data from the database."""
         try:
-            query = "SELECT * FROM stocks WHERE symbol = ?"
+            query = """
+                SELECT * FROM stock_data 
+                WHERE symbol = ?
+            """
             params = [symbol]
             
             if start_date:
@@ -80,50 +85,54 @@ class DatabaseConnector:
                 
             query += " ORDER BY date"
             
-            with sqlite3.connect(self.db_path) as conn:
-                return pd.read_sql_query(query, conn, params=params)
-                
+            return self.conn.execute(query, params).fetchdf()
+            
         except Exception as e:
             self.logger.error(f"Error retrieving stock data: {e}")
-            raise
+            return None
             
-    def record_trade(self, symbol: str, trade_type: str, size: float, price: float):
-        """Record a trade in the trading history."""
+    def save_prediction(self, date: datetime, symbol: str, predicted_price: float, model_name: str):
+        """Save a prediction to the database."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO trading_history (symbol, type, size, price)
-                    VALUES (?, ?, ?, ?)
-                """, (symbol, trade_type, size, price))
-                conn.commit()
-                
-            self.logger.info(f"Trade recorded: {trade_type} {size} {symbol} @ {price}")
+            self.conn.execute("""
+                INSERT OR REPLACE INTO predictions 
+                VALUES (?, ?, ?, ?)
+            """, [date, symbol, predicted_price, model_name])
+            
+            self.logger.info(f"Saved prediction for {symbol} using {model_name}")
             
         except Exception as e:
-            self.logger.error(f"Error recording trade: {e}")
+            self.logger.error(f"Error saving prediction: {e}")
             raise
             
-    def get_trading_history(self, symbol: str = None):
-        """Retrieve trading history from the database."""
+    def get_predictions(self, symbol: str, model_name=None, start_date=None, end_date=None):
+        """Retrieve predictions from the database."""
         try:
-            query = "SELECT * FROM trading_history"
-            params = []
+            query = "SELECT * FROM predictions WHERE symbol = ?"
+            params = [symbol]
             
-            if symbol:
-                query += " WHERE symbol = ?"
-                params.append(symbol)
+            if model_name:
+                query += " AND model_name = ?"
+                params.append(model_name)
+            if start_date:
+                query += " AND date >= ?"
+                params.append(start_date)
+            if end_date:
+                query += " AND date <= ?"
+                params.append(end_date)
                 
-            query += " ORDER BY timestamp DESC"
+            query += " ORDER BY date"
             
-            with sqlite3.connect(self.db_path) as conn:
-                return pd.read_sql_query(query, conn, params=params)
-                
+            return self.conn.execute(query, params).fetchdf()
+            
         except Exception as e:
-            self.logger.error(f"Error retrieving trading history: {e}")
-            raise
+            self.logger.error(f"Error retrieving predictions: {e}")
+            return None
             
     def close(self):
-        """Close any open database connections."""
-        # SQLite connections are automatically closed after each transaction
-        pass 
+        """Close the database connection."""
+        try:
+            self.conn.close()
+            self.logger.info("Database connection closed")
+        except Exception as e:
+            self.logger.error(f"Error closing database connection: {e}") 

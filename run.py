@@ -35,10 +35,10 @@ def main():
         config = load_config()
         
         # Initialize components
-        db = Database(config.get('database', {}).get('path', 'stock_data.duckdb'))
-        data_loader = DataLoader(config.get('data_loader', {}))
-        ai_agent = AIAgent(config.get('ai_agent', {}))
-        trading_agent = TradingAgent(config.get('trading_agent', {}))
+        db = Database(config.get('database', {}).get('path', 'stocks.db'))
+        data_loader = DataLoader(config.get('data', {}))
+        ai_agent = AIAgent(config.get('ai', {}))
+        trading_agent = TradingAgent(config.get('trading', {}))
         
         # Create Qt application
         app = QApplication(sys.argv)

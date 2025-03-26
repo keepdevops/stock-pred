@@ -2,9 +2,14 @@ import yfinance as yf
 import pandas as pd
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import os
+import glob
+import json
+import polars as pl
+from pathlib import Path
 
 class DataLoader:
     """Class for loading stock data from various sources."""
@@ -14,6 +19,8 @@ class DataLoader:
         self.source = config.get('source', 'yahoo')
         self.start_date = config.get('start_date', '2020-01-01')
         self.end_date = config.get('end_date', 'today')
+        self.data_dir = config.get('data_dir', 'data')
+        self.file_types = config.get('file_types', ['csv', 'json', 'parquet', 'pkl'])
         
         if self.end_date == 'today':
             self.end_date = datetime.now().strftime('%Y-%m-%d')
@@ -33,10 +40,12 @@ class DataLoader:
             return None
             
     def load_data(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Load stock data from Yahoo Finance."""
+        """Load stock data from configured source."""
         try:
             if self.source == 'yahoo':
                 return self._load_from_yahoo(symbol)
+            elif self.source == 'directory':
+                return self._load_from_directory(symbol)
             else:
                 raise ValueError(f"Unsupported data source: {self.source}")
                 
@@ -161,3 +170,301 @@ class DataLoader:
     def __del__(self):
         """Clean up resources."""
         self.executor.shutdown(wait=True) 
+
+    def fetch_stock_data(self, symbol: str, start_date: Optional[datetime] = None, 
+                        end_date: Optional[datetime] = None) -> Tuple[pd.DataFrame, str]:
+        """
+        Fetch stock data from Yahoo Finance.
+        
+        Args:
+            symbol: Stock symbol (e.g., 'AAPL')
+            start_date: Start date for data fetch
+            end_date: End date for data fetch
+            
+        Returns:
+            Tuple of (DataFrame with stock data, error message if any)
+        """
+        try:
+            # Set default dates if not provided
+            if not end_date:
+                end_date = datetime.now()
+            if not start_date:
+                start_date = end_date - timedelta(days=365)
+                
+            # Fetch data from Yahoo Finance
+            stock = yf.Ticker(symbol)
+            df = stock.history(start=start_date, end=end_date)
+            
+            if df.empty:
+                return None, f"No data found for symbol {symbol}"
+                
+            # Ensure required columns exist
+            required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            if not all(col in df.columns for col in required_columns):
+                missing = [col for col in required_columns if col not in df.columns]
+                return None, f"Missing required columns: {', '.join(missing)}"
+                
+            # Rename columns to lowercase
+            df.columns = df.columns.str.lower()
+            
+            # Add date index as a column
+            df['date'] = df.index
+            
+            self.logger.info(f"Successfully fetched {len(df)} records for {symbol}")
+            return df, None
+            
+        except Exception as e:
+            error_msg = f"Error fetching data for {symbol}: {str(e)}"
+            self.logger.error(error_msg)
+            return None, error_msg
+            
+    def validate_symbol(self, symbol: str) -> Tuple[bool, str]:
+        """
+        Validate if a stock symbol exists.
+        
+        Args:
+            symbol: Stock symbol to validate
+            
+        Returns:
+            Tuple of (is_valid, error message if any)
+        """
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            
+            if not info:
+                return False, f"Symbol {symbol} not found"
+                
+            return True, None
+            
+        except Exception as e:
+            return False, f"Error validating symbol {symbol}: {str(e)}"
+            
+    def get_company_info(self, symbol: str) -> Tuple[dict, str]:
+        """
+        Get company information from Yahoo Finance.
+        
+        Args:
+            symbol: Stock symbol
+            
+        Returns:
+            Tuple of (company info dictionary, error message if any)
+        """
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            
+            if not info:
+                return None, f"No information found for symbol {symbol}"
+                
+            # Extract relevant information
+            company_info = {
+                'name': info.get('longName', ''),
+                'sector': info.get('sector', ''),
+                'industry': info.get('industry', ''),
+                'market_cap': info.get('marketCap', 0),
+                'pe_ratio': info.get('forwardPE', 0),
+                'dividend_yield': info.get('dividendYield', 0),
+                'beta': info.get('beta', 0),
+                'fifty_two_week_high': info.get('fiftyTwoWeekHigh', 0),
+                'fifty_two_week_low': info.get('fiftyTwoWeekLow', 0)
+            }
+            
+            return company_info, None
+            
+        except Exception as e:
+            return None, f"Error fetching company info for {symbol}: {str(e)}"
+
+    def _load_from_directory(self, symbol: str) -> Optional[pd.DataFrame]:
+        """Load stock data from directory containing various file formats."""
+        try:
+            symbol = symbol.strip().upper()
+            data_dir = Path(self.data_dir)
+            
+            # Try each file type
+            for file_type in self.file_types:
+                pattern = f"**/*{symbol}*.{file_type}"
+                files = list(data_dir.glob(pattern))
+                
+                if files:
+                    # Use the most recent file if multiple exist
+                    file_path = max(files, key=lambda x: x.stat().st_mtime)
+                    
+                    try:
+                        if file_type == 'csv':
+                            df = pd.read_csv(file_path)
+                        elif file_type == 'json':
+                            df = pd.read_json(file_path)
+                        elif file_type == 'parquet':
+                            df = pd.read_parquet(file_path)
+                        elif file_type == 'pkl':
+                            df = pd.read_pickle(file_path)
+                        else:
+                            continue
+                            
+                        # Ensure required columns exist
+                        required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+                        if not all(col in df.columns for col in required_columns):
+                            missing = [col for col in required_columns if col not in df.columns]
+                            self.logger.warning(f"Missing required columns in {file_path}: {missing}")
+                            continue
+                            
+                        # Convert date column to datetime if needed
+                        if 'date' in df.columns:
+                            df['date'] = pd.to_datetime(df['date'])
+                            
+                        # Calculate technical indicators
+                        df = self.calculate_indicators(df)
+                        
+                        self.logger.info(f"Successfully loaded data for {symbol} from {file_path}")
+                        return df
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error loading file {file_path}: {e}")
+                        continue
+                        
+            raise ValueError(f"No valid data files found for symbol {symbol}")
+            
+        except Exception as e:
+            self.logger.error(f"Error loading data from directory: {e}")
+            raise
+            
+    def load_from_polars(self, df: pl.DataFrame) -> pd.DataFrame:
+        """
+        Convert Polars DataFrame to Pandas DataFrame with required format.
+        
+        Args:
+            df: Polars DataFrame containing stock data
+            
+        Returns:
+            Pandas DataFrame with required format
+        """
+        try:
+            # Convert to pandas
+            pandas_df = df.to_pandas()
+            
+            # Ensure required columns exist
+            required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+            if not all(col in pandas_df.columns for col in required_columns):
+                missing = [col for col in required_columns if col not in pandas_df.columns]
+                raise ValueError(f"Missing required columns: {', '.join(missing)}")
+                
+            # Convert date column to datetime if needed
+            if 'date' in pandas_df.columns:
+                pandas_df['date'] = pd.to_datetime(pandas_df['date'])
+                
+            # Calculate technical indicators
+            pandas_df = self.calculate_indicators(pandas_df)
+            
+            return pandas_df
+            
+        except Exception as e:
+            self.logger.error(f"Error converting Polars DataFrame: {e}")
+            raise
+            
+    def load_from_sqlite(self, db_path: str, query: str) -> pd.DataFrame:
+        """
+        Load stock data from SQLite database.
+        
+        Args:
+            db_path: Path to SQLite database file
+            query: SQL query to fetch data
+            
+        Returns:
+            Pandas DataFrame with stock data
+        """
+        try:
+            import sqlite3
+            
+            # Connect to database
+            conn = sqlite3.connect(db_path)
+            
+            # Execute query and load into DataFrame
+            df = pd.read_sql_query(query, conn)
+            
+            # Close connection
+            conn.close()
+            
+            # Ensure required columns exist
+            required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+            if not all(col in df.columns for col in required_columns):
+                missing = [col for col in required_columns if col not in df.columns]
+                raise ValueError(f"Missing required columns: {', '.join(missing)}")
+                
+            # Convert date column to datetime if needed
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                
+            # Calculate technical indicators
+            df = self.calculate_indicators(df)
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error loading data from SQLite: {e}")
+            raise
+            
+    def list_available_symbols(self) -> List[str]:
+        """List all available stock symbols in the data directory."""
+        try:
+            symbols = set()
+            data_dir = Path(self.data_dir)
+            
+            # Find all files matching the supported file types
+            for file_type in self.file_types:
+                for file_path in data_dir.glob(f"**/*.{file_type}"):
+                    if file_path.is_file():
+                        # Extract symbol from filename (assuming format: SYMBOL_*.ext)
+                        symbol = file_path.stem.split('_')[0].upper()
+                        symbols.add(symbol)
+                        
+            return sorted(list(symbols))
+            
+        except Exception as e:
+            self.logger.error(f"Error listing available symbols: {e}")
+            return []
+            
+    def get_file_info(self, file_path: str) -> Dict[str, Any]:
+        """Get information about a data file."""
+        try:
+            file_path = Path(file_path)
+            if not file_path.exists():
+                raise FileNotFoundError(f"File not found: {file_path}")
+                
+            info = {
+                'filename': file_path.name,
+                'extension': file_path.suffix.lower(),
+                'size': file_path.stat().st_size,
+                'modified': datetime.fromtimestamp(file_path.stat().st_mtime),
+                'symbol': file_path.stem.split('_')[0].upper()
+            }
+            
+            # Try to get data preview
+            try:
+                if file_path.suffix.lower() == '.csv':
+                    df = pd.read_csv(file_path, nrows=5)
+                elif file_path.suffix.lower() == '.json':
+                    df = pd.read_json(file_path)
+                elif file_path.suffix.lower() == '.parquet':
+                    df = pd.read_parquet(file_path)
+                elif file_path.suffix.lower() == '.pkl':
+                    df = pd.read_pickle(file_path)
+                else:
+                    df = None
+                    
+                if df is not None:
+                    info['columns'] = list(df.columns)
+                    info['rows'] = len(df)
+                    info['date_range'] = {
+                        'start': df['date'].min() if 'date' in df.columns else None,
+                        'end': df['date'].max() if 'date' in df.columns else None
+                    }
+                    
+            except Exception as e:
+                self.logger.warning(f"Could not get data preview: {e}")
+                
+            return info
+            
+        except Exception as e:
+            self.logger.error(f"Error getting file info: {e}")
+            raise 

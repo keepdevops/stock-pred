@@ -5,6 +5,8 @@ import pandas as pd
 import json
 import duckdb
 import os
+import polars as pl
+import sqlite3
 
 print("Imports successful")
 
@@ -114,4 +116,33 @@ def main():
         cleanup()
 
 if __name__ == "__main__":
-    main() 
+    main()
+
+loader = DataLoader({'source': 'sqlite', 'db_path': 'path/to/database.db'})
+df, error = loader.fetch_stock_data('AAPL')
+
+# CSV
+df, error = loader.load_from_file('data.csv', 'csv')
+
+# JSON
+df, error = loader.load_from_file('data.json', 'json')
+
+# Parquet
+df, error = loader.load_from_file('data.parquet', 'parquet')
+
+is_valid, error = loader.validate_symbol('AAPL')
+
+info, error = loader.get_company_info('AAPL')
+
+data_loader = DataLoader(config)
+data_dict = data_loader.load_from_directory("/path/to/stock/data")
+
+query = "SELECT * FROM stock_data WHERE symbol = 'AAPL'"
+df = data_loader.load_from_sqlite("stock_data.db", query)
+
+symbols = data_loader.list_available_symbols("/path/to/stock/data")
+
+info = data_loader.get_file_info("/path/to/stock/data/AAPL_2024.csv")
+
+polars_df = pl.read_csv("stock_data.csv")
+pandas_df = data_loader.load_from_polars(polars_df) 

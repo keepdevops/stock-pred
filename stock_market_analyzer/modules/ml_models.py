@@ -4,8 +4,9 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.neural_networks import MLPRegressor
 from sklearn.svm import SVR
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Input, MultiHeadAttention, LayerNormalization
+import tensorflow as tf
 import logging
 
 class BaseMLModel:
@@ -210,6 +211,121 @@ class SVMModel(BaseMLModel):
             self.logger.error(f"Error evaluating model: {e}")
             return None
 
+class TransformerModel(BaseMLModel):
+    """Transformer model for time series prediction."""
+    def __init__(self):
+        super().__init__("Transformer")
+        self.sequence_length = 10
+        self.d_model = 64
+        self.num_heads = 8
+        self.ff_dim = 256
+        self.num_transformer_blocks = 4
+        self.mlp_units = [128, 64]
+        self.dropout = 0.1
+        self.mlp_dropout = 0.2
+        
+    def transformer_encoder(self, inputs):
+        """Create a transformer encoder."""
+        # Normalization and Attention
+        x = LayerNormalization(epsilon=1e-6)(inputs)
+        attention_output = MultiHeadAttention(
+            num_heads=self.num_heads, key_dim=self.d_model, dropout=self.dropout
+        )(x, x)
+        x = attention_output + inputs
+        
+        # Feed Forward Network
+        x = LayerNormalization(epsilon=1e-6)(x)
+        x = Dense(self.ff_dim, activation="relu")(x)
+        x = Dropout(self.dropout)(x)
+        x = Dense(self.d_model)(x)
+        return x + inputs
+        
+    def build_model(self, input_shape):
+        """Build transformer model architecture."""
+        inputs = Input(shape=input_shape)
+        
+        # Expand dimension for attention
+        x = Dense(self.d_model)(inputs)
+        
+        # Transformer blocks
+        for _ in range(self.num_transformer_blocks):
+            x = self.transformer_encoder(x)
+            
+        # Global average pooling
+        x = tf.keras.layers.GlobalAveragePooling1D(data_format="channels_first")(x)
+        
+        # MLP layers
+        for dim in self.mlp_units:
+            x = Dense(dim, activation="relu")(x)
+            x = Dropout(self.mlp_dropout)(x)
+            
+        # Output layer
+        outputs = Dense(1)(x)
+        
+        model = Model(inputs, outputs)
+        model.compile(
+            optimizer="adam",
+            loss="mse",
+            metrics=["mae"]
+        )
+        return model
+        
+    def train(self, data: pd.DataFrame, epochs=100, batch_size=32):
+        """Train the transformer model."""
+        try:
+            X, y = self.prepare_data(data, sequence_length=self.sequence_length)
+            self.model = self.build_model((X.shape[1], X.shape[2]))
+            
+            # Add early stopping and learning rate scheduling
+            callbacks = [
+                tf.keras.callbacks.EarlyStopping(
+                    patience=10,
+                    restore_best_weights=True
+                ),
+                tf.keras.callbacks.ReduceLROnPlateau(
+                    factor=0.5,
+                    patience=5,
+                    min_lr=1e-6
+                )
+            ]
+            
+            history = self.model.fit(
+                X, y,
+                epochs=epochs,
+                batch_size=batch_size,
+                validation_split=0.1,
+                callbacks=callbacks,
+                verbose=1
+            )
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error training transformer model: {e}")
+            return False
+            
+    def predict(self, data: pd.DataFrame):
+        """Make predictions using the transformer model."""
+        try:
+            X, _ = self.prepare_data(data, sequence_length=self.sequence_length)
+            predictions = self.model.predict(X)
+            return self.scaler.inverse_transform(predictions)
+        except Exception as e:
+            self.logger.error(f"Error making predictions: {e}")
+            return None
+            
+    def evaluate(self, data: pd.DataFrame):
+        """Evaluate transformer model performance."""
+        try:
+            X, y = self.prepare_data(data, sequence_length=self.sequence_length)
+            results = self.model.evaluate(X, y)
+            return {
+                'loss': results[0],
+                'mae': results[1]
+            }
+        except Exception as e:
+            self.logger.error(f"Error evaluating model: {e}")
+            return None
+
 class MLModelManager:
     """Manager class for ML models."""
     def __init__(self):
@@ -217,7 +333,8 @@ class MLModelManager:
             'LSTM': LSTMModel(),
             'Random Forest': RandomForestModel(),
             'Gradient Boosting': GradientBoostingModel(),
-            'SVM': SVMModel()
+            'SVM': SVMModel(),
+            'Transformer': TransformerModel()
         }
         self.active_model = None
         self.logger = logging.getLogger(__name__)
