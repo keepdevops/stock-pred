@@ -1,0 +1,27 @@
+{
+    "database": {
+        "path": "stocks.db",
+        "type": "sqlite"
+    },
+    "data": {
+        "source": "yahoo",
+        "symbols_file": "symbols.txt",
+        "start_date": "2020-01-01",
+        "end_date": "today"
+    },
+    "trading": {
+        "mode": "simulation",
+        "initial_balance": 10000,
+        "risk_per_trade": 0.02
+    },
+    "ai": {
+        "model_type": "lstm",
+        "lookback_days": 60,
+        "prediction_days": 5,
+        "training": {
+            "epochs": 100,
+            "batch_size": 32,
+            "validation_split": 0.2
+        }
+    }
+}
