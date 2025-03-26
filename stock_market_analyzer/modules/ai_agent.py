@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import math
 from typing import Dict, Any, Optional, List, Tuple
 import logging
 from .models.model_factory import ModelFactory
@@ -7,6 +8,10 @@ from .models.transformer_model import TransformerStockPredictor
 from .models.lstm_model import LSTMStockPredictor
 from .models.xgboost_model import XGBoostStockPredictor
 from .models.model_tuner import ModelTuner
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
 
 class AIAgent:
     def __init__(self, config: Dict[str, Any]):
@@ -14,6 +19,7 @@ class AIAgent:
         self.config = config
         self.model_factory = ModelFactory()
         self.active_model_id = None
+        self.scaler = MinMaxScaler()
         
         # Initialize default models
         self._initialize_models()
@@ -48,9 +54,14 @@ class AIAgent:
             
             # Initialize XGBoost model
             xgb_params = self.config.get('xgb_params', {
-                'n_estimators': 100,
+                'objective': 'reg:squarederror',
+                'eval_metric': 'rmse',
                 'max_depth': 6,
-                'learning_rate': 0.1
+                'learning_rate': 0.1,
+                'n_estimators': 100,
+                'subsample': 0.8,
+                'colsample_bytree': 0.8,
+                'random_state': 42
             })
             self.model_factory.create_model('xgboost', xgb_params)
             
@@ -267,4 +278,166 @@ class AIAgent:
             
         except Exception as e:
             self.logger.error(f"Error updating model parameters: {e}")
-            raise 
+            raise
+
+    def get_available_models(self) -> List[str]:
+        """Get list of available model names."""
+        return list(self.model_factory.models.keys())
+        
+    def create_lstm_model(self, input_shape: tuple) -> Sequential:
+        """Create a new LSTM model."""
+        model = Sequential([
+            LSTM(50, return_sequences=True, input_shape=input_shape),
+            Dropout(0.2),
+            LSTM(50, return_sequences=False),
+            Dropout(0.2),
+            Dense(1)
+        ])
+        
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+        return model
+        
+    def prepare_data(self, data: pd.DataFrame, sequence_length: int = 10) -> tuple:
+        """Prepare data for LSTM model."""
+        # Scale the data
+        scaled_data = self.scaler.fit_transform(data[['close']].values)
+        
+        # Create sequences
+        X, y = [], []
+        for i in range(len(scaled_data) - sequence_length):
+            X.append(scaled_data[i:(i + sequence_length)])
+            y.append(scaled_data[i + sequence_length])
+            
+        return np.array(X), np.array(y)
+        
+    def train_model_lstm(self, model: Sequential, epochs: int = 100, batch_size: int = 32):
+        """Train the specified LSTM model."""
+        try:
+            if not hasattr(self, 'training_data'):
+                raise ValueError("No training data available")
+                
+            X, y = self.training_data
+            
+            # Train the model
+            model.fit(X, y, epochs=epochs, batch_size=batch_size, validation_split=0.1)
+            
+            self.logger.info(f"Model trained successfully for {epochs} epochs")
+            
+        except Exception as e:
+            self.logger.error(f"Error training model: {e}")
+            raise
+            
+    def tune_model_lstm(self, model: Sequential):
+        """Tune the LSTM model hyperparameters."""
+        try:
+            # Implement hyperparameter tuning logic here
+            # For now, just log that tuning was attempted
+            self.logger.info("Model tuning attempted")
+            
+        except Exception as e:
+            self.logger.error(f"Error tuning model: {e}")
+            raise
+            
+    def predict_lstm(self, data: pd.DataFrame) -> Optional[np.ndarray]:
+        """Make predictions using the active LSTM model."""
+        try:
+            if self.active_model_id != 'lstm':
+                raise ValueError("No active LSTM model selected")
+                
+            # Prepare data for prediction
+            scaled_data = self.scaler.transform(data[['close']].values)
+            
+            # Create sequences for prediction
+            X = []
+            for i in range(len(scaled_data) - 10):  # Using sequence length of 10
+                X.append(scaled_data[i:(i + 10)])
+            X = np.array(X)
+            
+            # Make predictions
+            predictions = self.model_factory.get_model('lstm').predict(X)
+            
+            # Inverse transform predictions
+            predictions = self.scaler.inverse_transform(predictions)
+            
+            return predictions
+            
+        except Exception as e:
+            self.logger.error(f"Error making predictions: {e}")
+            return None
+            
+    def analyze(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Perform technical analysis on the data."""
+        try:
+            results = {
+                'technical_indicators': self.calculate_technical_indicators(data),
+                'trend_analysis': self.analyze_trend(data),
+                'volatility_analysis': self.analyze_volatility(data)
+            }
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error performing analysis: {e}")
+            return {}
+            
+    def calculate_technical_indicators(self, data: pd.DataFrame) -> Dict[str, float]:
+        """Calculate technical indicators."""
+        try:
+            indicators = {}
+            
+            # Calculate moving averages
+            indicators['ma5'] = data['close'].rolling(window=5).mean().iloc[-1]
+            indicators['ma20'] = data['close'].rolling(window=20).mean().iloc[-1]
+            
+            # Calculate RSI
+            delta = data['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            indicators['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
+            
+            # Calculate MACD
+            exp1 = data['close'].ewm(span=12, adjust=False).mean()
+            exp2 = data['close'].ewm(span=26, adjust=False).mean()
+            indicators['macd'] = exp1.iloc[-1] - exp2.iloc[-1]
+            
+            return indicators
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating technical indicators: {e}")
+            return {}
+            
+    def analyze_trend(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze price trends."""
+        try:
+            # Calculate trend direction
+            ma20 = data['close'].rolling(window=20).mean()
+            current_price = data['close'].iloc[-1]
+            
+            trend = {
+                'direction': 'up' if current_price > ma20.iloc[-1] else 'down',
+                'strength': abs(current_price - ma20.iloc[-1]) / ma20.iloc[-1] * 100
+            }
+            
+            return trend
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing trend: {e}")
+            return {}
+            
+    def analyze_volatility(self, data: pd.DataFrame) -> Dict[str, float]:
+        """Analyze price volatility."""
+        try:
+            # Calculate daily returns
+            returns = data['close'].pct_change()
+            
+            volatility = {
+                'daily_volatility': returns.std() * np.sqrt(252),  # Annualized
+                'max_drawdown': (data['close'] / data['close'].cummax() - 1).min()
+            }
+            
+            return volatility
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing volatility: {e}")
+            return {} 
