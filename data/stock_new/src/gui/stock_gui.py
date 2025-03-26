@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import List, Dict, Set
 from PyQt5.QtCore import QSettings
 import gc
+from ..data.download_nasdaq import download_nasdaq_screener
 
 # Import your TickerManager
 from src.data.ticker_manager import TickerManager
@@ -235,7 +236,7 @@ class MultiTickerSelector(QWidget):
         # Ticker list with checkboxes
         self.ticker_list = QListWidget()
         self.ticker_list.setSelectionMode(QListWidget.MultiSelection)
-        self.ticker_list.itemChanged.connect(self.on_item_changed)
+        self.ticker_list.itemChanged.connect(self.on_ticker_selection_changed)
         self.ticker_list.setMinimumHeight(400)
         layout.addWidget(self.ticker_list)
 
@@ -264,82 +265,116 @@ class MultiTickerSelector(QWidget):
         self.category_combo.addItems(categories.keys())
 
     def on_category_changed(self, category: str):
-        """Handle category selection change."""
-        self.ticker_list.clear()
-        if category in self.categories:
-            for ticker in self.categories[category]:
-                item = QListWidgetItem(ticker)
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked if ticker in self.selected_tickers else Qt.Unchecked)
-                self.ticker_list.addItem(item)
-
-    def filter_tickers(self, text: str):
-        """Filter ticker list based on search text."""
-        category = self.category_combo.currentText()
-        self.ticker_list.clear()
-        if category in self.categories:
-            for ticker in self.categories[category]:
-                if text.lower() in ticker.lower():
-                    item = QListWidgetItem(ticker)
+        """Update ticker list when category changes."""
+        try:
+            self.ticker_list.clear()
+            tickers = self.ticker_manager.get_tickers_in_category(category)
+            
+            for ticker in tickers:
+                # Ensure ticker is a string
+                ticker_str = str(ticker).strip()
+                if ticker_str:  # Only add non-empty tickers
+                    item = QListWidgetItem(ticker_str)
                     item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                    item.setCheckState(Qt.Checked if ticker in self.selected_tickers else Qt.Unchecked)
+                    item.setCheckState(Qt.Checked if ticker_str in self.selected_tickers else Qt.Unchecked)
                     self.ticker_list.addItem(item)
-
-    def on_item_changed(self, item: QListWidgetItem):
-        """Handle ticker selection change."""
-        ticker = item.text()
-        if item.checkState() == Qt.Checked:
-            self.selected_tickers.add(ticker)
-        else:
-            self.selected_tickers.discard(ticker)
+                
+            self.logger.info(f"Updated ticker list for category {category} with {len(tickers)} tickers")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating ticker list: {e}")
         
-        self.count_label.setText(f"Selected: {len(self.selected_tickers)} tickers")
-        self.selection_changed.emit(list(self.selected_tickers))
+    def filter_tickers(self, search_text: str):
+        """Filter tickers based on search text."""
+        try:
+            category = self.category_combo.currentText()
+            tickers = self.ticker_manager.get_tickers_in_category(category)
+            
+            self.ticker_list.clear()
+            search_text = search_text.upper()
+            
+            for ticker in tickers:
+                # Ensure ticker is a string
+                ticker_str = str(ticker).strip()
+                if ticker_str and search_text in ticker_str:
+                    item = QListWidgetItem(ticker_str)
+                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Checked if ticker_str in self.selected_tickers else Qt.Unchecked)
+                    self.ticker_list.addItem(item)
+                
+            self.logger.info(f"Filtered ticker list with search text '{search_text}'")
+            
+        except Exception as e:
+            self.logger.error(f"Error filtering tickers: {e}")
+
+    def on_ticker_selection_changed(self, item: QListWidgetItem):
+        """Handle ticker selection changes."""
+        try:
+            ticker = str(item.text()).strip()
+            if ticker:  # Only process non-empty tickers
+                if item.checkState() == Qt.Checked:
+                    self.selected_tickers.add(ticker)
+                else:
+                    self.selected_tickers.discard(ticker)
+                
+                # Update count label
+                self.count_label.setText(f"Selected: {len(self.selected_tickers)}")
+                self.logger.info(f"Updated ticker selection: {len(self.selected_tickers)} selected")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling ticker selection change: {e}")
 
     def select_all(self):
         """Select all visible tickers."""
-        for i in range(self.ticker_list.count()):
-            item = self.ticker_list.item(i)
-            item.setCheckState(Qt.Checked)
+        try:
+            for i in range(self.ticker_list.count()):
+                item = self.ticker_list.item(i)
+                item.setCheckState(Qt.Checked)
+            self.logger.info("Selected all visible tickers")
+            
+        except Exception as e:
+            self.logger.error(f"Error selecting all tickers: {e}")
 
     def clear_all(self):
         """Clear all ticker selections."""
-        self.selected_tickers.clear()
-        for i in range(self.ticker_list.count()):
-            item = self.ticker_list.item(i)
-            item.setCheckState(Qt.Unchecked)
-        self.count_label.setText("Selected: 0 tickers")
-        self.selection_changed.emit([])
+        try:
+            for i in range(self.ticker_list.count()):
+                item = self.ticker_list.item(i)
+                item.setCheckState(Qt.Unchecked)
+            self.selected_tickers.clear()
+            self.count_label.setText("Selected: 0")
+            self.logger.info("Cleared all ticker selections")
+            
+        except Exception as e:
+            self.logger.error(f"Error clearing ticker selections: {e}")
 
 class StockGUI(QMainWindow):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, config_manager=None, db=None, parent=None):
+        super().__init__(parent)
         
-        # Initialize basic attributes
-        self.time_periods = {
-            '1D': timedelta(days=1),
-            '5D': timedelta(days=5),
-            '1M': timedelta(days=30),
-            '3M': timedelta(days=90),
-            '6M': timedelta(days=180),
-            '1Y': timedelta(days=365),
-            '2Y': timedelta(days=730),
-            '5Y': timedelta(days=1825)
-        }
-        self.periodicities = ['1d', '1wk', '1mo', '3mo']
-        self.custom_period = None
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
         
-        # Set fixed current date since system is in 2025
-        self.current_date = datetime(2024, 3, 25, 23, 59, 59)
+        # Store references
+        self.config_manager = config_manager
+        self.db = db
         
-        # Initialize managers and data first
-        self.ticker_manager = TickerManager()
+        # Initialize ticker manager
+        self.ticker_manager = TickerManager(db=db)
+        
+        # Initialize variables
         self.selected_tickers = set()
+        self.time_periods = {
+            '1 Month': timedelta(days=30),
+            '3 Months': timedelta(days=90),
+            '6 Months': timedelta(days=180),
+            '1 Year': timedelta(days=365),
+            '2 Years': timedelta(days=730),
+            '5 Years': timedelta(days=1825)
+        }
         
-        # Create the main UI
+        # Setup UI
         self.setup_ui()
-        
-        # Initialize date ranges
         self.init_date_ranges()
         
         # Set window properties
@@ -500,9 +535,9 @@ class StockGUI(QMainWindow):
         self.periodicity_group = QButtonGroup()
         
         # Create radio buttons
-        for period in self.periodicities:
+        for period in self.time_periods.keys():
             radio = QRadioButton(period)
-            if period == '1d':  # Default selection
+            if period == '1 Month':  # Default selection
                 radio.setChecked(True)
             self.periodicity_group.addButton(radio)
             periodicity_layout.addWidget(radio)
@@ -789,35 +824,64 @@ class StockGUI(QMainWindow):
 
     def on_category_changed(self, category: str):
         """Update ticker list when category changes."""
-        self.ticker_list.clear()
-        for ticker in self.ticker_manager.get_tickers_in_category(category):
-            item = QListWidgetItem(ticker)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if ticker in self.selected_tickers else Qt.Unchecked)
-            self.ticker_list.addItem(item)
-
+        try:
+            self.ticker_list.clear()
+            tickers = self.ticker_manager.get_tickers_in_category(category)
+            
+            for ticker in tickers:
+                # Ensure ticker is a string
+                ticker_str = str(ticker).strip()
+                if ticker_str:  # Only add non-empty tickers
+                    item = QListWidgetItem(ticker_str)
+                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Checked if ticker_str in self.selected_tickers else Qt.Unchecked)
+                    self.ticker_list.addItem(item)
+                
+            self.logger.info(f"Updated ticker list for category {category} with {len(tickers)} tickers")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating ticker list: {e}")
+        
     def on_ticker_selection_changed(self, item: QListWidgetItem):
         """Handle ticker selection changes."""
-        ticker = item.text()
-        if item.checkState() == Qt.Checked:
-            self.selected_tickers.add(ticker)
-        else:
-            self.selected_tickers.discard(ticker)
-        
-        # Update count label
-        self.ticker_count_label.setText(f"Selected: {len(self.selected_tickers)}")
+        try:
+            ticker = str(item.text()).strip()
+            if ticker:  # Only process non-empty tickers
+                if item.checkState() == Qt.Checked:
+                    self.selected_tickers.add(ticker)
+                else:
+                    self.selected_tickers.discard(ticker)
+                
+                # Update count label
+                self.ticker_count_label.setText(f"Selected: {len(self.selected_tickers)}")
+                self.logger.info(f"Updated ticker selection: {len(self.selected_tickers)} selected")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling ticker selection change: {e}")
 
     def select_all_tickers(self):
         """Select all tickers in current category."""
-        for i in range(self.ticker_list.count()):
-            item = self.ticker_list.item(i)
-            item.setCheckState(Qt.Checked)
+        try:
+            for i in range(self.ticker_list.count()):
+                item = self.ticker_list.item(i)
+                item.setCheckState(Qt.Checked)
+            self.logger.info("Selected all visible tickers")
+            
+        except Exception as e:
+            self.logger.error(f"Error selecting all tickers: {e}")
 
     def clear_all_tickers(self):
         """Clear all ticker selections."""
-        for i in range(self.ticker_list.count()):
-            item = self.ticker_list.item(i)
-            item.setCheckState(Qt.Unchecked)
+        try:
+            for i in range(self.ticker_list.count()):
+                item = self.ticker_list.item(i)
+                item.setCheckState(Qt.Unchecked)
+            self.selected_tickers.clear()
+            self.ticker_count_label.setText("Selected: 0")
+            self.logger.info("Cleared all ticker selections")
+            
+        except Exception as e:
+            self.logger.error(f"Error clearing ticker selections: {e}")
 
     def clear_quotes(self):
         """Clear all quote displays."""
@@ -973,12 +1037,12 @@ class StockGUI(QMainWindow):
     def update_period_combo(self, start_date: QDate, end_date: QDate):
         """Update period combo box based on selected dates."""
         try:
-            days_diff = start_date.daysTo(end_date)
+            days_diff = timedelta(days=start_date.daysTo(end_date))
             
             # Find matching period or set to custom
             period_found = False
             for period, delta in self.time_periods.items():
-                if abs(delta.days - days_diff) <= 1:  # Allow 1 day difference
+                if abs(delta - days_diff) <= timedelta(days=1):  # Allow 1 day difference
                     self.period_combo.blockSignals(True)  # Prevent recursive calls
                     self.period_combo.setCurrentText(period)
                     self.period_combo.blockSignals(False)
@@ -993,12 +1057,12 @@ class StockGUI(QMainWindow):
                         break
                 
                 # Add new custom period
-                custom_text = f"Custom ({days_diff} days)"
+                custom_text = f"Custom ({days_diff.days} days)"
                 self.period_combo.blockSignals(True)
                 self.period_combo.addItem(custom_text)
                 self.period_combo.setCurrentText(custom_text)
                 self.period_combo.blockSignals(False)
-                self.custom_period = timedelta(days=days_diff)
+                self.custom_period = days_diff
             
         except Exception as e:
             logging.error(f"Error in update_period_combo: {e}")
@@ -1006,7 +1070,7 @@ class StockGUI(QMainWindow):
     def get_selected_periodicity(self) -> str:
         """Get the selected periodicity."""
         selected_button = self.periodicity_group.checkedButton()
-        return selected_button.text() if selected_button else '1d'
+        return selected_button.text() if selected_button else '1 Month'
 
     def get_quotes(self):
         """Fetch quotes and historical data for selected tickers."""
@@ -1198,36 +1262,93 @@ class StockGUI(QMainWindow):
     def closeEvent(self, event):
         """Clean up on close."""
         try:
+            # Stop any running threads
+            if hasattr(self, 'current_worker'):
+                self.current_worker.stop()
+                self.current_worker.wait()
+            
             # Clear any cached data
             if hasattr(self, 'current_data'):
                 del self.current_data
             
             # Clear the ticker manager
             if hasattr(self, 'ticker_manager'):
-                del self.ticker_manager
-                
+                self.ticker_manager = None
+            
             # Force garbage collection
             gc.collect()
             
-            event.accept()
+            # Call parent's closeEvent
+            super().closeEvent(event)
+            
         except Exception as e:
             logging.error(f"Error during cleanup: {e}")
             event.accept()
 
     def filter_tickers(self, search_text: str):
         """Filter tickers based on search text."""
-        category = self.category_combo.currentText()
-        tickers = self.ticker_manager.get_tickers_in_category(category)
+        try:
+            category = self.category_combo.currentText()
+            tickers = self.ticker_manager.get_tickers_in_category(category)
+            
+            self.ticker_list.clear()
+            search_text = search_text.upper()
+            
+            for ticker in tickers:
+                # Ensure ticker is a string
+                ticker_str = str(ticker).strip()
+                if ticker_str and search_text in ticker_str:
+                    item = QListWidgetItem(ticker_str)
+                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Checked if ticker_str in self.selected_tickers else Qt.Unchecked)
+                    self.ticker_list.addItem(item)
+                
+            self.logger.info(f"Filtered ticker list with search text '{search_text}'")
+            
+        except Exception as e:
+            self.logger.error(f"Error filtering tickers: {e}")
+
+    def _load_nasdaq_data(self):
+        """Load NASDAQ screener data."""
+        try:
+            # Look for existing NASDAQ screener files
+            data_dir = Path('data')
+            self.logger.info(f"Searching for NASDAQ data in {data_dir.absolute()}")
+            nasdaq_files = list(data_dir.glob('nasdaq_screener_*.csv'))
+            
+            if not nasdaq_files:
+                self.logger.info("No NASDAQ screener file found. Downloading...")
+                filename = download_nasdaq_screener()
+                if not filename:
+                    raise FileNotFoundError("Failed to download NASDAQ screener data")
+                nasdaq_files = [filename]
+                self.logger.info(f"Downloaded new NASDAQ data to {filename}")
+            
+            # Use the most recent file
+            latest_file = max(nasdaq_files, key=lambda x: int(x.stem.split('_')[-1]))
+            self.logger.info(f"Loading NASDAQ data from {latest_file}")
+            
+            # Read the CSV file
+            df = pd.read_csv(latest_file)
+            self.logger.info(f"Read CSV file with {len(df)} rows and columns: {', '.join(df.columns)}")
+            
+            # Extract unique ticker symbols
+            if 'symbol' in df.columns:
+                tickers = df['symbol'].unique().tolist()
+                self.logger.info(f"Using 'symbol' column for tickers")
+            elif 'Symbol' in df.columns:
+                tickers = df['Symbol'].unique().tolist()
+                self.logger.info(f"Using 'Symbol' column for tickers")
+            else:
+                available_columns = ', '.join(df.columns)
+                raise ValueError(f"No symbol column found in NASDAQ data. Available columns: {available_columns}")
+            
+            self.logger.info(f"Loaded {len(tickers)} unique tickers")
+            return tickers
         
-        self.ticker_list.clear()
-        search_text = search_text.upper()
-        
-        for ticker in tickers:
-            if search_text in ticker:
-                item = QListWidgetItem(ticker)
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked if ticker in self.selected_tickers else Qt.Unchecked)
-                self.ticker_list.addItem(item)
+        except Exception as e:
+            self.logger.error(f"Error loading NASDAQ data: {e}")
+            return []
 
 def main():
     app = QApplication(sys.argv)

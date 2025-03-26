@@ -1,6 +1,11 @@
-from setuptools import setup, find_packages
 import logging
 from pathlib import Path
+import sys
+import os
+
+# Add the parent directory to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.data.download_nasdaq import download_nasdaq_screener
 
 def setup():
@@ -26,17 +31,4 @@ def setup():
         logger.error(f"Setup failed: {e}")
 
 if __name__ == "__main__":
-    setup()
-
-setup(
-    name="stock_market_analyzer",
-    version="1.0.0",
-    packages=find_packages(),
-    install_requires=[
-        'pandas',
-        'numpy',
-        'matplotlib',
-        'duckdb',
-        # Add other dependencies
-    ],
-) 
+    setup() 

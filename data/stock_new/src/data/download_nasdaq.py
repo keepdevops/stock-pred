@@ -4,6 +4,9 @@ from pathlib import Path
 import logging
 import polars as pl
 import duckdb
+import pandas as pd
+import json
+import os
 
 def download_nasdaq_screener():
     """Download the NASDAQ screener data."""
@@ -12,31 +15,71 @@ def download_nasdaq_screener():
     
     try:
         # Create data directory if it doesn't exist
-        Path('data').mkdir(exist_ok=True)
+        data_dir = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / 'data'
+        data_dir.mkdir(exist_ok=True)
         
-        # NASDAQ Screener URL (you might need to update this URL)
-        url = "https://www.nasdaq.com/market-activity/stocks/screener/nasdaq-stocks.csv"
+        # Use NASDAQ screener API
+        url = "https://api.nasdaq.com/api/screener/stocks"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        params = {
+            'download': 'true',
+            'exchange': 'NASDAQ',
+            'marketcap': 'all',
+            'render': 'download'
+        }
+        
+        logger.info("Downloading NASDAQ screener data...")
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        
+        # Parse the response
+        data = response.json()
+        if 'data' in data and 'rows' in data['data']:
+            df = pd.DataFrame(data['data']['rows'])
+        else:
+            raise ValueError("Invalid response format from NASDAQ API")
         
         # Create filename with timestamp
         timestamp = int(time.time())
-        filename = Path('data') / f'nasdaq_screener_{timestamp}.csv'
+        filename = data_dir / f'nasdaq_screener_{timestamp}.csv'
         
-        logger.info(f"Downloading NASDAQ screener data to {filename}")
+        # Save to CSV
+        df.to_csv(filename, index=False)
+        logger.info(f"NASDAQ screener data saved to {filename}")
         
-        # Download the file
-        response = requests.get(url)
-        response.raise_for_status()
-        
-        # Save the file
-        with open(filename, 'wb') as f:
-            f.write(response.content)
-            
-        logger.info("NASDAQ screener data downloaded successfully")
         return filename
         
     except Exception as e:
         logger.error(f"Error downloading NASDAQ screener: {e}")
-        return None
+        
+        # Use backup method - hardcoded list of major tickers
+        try:
+            logger.info("Using backup list of major tickers...")
+            major_tickers = {
+                'Symbol': [
+                    'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'NVDA', 'TSLA',
+                    'NFLX', 'INTC', 'AMD', 'ADBE', 'CSCO', 'CMCSA', 'COST', 'PEP',
+                    'AVGO', 'PYPL', 'TMUS', 'QCOM', 'INTU', 'TXN', 'AMAT', 'ISRG',
+                    'BKNG', 'ADP', 'MRNA', 'ABNB', 'SBUX', 'LRCX', 'REGN', 'MELI'
+                ]
+            }
+            df = pd.DataFrame(major_tickers)
+            
+            # Create filename with timestamp
+            timestamp = int(time.time())
+            filename = data_dir / f'nasdaq_screener_{timestamp}.csv'
+            
+            # Save to CSV
+            df.to_csv(filename, index=False)
+            logger.info(f"Backup NASDAQ data saved to {filename}")
+            
+            return filename
+            
+        except Exception as backup_error:
+            logger.error(f"Backup method failed: {backup_error}")
+            return None
 
 def save_polars_to_duckdb(df: pl.DataFrame, table_name: str, db_path: str = "stocks.db"):
     """

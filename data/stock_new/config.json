@@ -3,6 +3,26 @@
     "path": "data/market_data.duckdb",
     "backup_path": "data/backups/"
   },
+  "data_processing": {
+    "cleaning": {
+      "lowercase": true,
+      "remove_special_chars": true,
+      "standardize_dates": "YYYY-MM-DD",
+      "fill_missing": "0"
+    },
+    "validation": {
+      "enabled": true,
+      "batch_size": 10,
+      "required_columns": ["date", "open", "high", "low", "close", "volume"],
+      "date_format": "YYYY-MM-DD",
+      "numeric_fields": ["open", "high", "low", "close", "volume"]
+    },
+    "database": {
+      "type": "duckdb",
+      "path": "data/market_data.duckdb",
+      "index_columns": ["date"]
+    }
+  },
   "tickers": [
     "A",
     "AA",
@@ -1145,7 +1165,6 @@
     "CASH",
     "CASI",
     "CASK",
-    "CASS",
     "CASY",
     "CAT",
     "CATO",
@@ -4639,7 +4658,6 @@
     "OPRX",
     "OPT",
     "OPTN",
-    "OPTT",
     "OPTX",
     "OPXS",
     "OPY",
@@ -6051,7 +6069,7 @@
     "TEN^E",
     "TEN^F",
     "TEO",
-    "TER",
+    "TE",
     "TERN",
     "TEVA",
     "TEX",

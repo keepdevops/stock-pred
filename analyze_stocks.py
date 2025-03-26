@@ -1,68 +1,78 @@
 import duckdb
 
 def analyze_stock_movements():
+    # Connect to DuckDB database
     con = duckdb.connect('stocks.db')
-    
-    # First, let's check the actual table structure
-    print("\n=== Table Structure ===")
-    table_info = con.execute("""
-        SELECT * FROM stocks LIMIT 1;
-    """).fetchdf()
-    print("Columns in the database:", table_info.columns.tolist())
 
+    # Display table structure
+    print("\n=== Table Structure ===")
+    columns = con.execute("SELECT * FROM stocks LIMIT 1").description
+    print("Columns in the database:", [col[0] for col in columns])
+
+    # Get stocks by price range
     print("\n=== Stocks by Price Range ===")
     price_range = con.execute("""
-        SELECT 
-            symbol,
-            ROUND(MIN(price), 2) as min_price,
-            ROUND(MAX(price), 2) as max_price,
-            ROUND(AVG(price), 2) as avg_price,
-            ROUND((MAX(price) - MIN(price)) / AVG(price) * 100, 2) as price_range_pct
+        SELECT symbol,
+            ROUND(MIN(close), 2) as min_price,
+            ROUND(MAX(close), 2) as max_price,
+            ROUND(AVG(close), 2) as avg_price,
+            ROUND((MAX(close) - MIN(close)) / MIN(close) * 100, 2) as price_range_percent
         FROM stocks
         GROUP BY symbol
-        HAVING COUNT(*) > 1
-        ORDER BY price_range_pct DESC
-        LIMIT 10;
-    """).fetchdf()
-    print(price_range)
+        ORDER BY price_range_percent DESC
+        LIMIT 10
+    """).fetchall()
+    print("Symbol | Min Price | Max Price | Avg Price | Price Range %")
+    print("-" * 60)
+    for row in price_range:
+        print(f"{row[0]:<6} | ${row[1]:<9} | ${row[2]:<9} | ${row[3]:<9} | {row[4]}%")
 
+    # Get most expensive stocks
     print("\n=== Most Expensive Stocks ===")
     expensive = con.execute("""
-        SELECT 
-            symbol,
-            ROUND(price, 2) as price
+        SELECT symbol, ROUND(MAX(close), 2) as max_price
         FROM stocks
-        ORDER BY price DESC
-        LIMIT 10;
-    """).fetchdf()
-    print(expensive)
+        GROUP BY symbol
+        ORDER BY max_price DESC
+        LIMIT 5
+    """).fetchall()
+    print("Symbol | Max Price")
+    print("-" * 20)
+    for row in expensive:
+        print(f"{row[0]:<6} | ${row[1]}")
 
+    # Get least expensive stocks
     print("\n=== Least Expensive Stocks ===")
     cheap = con.execute("""
-        SELECT 
-            symbol,
-            ROUND(price, 2) as price
+        SELECT symbol, ROUND(MIN(close), 2) as min_price
         FROM stocks
-        WHERE price > 0  -- Exclude any zero prices
-        ORDER BY price ASC
-        LIMIT 10;
-    """).fetchdf()
-    print(cheap)
+        GROUP BY symbol
+        ORDER BY min_price ASC
+        LIMIT 5
+    """).fetchall()
+    print("Symbol | Min Price")
+    print("-" * 20)
+    for row in cheap:
+        print(f"{row[0]:<6} | ${row[1]}")
 
+    # Get average stock prices
     print("\n=== Average Stock Prices ===")
     averages = con.execute("""
-        SELECT 
-            symbol,
-            ROUND(AVG(price), 2) as avg_price,
-            COUNT(*) as num_records
+        SELECT symbol,
+            COUNT(*) as records,
+            ROUND(AVG(close), 2) as avg_price
         FROM stocks
         GROUP BY symbol
         HAVING COUNT(*) > 1
         ORDER BY avg_price DESC
-        LIMIT 10;
-    """).fetchdf()
-    print(averages)
+        LIMIT 5
+    """).fetchall()
+    print("Symbol | Records | Avg Price")
+    print("-" * 30)
+    for row in averages:
+        print(f"{row[0]:<6} | {row[1]:<7} | ${row[2]}")
 
+    # Close the connection
     con.close()
 
 if __name__ == "__main__":

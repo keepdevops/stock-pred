@@ -15,6 +15,8 @@ class NasdaqDatabase:
         self.logger = logging.getLogger("NasdaqDB")
         self.symbols = []
         self.symbols_data = None
+        self.data_dir = Path('data')
+        self.data_dir.mkdir(exist_ok=True)
         self.load_nasdaq_symbols()
 
     def load_nasdaq_symbols(self):
@@ -22,20 +24,27 @@ class NasdaqDatabase:
         try:
             self.logger.info("Loading NASDAQ symbols...")
             
-            # Look for the NASDAQ screener file in the project directory
-            nasdaq_files = glob.glob("nasdaq_screener_*.csv")
+            # Look for the NASDAQ screener file in the data directory
+            nasdaq_files = list(self.data_dir.glob('nasdaq_screener_*.csv'))
             if not nasdaq_files:
                 self.logger.error("No NASDAQ screener CSV file found")
                 return False
             
-            file_path = nasdaq_files[0]
+            # Use the most recent file
+            file_path = max(nasdaq_files, key=lambda x: int(x.stem.split('_')[-1]))
             self.logger.info(f"Found NASDAQ file: {file_path}")
             
             # Read the CSV file
             self.symbols_data = pd.read_csv(file_path)
             
             # Extract and sort symbols
-            self.symbols = sorted(self.symbols_data['Symbol'].unique().tolist())
+            if 'Symbol' in self.symbols_data.columns:
+                self.symbols = sorted(self.symbols_data['Symbol'].unique().tolist())
+            elif 'symbol' in self.symbols_data.columns:
+                self.symbols = sorted(self.symbols_data['symbol'].unique().tolist())
+            else:
+                self.logger.error("No symbol column found in NASDAQ data")
+                return False
             
             self.logger.info(f"Successfully loaded {len(self.symbols)} NASDAQ symbols")
             return True

@@ -12,14 +12,98 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import numpy as np
+from pathlib import Path
+from .download_nasdaq import download_nasdaq_screener
 
 class TickerManager:
-    def __init__(self):
-        self.data_dir = "data/exports"
-        os.makedirs(self.data_dir, exist_ok=True)
-        self.cache_file = os.path.join(self.data_dir, "tickers_cache.json")
-        self.categories = self._initialize_categories()
+    def __init__(self, db=None):
+        self.logger = logging.getLogger(__name__)
+        self.db = db
+        
+        # Set up data directories
+        self.base_dir = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        self.data_dir = self.base_dir / 'data'
+        self.exports_dir = self.data_dir / 'exports'
+        
+        # Create directories if they don't exist
+        self.data_dir.mkdir(exist_ok=True)
+        self.exports_dir.mkdir(exist_ok=True)
+        
+        # Initialize data
+        self.tickers = self.load_tickers()
+        self.categories = self.initialize_categories()
+        self.cache_file = self.exports_dir / "tickers_cache.json"
+        
         logging.info(f"TickerManager initialized with {self._count_total_tickers()} tickers")
+
+    def load_tickers(self) -> List[str]:
+        """Load tickers from NASDAQ data."""
+        self.logger.info("Loading tickers from cache")
+        try:
+            # Look for existing NASDAQ screener files
+            nasdaq_files = list(self.data_dir.glob('nasdaq_screener_*.csv'))
+            
+            if not nasdaq_files:
+                self.logger.info("No NASDAQ screener file found. Downloading...")
+                filename = download_nasdaq_screener()
+                if not filename:
+                    raise FileNotFoundError("Failed to download NASDAQ screener data")
+                nasdaq_files = [filename]
+                self.logger.info(f"Downloaded new NASDAQ data to {filename}")
+            
+            # Use the most recent file
+            latest_file = max(nasdaq_files, key=lambda x: int(x.stem.split('_')[-1]))
+            self.logger.info(f"Loading NASDAQ data from {latest_file}")
+            
+            # Read the CSV file
+            df = pd.read_csv(latest_file)
+            self.logger.info(f"Read CSV file with {len(df)} rows and columns: {', '.join(df.columns)}")
+            
+            # Extract unique ticker symbols
+            if 'symbol' in df.columns:
+                tickers = df['symbol'].unique().tolist()
+                self.logger.info(f"Using 'symbol' column for tickers")
+            elif 'Symbol' in df.columns:
+                tickers = df['Symbol'].unique().tolist()
+                self.logger.info(f"Using 'Symbol' column for tickers")
+            else:
+                available_columns = ', '.join(df.columns)
+                raise ValueError(f"No symbol column found in NASDAQ data. Available columns: {available_columns}")
+            
+            self.logger.info(f"Loaded {len(tickers)} unique tickers")
+            return tickers
+            
+        except Exception as e:
+            self.logger.error(f"Error loading tickers: {e}")
+            return []
+
+    def initialize_categories(self) -> Dict[str, List[str]]:
+        """Initialize ticker categories."""
+        try:
+            # Create basic categories (can be expanded later)
+            categories = {
+                'All': self.tickers,
+                'Technology': ['AAPL', 'MSFT', 'GOOG', 'GOOGL', 'META', 'NVDA', 'INTC', 'AMD', 'TSM', 'AVGO'],
+                'Finance': ['JPM', 'BAC', 'WFC', 'GS', 'MS', 'C', 'BLK', 'AXP', 'V', 'MA'],
+                'Healthcare': ['JNJ', 'PFE', 'MRK', 'ABBV', 'LLY', 'TMO', 'DHR', 'BMY', 'UNH', 'ABT'],
+                'Consumer': ['AMZN', 'WMT', 'PG', 'KO', 'PEP', 'COST', 'NKE', 'MCD', 'SBUX', 'HD'],
+                'Industrial': ['GE', 'BA', 'CAT', 'HON', 'MMM', 'UPS', 'FDX', 'LMT', 'RTX', 'DE']
+            }
+            
+            # Filter out any tickers that don't exist in our main list
+            for category in categories:
+                if category != 'All':
+                    categories[category] = [
+                        ticker for ticker in categories[category]
+                        if ticker in self.tickers
+                    ]
+            
+            self.logger.info(f"Initialized {len(categories)} categories")
+            return categories
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing categories: {e}")
+            return {'All': self.tickers}
 
     def _count_total_tickers(self) -> int:
         """Count total number of unique tickers across all categories."""
@@ -28,122 +112,120 @@ class TickerManager:
             all_tickers.update(tickers)
         return len(all_tickers)
 
-    def _initialize_categories(self) -> Dict[str, List[str]]:
-        """Initialize categories with cached data or fetch new data."""
-        try:
-            # Try to load from cache first
-            if os.path.exists(self.cache_file):
-                with open(self.cache_file, 'r') as f:
-                    cached_data = json.load(f)
-                    if cached_data.get('timestamp', 0) > time.time() - 86400:  # 24 hour cache
-                        logging.info("Loading tickers from cache")
-                        return cached_data['categories']
-
-            # If no cache or expired, fetch new data
-            logging.info("Fetching fresh ticker data")
-            categories = self._fetch_all_tickers()
-            
-            # Save to cache
-            with open(self.cache_file, 'w') as f:
-                json.dump({
-                    'timestamp': time.time(),
-                    'categories': categories
-                }, f)
-            
-            return categories
-
-        except Exception as e:
-            logging.error(f"Error initializing categories: {e}")
-            return self._get_default_categories()
-
-    def _get_default_categories(self) -> Dict[str, List[str]]:
-        """Return default categories if fetching fails."""
-        return {
-            'Mixed Tickers': [
-                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'JPM', 'V', 'BAC', 'GS',
-                'JNJ', 'PFE', 'UNH', 'MRK', 'WMT', 'PG', 'KO', 'MCD'
-            ],
-            'Technology': ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMD'],
-            'Financial': ['JPM', 'BAC', 'GS', 'MS', 'V'],
-            'Healthcare': ['JNJ', 'PFE', 'UNH', 'MRK', 'ABBV']
-        }
-
-    def _fetch_all_tickers(self) -> Dict[str, List[str]]:
-        """Fetch all tickers from NASDAQ and NYSE."""
-        try:
-            # Fetch NASDAQ tickers
-            nasdaq_url = "https://www.nasdaq.com/market-activity/stocks/screener"
-            nyse_url = "https://www.nyse.com/listings_directory/stock"
-
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-
-            # Initialize categories
-            categories = {
-                'NASDAQ Large Cap': [],
-                'NASDAQ Mid Cap': [],
-                'NASDAQ Small Cap': [],
-                'NYSE Large Cap': [],
-                'NYSE Mid Cap': [],
-                'NYSE Small Cap': [],
-                'Technology': [],
-                'Financial': [],
-                'Healthcare': [],
-                'Consumer': [],
-                'Industrial': [],
-                'Energy': [],
-                'Mixed Popular': [
-                    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA',
-                    'JPM', 'V', 'BAC', 'GS', 'JNJ', 'PFE', 'UNH', 'MRK'
-                ]
-            }
-
-            # Use yfinance's stock info for basic categorization
-            tickers_info = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')[0]
-            
-            for _, row in tickers_info.iterrows():
-                ticker = row['Symbol']
-                sector = row['GICS Sector']
-                
-                # Add to sector categories
-                if 'Technology' in sector:
-                    categories['Technology'].append(ticker)
-                elif 'Financial' in sector:
-                    categories['Financial'].append(ticker)
-                elif 'Health' in sector:
-                    categories['Healthcare'].append(ticker)
-                elif 'Consumer' in sector:
-                    categories['Consumer'].append(ticker)
-                elif 'Industrial' in sector:
-                    categories['Industrial'].append(ticker)
-                elif 'Energy' in sector:
-                    categories['Energy'].append(ticker)
-
-            # Add some popular ETFs
-            categories['ETFs'] = [
-                'SPY', 'QQQ', 'IWM', 'DIA', 'VTI', 'VOO', 'VEA', 'VWO',
-                'BND', 'AGG', 'GLD', 'SLV', 'VNQ', 'XLF', 'XLK', 'XLE'
-            ]
-
-            logging.info("Successfully fetched and categorized tickers")
-            return categories
-
-        except Exception as e:
-            logging.error(f"Error fetching tickers: {e}")
-            return self._get_default_categories()
-
-    def get_categories(self) -> Dict[str, List[str]]:
-        """Get all categories and their tickers."""
-        return self.categories
-
     def get_category_names(self) -> List[str]:
         """Get list of category names."""
         return list(self.categories.keys())
 
     def get_tickers_in_category(self, category: str) -> List[str]:
-        """Get tickers for a specific category."""
+        """Get tickers in a specific category."""
         return self.categories.get(category, [])
+
+    def validate_ticker(self, ticker: str) -> bool:
+        """Validate if a ticker exists and is active."""
+        try:
+            # First check if ticker is in our list
+            if ticker not in self.tickers:
+                self.logger.warning(f"Ticker {ticker} not found in NASDAQ data")
+                return False
+                
+            # Then verify with yfinance
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            
+            if info and 'regularMarketPrice' in info:
+                return True
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error validating ticker {ticker}: {e}")
+            return False
+
+    def get_quotes_df(self, tickers: List[str], start_date: str, end_date: str, interval: str = '1d') -> pd.DataFrame:
+        """Get historical quotes for multiple tickers."""
+        try:
+            all_data = []
+            total = len(tickers)
+            
+            for i, ticker in enumerate(tickers, 1):
+                self.logger.info(f"Fetching data for {ticker} ({i}/{total})")
+                
+                try:
+                    # Validate ticker first
+                    if not self.validate_ticker(ticker):
+                        self.logger.warning(f"Skipping invalid ticker: {ticker}")
+                        continue
+                    
+                    # Get data with retry mechanism
+                    for attempt in range(3):
+                        try:
+                            stock = yf.Ticker(ticker)
+                            df = stock.history(start=start_date, end=end_date, interval=interval)
+                            
+                            if not df.empty:
+                                df['Symbol'] = ticker
+                                all_data.append(df)
+                                break
+                                
+                            time.sleep(1)  # Rate limiting
+                            
+                        except Exception as e:
+                            self.logger.error(f"Attempt {attempt + 1} failed for {ticker}: {e}")
+                            if attempt < 2:
+                                time.sleep(2 ** attempt)  # Exponential backoff
+                            continue
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing ticker {ticker}: {e}")
+                    continue
+                
+            if all_data:
+                result = pd.concat(all_data)
+                result = result.reset_index()
+                return result
+            else:
+                return pd.DataFrame()
+                
+        except Exception as e:
+            self.logger.error(f"Error getting quotes: {e}")
+            return pd.DataFrame()
+
+    def get_single_ticker_data(self, ticker: str, start_date: str, end_date: str, interval: str = '1d') -> Optional[Dict]:
+        """Get data for a single ticker with additional information."""
+        try:
+            # Validate ticker first
+            if not self.validate_ticker(ticker):
+                self.logger.warning(f"Invalid ticker: {ticker}")
+                return None
+            
+            # Get historical data
+            stock = yf.Ticker(ticker)
+            hist = stock.history(start=start_date, end=end_date, interval=interval)
+            
+            if hist.empty:
+                self.logger.warning(f"No historical data found for {ticker}")
+                return None
+            
+            # Get current info
+            info = stock.info
+            
+            # Prepare response
+            response = {
+                'symbol': ticker,
+                'start_price': hist['Close'].iloc[0],
+                'last_price': hist['Close'].iloc[-1],
+                'historical_data': hist.reset_index().to_dict('records'),
+                'company_name': info.get('longName', ''),
+                'sector': info.get('sector', ''),
+                'industry': info.get('industry', ''),
+                'website': info.get('website', ''),
+                'description': info.get('longBusinessSummary', '')
+            }
+            
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Error getting data for {ticker}: {e}")
+            return None
 
     def get_simple_quote(self, symbol: str) -> Optional[Dict]:
         """Get a simple quote using yfinance."""
@@ -376,46 +458,10 @@ class TickerManager:
             logging.error(f"Error calculating technical indicators: {e}")
             return df
 
-    def get_quotes_df(self, symbols: List[str], start_date: datetime, 
-                     end_date: datetime, interval: str = '1d') -> pd.DataFrame:
-        """Get historical quotes with technical indicators for multiple symbols."""
-        try:
-            all_data = []
-            total = len(symbols)
-            
-            for i, symbol in enumerate(symbols):
-                try:
-                    df = self.get_historical_data(symbol, start_date, end_date, interval)
-                    if not df.empty:
-                        all_data.append(df)
-                    
-                    # Add longer delay between symbols to prevent rate limiting
-                    if i < total - 1:  # Don't wait after the last symbol
-                        time.sleep(2)  # Increased delay between symbols
-                    
-                except Exception as e:
-                    logging.error(f"Error processing {symbol}: {e}")
-                    continue
-            
-            if not all_data:
-                # Return empty DataFrame with correct structure
-                return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 
-                                          'Symbol', 'Daily_Return', 'Volatility'])
-                
-            # Combine all data
-            combined_df = pd.concat(all_data, axis=0, ignore_index=True)
-            return combined_df
-
-        except Exception as e:
-            logging.error(f"Error in get_quotes_df: {e}")
-            # Return empty DataFrame with correct structure
-            return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 
-                                      'Symbol', 'Daily_Return', 'Volatility'])
-
     def export_to_csv(self, df: pd.DataFrame, filename: str) -> str:
         """Export data to CSV."""
         try:
-            path = os.path.join(self.data_dir, f"{filename}.csv")
+            path = self.exports_dir / f"{filename}.csv"
             df.to_csv(path, index=False)
             return path
         except Exception as e:
@@ -425,7 +471,7 @@ class TickerManager:
     def export_to_json(self, df: pd.DataFrame, filename: str) -> str:
         """Export data to JSON."""
         try:
-            path = os.path.join(self.data_dir, f"{filename}.json")
+            path = self.exports_dir / f"{filename}.json"
             df.to_json(path, orient='records', indent=2)
             return path
         except Exception as e:
@@ -435,7 +481,7 @@ class TickerManager:
     def export_to_sqlite(self, df: pd.DataFrame, filename: str, table_name: str) -> str:
         """Export data to SQLite."""
         try:
-            path = os.path.join(self.data_dir, f"{filename}.db")
+            path = self.exports_dir / f"{filename}.db"
             conn = sqlite3.connect(path)
             df.to_sql(table_name, conn, if_exists='replace', index=False)
             conn.close()
@@ -455,7 +501,7 @@ class TickerManager:
     def export_to_duckdb(self, df: pd.DataFrame, filename: str, table_name: str) -> str:
         """Export data to DuckDB."""
         try:
-            path = os.path.join(self.data_dir, f"{filename}.duckdb")
+            path = self.exports_dir / f"{filename}.duckdb"
             conn = duckdb.connect(path)
             conn.register('temp_table', df)
             conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM temp_table")

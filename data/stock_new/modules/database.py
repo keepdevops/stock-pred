@@ -10,10 +10,17 @@ import psutil
 class DatabaseConnector:
     """Handles database connections and operations."""
     
-    def __init__(self, config):
-        self.logger = logging.getLogger("modules.database")
-        # Extract the database path from config
-        self.db_path = config.get('path', 'data/market_data.duckdb')
+    def __init__(self, db_path=None, logger=None):
+        self.logger = logger or logging.getLogger("modules.database")
+        
+        # Handle both string and dict inputs for backward compatibility
+        if isinstance(db_path, dict):
+            self.db_path = db_path.get('path', 'data/market_data.duckdb')
+        elif isinstance(db_path, str):
+            self.db_path = db_path
+        else:
+            self.db_path = 'data/market_data.duckdb'
+            
         self.connection = None
         self.connect(force=True)  # Add force parameter
     
