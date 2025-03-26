@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from src.data.download_nasdaq import download_nasdaq_screener
 
-def setup():
+def init_setup():
     """Initialize the application data directory and download initial data."""
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -26,8 +26,9 @@ def setup():
         logger.error(f"Setup failed: {e}")
 
 if __name__ == "__main__":
-    setup()
+    init_setup()
 
+# Package setup configuration
 setup(
     name="stock_market_analyzer",
     version="1.0.0",
@@ -37,6 +38,7 @@ setup(
         'numpy',
         'matplotlib',
         'duckdb',
+        'polars',
         # Add other dependencies
     ],
 ) 
