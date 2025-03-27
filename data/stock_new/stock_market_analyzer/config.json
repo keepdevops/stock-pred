@@ -1,0 +1,53 @@
+{
+    "database": {
+        "host": "localhost",
+        "port": 5432,
+        "name": "stock_market",
+        "user": "postgres",
+        "password": "",
+        "table_prefix": "stock_"
+    },
+    "data_source": {
+        "provider": "yahoo",
+        "api_key": "",
+        "start_date": "2020-01-01",
+        "end_date": "today",
+        "symbols_file": "symbols.txt"
+    },
+    "ai_model": {
+        "type": "lstm",
+        "params": {
+            "units": 50,
+            "dropout": 0.2,
+            "epochs": 100,
+            "batch_size": 32
+        },
+        "features": [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "ma5",
+            "ma20",
+            "rsi"
+        ],
+        "target": "close",
+        "sequence_length": 60,
+        "train_split": 0.8,
+        "validation_split": 0.1
+    },
+    "trading": {
+        "mode": "simulation",
+        "initial_capital": 100000.0,
+        "position_size": 0.1,
+        "stop_loss": 0.02,
+        "take_profit": 0.05,
+        "max_positions": 5
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        "file": "stock_market.log"
+    }
+}
