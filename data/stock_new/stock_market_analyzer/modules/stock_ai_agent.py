@@ -9,33 +9,23 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, Input, GRU, Conv1D, Ma
 from tensorflow.keras.optimizers import Adam
 from sklearn.preprocessing import MinMaxScaler
 import os
+import tensorflow.keras as keras
 
 class StockAIAgent:
     """AI agent for stock market analysis and prediction."""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config=None):
         """
-        Initialize the AI agent.
+        Initialize the Stock AI Agent.
         
         Args:
-            config: Configuration dictionary containing:
-                - model_type: Type of model to use ('lstm', 'gru', 'transformer', 'cnn')
-                - sequence_length: Number of time steps to use for prediction
-                - features: List of features to use for prediction
-                - target: Target variable to predict
-                - train_split: Ratio of training data to total data
-                - batch_size: Batch size for training
-                - epochs: Number of epochs to train
-                - learning_rate: Learning rate for optimization
-                - model_dir: Directory to save/load models
-                - use_technical_indicators: Whether to calculate technical indicators
-                - additional_features: List of additional features to include
+            config (dict, optional): Configuration dictionary
         """
-        self.logger = logging.getLogger(__name__)
-        self.config = config
-        self.model = None
+        self.config = config or {}
+        self.current_model = None
+        self.model_history = None
         self.scaler = MinMaxScaler()
-        self.model_dir = Path(config.get('model_dir', 'models'))
+        self.model_dir = Path(self.config.get('model_dir', 'models'))
         self.model_dir.mkdir(exist_ok=True)
         
         # Define available model architectures
@@ -383,155 +373,201 @@ class StockAIAgent:
             
         return df
         
-    def prepare_data(self, data: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-        """Prepare data for training with flexible column names and additional features."""
-        try:
-            self.logger.info("Preparing data for training")
-            
-            # Map column names to standard format
-            data = self._map_column_names(data)
-            
-            # Calculate technical indicators if enabled
-            if self.config.get('use_technical_indicators', True):
-                data = self._calculate_technical_indicators(data)
-            
-            # Get all available features
-            all_features = []
-            
-            # Add basic OHLCV features
-            required_columns = ['open', 'high', 'low', 'close', 'volume']
-            all_features.extend(required_columns)
-            
-            # Add technical indicators
-            if self.config.get('use_technical_indicators', True):
-                for indicators in self.technical_indicators.values():
-                    all_features.extend(indicators)
-            
-            # Add any additional features specified in config
-            additional_features = self.config.get('additional_features', [])
-            all_features.extend([f for f in additional_features if f in data.columns])
-            
-            # Verify required columns exist
-            missing_columns = [col for col in required_columns if col not in data.columns]
-            if missing_columns:
-                raise ValueError(f"Missing required columns: {missing_columns}")
-            
-            # Select features
-            features = data[all_features].values
-            
-            # Scale features
-            scaled_features = self.scaler.fit_transform(features)
-            
-            # Create sequences
-            X, y = [], []
-            for i in range(len(scaled_features) - self.config['sequence_length']):
-                X.append(scaled_features[i:(i + self.config['sequence_length'])])
-                y.append(scaled_features[i + self.config['sequence_length'], 3])  # Predict close price
-                
-            return np.array(X), np.array(y)
-            
-        except Exception as e:
-            self.logger.error(f"Error preparing data: {str(e)}")
-            raise
-            
-    def build_model(self) -> None:
-        """Build the model based on configuration."""
-        try:
-            model_type = self.config.get('model_type', 'lstm')
-            if model_type not in self.available_models:
-                raise ValueError(f"Unsupported model type: {model_type}")
-                
-            # Prepare dummy data to get input shape
-            dummy_data = pd.DataFrame(np.random.rand(100, len(self.config['features'])), 
-                                    columns=self.config['features'])
-            X, _ = self.prepare_data(dummy_data)
-            
-            # Build model
-            self.model = self.available_models[model_type](X.shape[1:])
-            
-            self.logger.info(f"Model built successfully with architecture: {model_type}")
-            
-        except Exception as e:
-            self.logger.error(f"Error building model: {e}")
-            raise
-            
-    def train(self, data: pd.DataFrame = None, X: np.ndarray = None, y: np.ndarray = None) -> None:
-        """Train the model.
+    def prepare_data_for_training(self, df):
+        """
+        Prepare data for model training.
         
         Args:
-            data: DataFrame containing training data (if X and y are not provided)
-            X: Input features array (if data is not provided)
-            y: Target values array (if data is not provided)
+            df (pd.DataFrame): Input DataFrame with stock data
+            
+        Returns:
+            tuple: (X, y) arrays for training
         """
         try:
-            self.logger.info("Training model")
+            logging.info("Preparing data for model training...")
             
-            # Prepare data if not already prepared
-            if data is not None:
-                X, y = self.prepare_data(data)
-            elif X is None or y is None:
-                raise ValueError("Either data or both X and y must be provided")
+            # Get features and target from config
+            features = self.config.get('features', ['open', 'high', 'low', 'close', 'volume'])
+            target = self.config.get('target', 'close')
+            sequence_length = self.config.get('sequence_length', 60)
             
-            if self.model is None:
-                self.build_model()
+            # Check if all required features are present
+            missing_features = [f for f in features if f not in df.columns]
+            if missing_features:
+                raise ValueError(f"Missing required features: {missing_features}")
                 
-            self.model.fit(X, y,
-                          epochs=self.config['epochs'],
-                          batch_size=self.config['batch_size'],
-                          validation_split=0.1,
-                          verbose=1)
-                          
-            self.logger.info("Model training completed")
+            # Create sequences for LSTM
+            feature_data = df[features].values
+            target_data = df[target].values
+            
+            X, y = [], []
+            for i in range(len(df) - sequence_length):
+                X.append(feature_data[i:(i + sequence_length)])
+                y.append(target_data[i + sequence_length])
+                
+            X = np.array(X)
+            y = np.array(y)
+            
+            # Normalize data
+            X_reshaped = X.reshape((X.shape[0] * X.shape[1], X.shape[2]))
+            X_scaled = self.scaler.fit_transform(X_reshaped)
+            X = X_scaled.reshape(X.shape)
+            
+            logging.info(f"Data prepared: X shape {X.shape}, y shape {y.shape}")
+            return X, y
             
         except Exception as e:
-            self.logger.error(f"Error training model: {str(e)}")
+            logging.error(f"Error preparing data: {str(e)}")
             raise
             
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions using the trained model."""
+    def build_model(self, input_shape):
+        """
+        Build and return the LSTM model.
+        
+        Args:
+            input_shape (tuple): Shape of input data (timesteps, features)
+            
+        Returns:
+            keras.Model: Compiled LSTM model
+        """
         try:
-            self.logger.info("Making predictions")
+            model = Sequential([
+                LSTM(50, activation='relu', input_shape=input_shape, return_sequences=True),
+                Dropout(0.2),
+                LSTM(50, activation='relu', return_sequences=False),
+                Dropout(0.2),
+                Dense(25, activation='relu'),
+                Dense(1)
+            ])
             
-            if self.model is None:
-                raise ValueError("Model not trained")
-                
-            predictions = self.model.predict(X)
-            predictions = self.scaler.inverse_transform(
-                np.hstack([np.zeros((len(predictions), 4)), predictions])
-            )[:, -1]
-            
-            return predictions
+            model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+            self.current_model = model
+            return model
             
         except Exception as e:
-            self.logger.error(f"Error making predictions: {str(e)}")
+            logging.error(f"Error building model: {str(e)}")
             raise
             
-    def save_model(self, path: str) -> None:
-        """Save the trained model."""
-        try:
-            self.logger.info(f"Saving model to {path}")
+    def train_model(self, data, epochs=100, batch_size=32):
+        """
+        Train the model on the provided data.
+        
+        Args:
+            data (pd.DataFrame): The input data for training
+            epochs (int): Number of training epochs
+            batch_size (int): Batch size for training
             
-            if self.model is None:
+        Returns:
+            dict: Training history
+        """
+        try:
+            logging.info("Starting model training...")
+            
+            # Prepare data for training
+            X_train, y_train = self.prepare_data_for_training(data)
+            
+            if X_train is None or y_train is None:
+                raise ValueError("Failed to prepare training data")
+                
+            # Build model if not already built
+            if self.current_model is None:
+                self.build_model(input_shape=(X_train.shape[1], X_train.shape[2]))
+                
+            # Train the model
+            history = self.current_model.fit(
+                X_train, y_train,
+                epochs=epochs,
+                batch_size=batch_size,
+                validation_split=0.2,
+                verbose=1
+            )
+            
+            # Save the model
+            self.save_model('models/stock_model.h5')
+            
+            logging.info("Model training completed successfully")
+            return history.history
+            
+        except Exception as e:
+            logging.error(f"Error during model training: {str(e)}")
+            raise
+            
+    def predict(self, data):
+        """
+        Make predictions using the trained model.
+        
+        Args:
+            data (pd.DataFrame): Input data for prediction
+            
+        Returns:
+            np.ndarray: Predicted values
+        """
+        try:
+            if self.current_model is None:
+                raise ValueError("Model not trained. Please train the model first.")
+                
+            # Get features from config
+            features = self.config.get('features', ['open', 'high', 'low', 'close', 'volume'])
+            sequence_length = self.config.get('sequence_length', 60)
+            
+            # Check if we have enough data
+            if len(data) < sequence_length:
+                raise ValueError(f"Not enough data for prediction. Need at least {sequence_length} rows.")
+                
+            # Prepare the last sequence for prediction
+            feature_data = data[features].values
+            X = feature_data[-sequence_length:].reshape(1, sequence_length, len(features))
+            
+            # Normalize the data
+            X_reshaped = X.reshape((X.shape[0] * X.shape[1], X.shape[2]))
+            X_scaled = self.scaler.transform(X_reshaped)
+            X = X_scaled.reshape(X.shape)
+            
+            # Make prediction
+            prediction = self.current_model.predict(X, verbose=0)
+            
+            return prediction
+            
+        except Exception as e:
+            logging.error(f"Error during prediction: {str(e)}")
+            raise
+            
+    def save_model(self, filepath):
+        """
+        Save the trained model to a file.
+        
+        Args:
+            filepath (str): Path to save the model
+        """
+        try:
+            if self.current_model is None:
                 raise ValueError("No model to save")
                 
-            self.model.save(path)
-            self.logger.info("Model saved successfully")
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            
+            # Save the model
+            self.current_model.save(filepath)
+            logging.info(f"Model saved to {filepath}")
             
         except Exception as e:
-            self.logger.error(f"Error saving model: {str(e)}")
+            logging.error(f"Error saving model: {str(e)}")
             raise
             
-    def load_model(self, path: str) -> None:
-        """Load a trained model."""
+    def load_model(self, filepath):
+        """
+        Load a trained model from a file.
+        
+        Args:
+            filepath (str): Path to the saved model
+        """
         try:
-            self.logger.info(f"Loading model from {path}")
-            
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"Model file not found: {path}")
+            if not os.path.exists(filepath):
+                raise FileNotFoundError(f"Model file not found: {filepath}")
                 
-            self.model = load_model(path)
-            self.logger.info("Model loaded successfully")
+            self.current_model = tf.keras.models.load_model(filepath)
+            logging.info(f"Model loaded from {filepath}")
             
         except Exception as e:
-            self.logger.error(f"Error loading model: {str(e)}")
+            logging.error(f"Error loading model: {str(e)}")
             raise 
