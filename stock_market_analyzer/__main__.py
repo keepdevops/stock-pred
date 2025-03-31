@@ -3,11 +3,16 @@ import sys
 from pathlib import Path
 from PyQt5.QtWidgets import QApplication
 
-from .modules.database import Database
-from .modules.data_loader import DataLoader
-from .modules.ai_agent import AIAgent
-from .modules.trading_agent import TradingAgent
-from .modules.gui import StockGUI
+# Add the current directory to the Python path
+current_dir = str(Path(__file__).resolve().parent)
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+from modules.database import DatabaseConnector
+from modules.data_loader import DataLoader
+from modules.stock_ai_agent import StockAIAgent
+from modules.trading.real_trading_agent import RealTradingAgent
+from modules.gui import StockGUI
 
 def setup_logging():
     """Set up logging configuration."""
@@ -16,7 +21,7 @@ def setup_logging():
     
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(log_dir / "stock_analyzer.log"),
             logging.StreamHandler(sys.stdout)
@@ -33,16 +38,16 @@ def main():
         app = QApplication(sys.argv)
         
         # Create database connection
-        db = Database()
+        db = DatabaseConnector()
         
         # Initialize data loader
-        data_loader = DataLoader({'source': 'yahoo'})
+        data_loader = DataLoader()
         
         # Initialize AI agent
-        ai_agent = AIAgent()
+        ai_agent = StockAIAgent()
         
         # Initialize trading agent
-        trading_agent = TradingAgent()
+        trading_agent = RealTradingAgent()
         
         # Create and show main window
         window = StockGUI(db, data_loader, ai_agent, trading_agent)

@@ -1,21 +1,28 @@
 """
-Stock Market Analyzer - A comprehensive tool for stock market analysis and trading.
+Stock Market Analyzer package.
 """
 
-import logging
+from .modules.gui import StockGUI
+from .modules.database import DatabaseConnector
+from .modules.data_loader import DataLoader
+from .modules.stock_ai_agent import StockAIAgent
+from .modules.trading.real_trading_agent import RealTradingAgent
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+__all__ = [
+    'StockGUI',
+    'DatabaseConnector',
+    'DataLoader',
+    'StockAIAgent',
+    'RealTradingAgent'
+]
 
-# Version information
-__version__ = '1.0.0'
-__author__ = 'Stock Market Analyzer Team'
-__license__ = 'MIT'
-
-# Import main components
-from .config import ConfigurationManager
-
-__all__ = ['ConfigurationManager'] 
+# Default configuration
+config = {
+    'model_type': 'lstm',
+    'sequence_length': 60,
+    'batch_size': 32,
+    'epochs': 100,
+    'learning_rate': 0.001,
+    'use_technical_indicators': True,
+    'additional_features': []
+} 
