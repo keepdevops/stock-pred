@@ -3,7 +3,7 @@ import pandas as pd
 import logging
 from datetime import datetime, timedelta
 
-class Database:
+class DatabaseConnector:
     def __init__(self, db_path="stock_data.duckdb"):
         self.db_path = db_path
         self.logger = logging.getLogger(__name__)

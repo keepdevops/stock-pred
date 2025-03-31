@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox,
     QProgressBar, QMessageBox, QFileDialog, QSplitter
 )
-from PyQt5.QtCore import Qt, QTimer, QDateTime
+from PyQt5.QtCore import Qt, QTimer, QDateTime, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 import logging
 import pandas as pd

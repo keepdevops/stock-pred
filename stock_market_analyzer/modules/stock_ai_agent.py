@@ -36,9 +36,9 @@ class StockAIAgent:
         # Active model tracking
         self.active_model_id = None
         
-    def list_models(self) -> dict:
-        """List all available models and their configurations."""
-        return self.available_models
+    def get_available_models(self) -> list:
+        """Get list of available model names."""
+        return list(self.available_models.keys())
         
     def get_active_model(self) -> dict:
         """Get the currently active model configuration."""
@@ -56,6 +56,14 @@ class StockAIAgent:
             },
             'status': 'trained' if self.model is not None else 'untrained'
         }
+        
+    def set_active_model(self, model_id: str) -> bool:
+        """Set the active model by ID."""
+        if model_id not in self.available_models:
+            raise ValueError(f"Unknown model ID: {model_id}")
+            
+        self.active_model_id = model_id
+        return True
         
     def prepare_data(self, data: pd.DataFrame) -> tuple:
         """Prepare data for training or prediction."""
@@ -199,19 +207,17 @@ class StockAIAgent:
             X_test, y_test = self.prepare_data(test_data)
             
             # Make predictions
-            predictions = self.predict(test_data)
-            actual = test_data['close'].values[self.lookback_days:]
+            y_pred = self.model.predict(X_test)
             
             # Calculate metrics
-            evaluation = {
-                'mse': mean_squared_error(actual, predictions),
-                'mae': mean_absolute_error(actual, predictions),
-                'rmse': np.sqrt(mean_squared_error(actual, predictions)),
-                'mape': np.mean(np.abs((actual - predictions) / actual)) * 100
-            }
+            mse = mean_squared_error(y_test, y_pred)
+            mae = mean_absolute_error(y_test, y_pred)
             
-            self.logger.info("Model evaluation completed")
-            return evaluation
+            return {
+                'mse': mse,
+                'mae': mae,
+                'rmse': np.sqrt(mse)
+            }
             
         except Exception as e:
             self.logger.error(f"Error evaluating model: {e}")

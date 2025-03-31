@@ -156,28 +156,50 @@ class AIAgent:
             
     def _prepare_features(self, data: pd.DataFrame) -> np.ndarray:
         """Prepare features for model input."""
+        # Convert column names to lowercase for consistent handling
+        data.columns = data.columns.str.lower()
+        
         # Select relevant features
         features = ['open', 'high', 'low', 'close', 'volume']
         
         # Add technical indicators
         data = data.copy()
         
-        # Calculate moving averages
-        data['ma5'] = data['close'].rolling(window=5).mean()
-        data['ma20'] = data['close'].rolling(window=20).mean()
+        # Use existing moving averages if available, otherwise calculate them
+        if 'sma_5' in data.columns:
+            data['ma5'] = data['sma_5']
+        elif 'sma5' in data.columns:
+            data['ma5'] = data['sma5']
+        else:
+            data['ma5'] = data['close'].rolling(window=5).mean()
+            
+        if 'sma_20' in data.columns:
+            data['ma20'] = data['sma_20']
+        elif 'sma20' in data.columns:
+            data['ma20'] = data['sma20']
+        else:
+            data['ma20'] = data['close'].rolling(window=20).mean()
         
-        # Calculate RSI
-        delta = data['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        data['rsi'] = 100 - (100 / (1 + rs))
+        # Use existing RSI if available, otherwise calculate it
+        if 'rsi' in data.columns:
+            pass  # Use existing RSI
+        else:
+            delta = data['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            data['rsi'] = 100 - (100 / (1 + rs))
         
-        # Calculate MACD
-        exp1 = data['close'].ewm(span=12, adjust=False).mean()
-        exp2 = data['close'].ewm(span=26, adjust=False).mean()
-        data['macd'] = exp1 - exp2
-        data['signal'] = data['macd'].ewm(span=9, adjust=False).mean()
+        # Use existing MACD if available, otherwise calculate it
+        if 'macd' in data.columns and 'macd_signal' in data.columns:
+            data['signal'] = data['macd_signal']  # Rename to match expected feature name
+        elif 'macd' in data.columns and 'signal_line' in data.columns:
+            data['signal'] = data['signal_line']  # Alternative name for MACD signal
+        else:
+            exp1 = data['close'].ewm(span=12, adjust=False).mean()
+            exp2 = data['close'].ewm(span=26, adjust=False).mean()
+            data['macd'] = exp1 - exp2
+            data['signal'] = data['macd'].ewm(span=9, adjust=False).mean()
         
         # Add new features to the list
         features.extend(['ma5', 'ma20', 'rsi', 'macd', 'signal'])
