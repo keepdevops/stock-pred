@@ -1,5 +1,5 @@
 """
-Configuration management package for the stock market analyzer.
+Configuration management module.
 """
 
 from .config_manager import ConfigurationManager
