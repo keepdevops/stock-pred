@@ -22,44 +22,41 @@ class ConfigurationManager:
             return self._create_default_config()
 
     def _create_default_config(self):
-        """Create and return default configuration."""
-        default_config = {
+        """Create default configuration."""
+        return {
             'database': {
-                'path': 'stocks.db',
-                'type': 'sqlite'
+                'path': 'stock_data.db'
             },
             'data': {
                 'source': 'yahoo',
-                'symbols_file': 'symbols.txt',
-                'start_date': '2020-01-01',
-                'end_date': 'today'
+                'interval': '1d'
+            },
+            'ai': {
+                'model': 'lstm',
+                'epochs': 100,
+                'batch_size': 32
             },
             'trading': {
                 'mode': 'simulation',
-                'initial_balance': 10000,
-                'risk_per_trade': 0.02
-            },
-            'ai': {
-                'model_type': 'lstm',
-                'lookback_days': 60,
-                'prediction_days': 5,
-                'training': {
-                    'epochs': 100,
-                    'batch_size': 32,
-                    'validation_split': 0.2
-                }
+                'risk_level': 'medium'
             }
         }
-        
-        # Save default config
-        try:
-            with open(self.config_file, 'w') as f:
-                json.dump(default_config, f, indent=4)
-            self.logger.info(f"Default configuration saved to {self.config_file}")
-        except Exception as e:
-            self.logger.error(f"Error saving default config: {e}")
-        
-        return default_config
+
+    def get_database_config(self):
+        """Get database configuration."""
+        return self.config.get('database', self._create_default_config()['database'])
+
+    def get_data_config(self):
+        """Get data configuration."""
+        return self.config.get('data', self._create_default_config()['data'])
+
+    def get_ai_config(self):
+        """Get AI configuration."""
+        return self.config.get('ai', self._create_default_config()['ai'])
+
+    def get_trading_config(self):
+        """Get trading configuration."""
+        return self.config.get('trading', self._create_default_config()['trading'])
 
     def get(self, key, default=None):
         """Get configuration value by key."""
@@ -87,20 +84,4 @@ class ConfigurationManager:
                 json.dump(self.config, f, indent=4)
             self.logger.info(f"Configuration updated: {key} = {value}")
         except Exception as e:
-            self.logger.error(f"Error updating config: {e}")
-
-    def get_database_config(self):
-        """Get database configuration."""
-        return self.get('database', {})
-
-    def get_data_config(self):
-        """Get data source configuration."""
-        return self.get('data', {})
-
-    def get_trading_config(self):
-        """Get trading configuration."""
-        return self.get('trading', {})
-
-    def get_ai_config(self):
-        """Get AI model configuration."""
-        return self.get('ai', {}) 
+            self.logger.error(f"Error updating config: {e}") 
