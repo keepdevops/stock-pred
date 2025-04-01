@@ -1,7 +1,7 @@
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer, QDateTime
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Coroutine
 import pandas as pd
 import yfinance as yf
 
@@ -105,45 +105,94 @@ class RealTimeDataManager(QObject):
             self.update_timer.setInterval(interval)
 
 class AsyncTaskManager(QObject):
-    """Manager for async operations."""
+    """Manages asynchronous tasks in the application."""
     
-    # Signals for task status
-    task_started = pyqtSignal(str)  # task name
-    task_completed = pyqtSignal(str, Any)  # task name, result
-    task_error = pyqtSignal(str, str)  # task name, error message
+    task_started = pyqtSignal(str)
+    task_completed = pyqtSignal(str, object)
+    task_error = pyqtSignal(str, str)
     
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self):
+        super().__init__()
         self.logger = logging.getLogger(__name__)
-        self.tasks = {}
+        self.tasks: Dict[str, asyncio.Task] = {}
+        self.loop = None
+        self._setup_event_loop()
         
-    async def run_task(self, task_name: str, coro):
-        """Run an async task and emit status signals."""
+    def _setup_event_loop(self):
+        """Set up the asyncio event loop."""
         try:
-            self.task_started.emit(task_name)
-            result = await coro
-            self.task_completed.emit(task_name, result)
-            return result
-            
+            if self.loop is None or self.loop.is_closed():
+                self.loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.loop)
+                self.logger.info("Event loop setup completed")
         except Exception as e:
-            self.logger.error(f"Error in task {task_name}: {e}")
-            self.task_error.emit(task_name, str(e))
+            self.logger.error(f"Error setting up event loop: {e}")
             raise
             
-    def create_task(self, task_name: str, coro):
-        """Create and run a new async task."""
-        loop = asyncio.get_event_loop()
-        task = loop.create_task(self.run_task(task_name, coro))
-        self.tasks[task_name] = task
-        return task
-        
-    def cancel_task(self, task_name: str):
-        """Cancel a running task."""
-        if task_name in self.tasks:
-            self.tasks[task_name].cancel()
-            del self.tasks[task_name]
+    def create_task(self, task_name: str, coro: Coroutine) -> None:
+        """Create and start a new async task."""
+        try:
+            if task_name in self.tasks:
+                self.logger.warning(f"Task {task_name} already exists, cancelling previous task")
+                self.tasks[task_name].cancel()
+                del self.tasks[task_name]
+                
+            # Ensure event loop is running
+            if not self.loop.is_running():
+                self._setup_event_loop()
+                
+            # Create and store the task
+            task = self.loop.create_task(coro)
+            self.tasks[task_name] = task
             
-    def cancel_all_tasks(self):
-        """Cancel all running tasks."""
-        for task_name in list(self.tasks.keys()):
-            self.cancel_task(task_name) 
+            # Add callback for task completion
+            task.add_done_callback(lambda t: self._handle_task_completion(task_name, t))
+            
+            self.logger.info(f"Creating new task: {task_name}")
+            self.task_started.emit(task_name)
+            
+        except Exception as e:
+            self.logger.error(f"Error creating task {task_name}: {e}")
+            self.task_error.emit(task_name, str(e))
+            
+    def _handle_task_completion(self, task_name: str, task: asyncio.Task) -> None:
+        """Handle task completion."""
+        try:
+            if task_name in self.tasks:
+                del self.tasks[task_name]
+                
+            if task.cancelled():
+                self.logger.info(f"Task {task_name} was cancelled")
+                return
+                
+            if task.exception():
+                error = task.exception()
+                self.logger.error(f"Task {task_name} failed: {error}")
+                self.task_error.emit(task_name, str(error))
+            else:
+                result = task.result()
+                self.logger.info(f"Task {task_name} completed")
+                self.logger.info(f"Task {task_name} completed successfully with result type: {type(result)}")
+                self.task_completed.emit(task_name, result)
+                
+        except Exception as e:
+            self.logger.error(f"Error handling task completion for {task_name}: {e}")
+            self.task_error.emit(task_name, str(e))
+            
+    def cleanup(self):
+        """Clean up resources."""
+        try:
+            # Cancel all tasks
+            for task_name, task in self.tasks.items():
+                self.logger.info(f"Cancelling task: {task_name}")
+                task.cancel()
+            self.tasks.clear()
+            
+            # Stop the event loop
+            if self.loop and not self.loop.is_closed():
+                self.loop.stop()
+                self.loop.close()
+                self.loop = None
+                
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}") 

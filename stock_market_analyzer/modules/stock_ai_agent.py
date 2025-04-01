@@ -4,13 +4,19 @@ from lightgbm import LGBMRegressor
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import logging
+import os
+import pickle
+from typing import Dict, List, Optional, Any
+import tensorflow as tf
 
 class StockAIAgent:
-    def __init__(self, config):
+    def __init__(self, config: Dict[str, Any]):
         self.logger = logging.getLogger(__name__)
         self.config = config
-        self.model = None
-        self.scaler = MinMaxScaler()
+        self.models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
+        self.active_model = None
+        self.available_models = {}
+        self.load_available_models()
         
         # Model parameters
         self.lookback_days = config.get('lookback_days', 60)
@@ -21,49 +27,90 @@ class StockAIAgent:
         self.learning_rate = config.get('training', {}).get('learning_rate', 0.1)
         self.validation_split = config.get('training', {}).get('validation_split', 0.2)
         
-        # Available models
-        self.available_models = {
-            'lightgbm': {
-                'name': 'LightGBM Regressor',
-                'type': 'regression',
-                'parameters': {
-                    'n_estimators': self.n_estimators,
-                    'learning_rate': self.learning_rate
-                }
-            }
-        }
+    def load_available_models(self):
+        """Load available models from the models directory."""
+        try:
+            # Create models directory if it doesn't exist
+            os.makedirs(self.models_dir, exist_ok=True)
+            
+            # Scan for model files
+            for file in os.listdir(self.models_dir):
+                if file.endswith('.h5'):  # Keras model files
+                    model_name = os.path.splitext(file)[0]
+                    model_path = os.path.join(self.models_dir, file)
+                    self.available_models[model_name] = {
+                        'path': model_path,
+                        'type': 'keras',
+                        'name': model_name
+                    }
+                elif file.endswith('.pkl'):  # Scikit-learn model files
+                    model_name = os.path.splitext(file)[0]
+                    model_path = os.path.join(self.models_dir, file)
+                    self.available_models[model_name] = {
+                        'path': model_path,
+                        'type': 'sklearn',
+                        'name': model_name
+                    }
+                    
+            self.logger.info(f"Loaded {len(self.available_models)} available models")
+            
+        except Exception as e:
+            self.logger.error(f"Error loading available models: {e}")
+            raise
         
-        # Active model tracking
-        self.active_model_id = None
-        
-    def get_available_models(self) -> list:
+    def get_available_models(self) -> List[str]:
         """Get list of available model names."""
         return list(self.available_models.keys())
         
-    def get_active_model(self) -> dict:
-        """Get the currently active model configuration."""
-        if self.model is None:
-            return None
+    def set_active_model(self, model_name: str):
+        """Set the active model by name."""
+        if model_name not in self.available_models:
+            raise ValueError(f"Unknown model: {model_name}")
             
-        return {
-            'type': 'lightgbm',
-            'name': 'LightGBM Regressor',
-            'parameters': {
-                'n_estimators': self.n_estimators,
-                'learning_rate': self.learning_rate,
-                'lookback_days': self.lookback_days,
-                'prediction_days': self.prediction_days
-            },
-            'status': 'trained' if self.model is not None else 'untrained'
-        }
+        model_info = self.available_models[model_name]
+        try:
+            if model_info['type'] == 'keras':
+                self.active_model = tf.keras.models.load_model(model_info['path'])
+            elif model_info['type'] == 'sklearn':
+                with open(model_info['path'], 'rb') as f:
+                    self.active_model = pickle.load(f)
+                    
+            self.logger.info(f"Set active model to: {model_name}")
+            
+        except Exception as e:
+            self.logger.error(f"Error loading model {model_name}: {e}")
+            raise
         
-    def set_active_model(self, model_id: str) -> bool:
-        """Set the active model by ID."""
-        if model_id not in self.available_models:
-            raise ValueError(f"Unknown model ID: {model_id}")
+    def get_active_model(self) -> Optional[Any]:
+        """Get the currently active model."""
+        return self.active_model
+        
+    def save_model(self, model: Any, name: str):
+        """Save a model to the models directory."""
+        try:
+            if isinstance(model, tf.keras.Model):
+                model_path = os.path.join(self.models_dir, f"{name}.h5")
+                model.save(model_path)
+                self.available_models[name] = {
+                    'path': model_path,
+                    'type': 'keras',
+                    'name': name
+                }
+            else:
+                model_path = os.path.join(self.models_dir, f"{name}.pkl")
+                with open(model_path, 'wb') as f:
+                    pickle.dump(model, f)
+                self.available_models[name] = {
+                    'path': model_path,
+                    'type': 'sklearn',
+                    'name': name
+                }
+                
+            self.logger.info(f"Saved model: {name}")
             
-        self.active_model_id = model_id
-        return True
+        except Exception as e:
+            self.logger.error(f"Error saving model {name}: {e}")
+            raise
         
     def prepare_data(self, data: pd.DataFrame) -> tuple:
         """Prepare data for training or prediction."""
@@ -261,4 +308,123 @@ class StockAIAgent:
             
         except Exception as e:
             self.logger.error(f"Error performing analysis: {e}")
-            raise 
+            raise
+
+    def analyze_technical(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Perform technical analysis on the data."""
+        try:
+            self.logger.info("Starting technical analysis")
+            
+            # Calculate technical indicators
+            results = {}
+            
+            # Moving averages
+            results['sma_20'] = data['close'].rolling(window=20).mean().iloc[-1]
+            results['sma_50'] = data['close'].rolling(window=50).mean().iloc[-1]
+            results['sma_200'] = data['close'].rolling(window=200).mean().iloc[-1]
+            
+            # RSI
+            delta = data['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            results['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
+            
+            # MACD
+            exp1 = data['close'].ewm(span=12, adjust=False).mean()
+            exp2 = data['close'].ewm(span=26, adjust=False).mean()
+            macd = exp1 - exp2
+            signal = macd.ewm(span=9, adjust=False).mean()
+            results['macd'] = macd.iloc[-1]
+            results['macd_signal'] = signal.iloc[-1]
+            
+            # Bollinger Bands
+            middle_band = data['close'].rolling(window=20).mean()
+            std = data['close'].rolling(window=20).std()
+            results['bb_upper'] = middle_band.iloc[-1] + (std.iloc[-1] * 2)
+            results['bb_middle'] = middle_band.iloc[-1]
+            results['bb_lower'] = middle_band.iloc[-1] - (std.iloc[-1] * 2)
+            
+            # Volume indicators
+            results['volume_ma'] = data['volume'].rolling(window=20).mean().iloc[-1]
+            results['volume_ratio'] = data['volume'].iloc[-1] / results['volume_ma']
+            
+            # Price momentum
+            results['daily_return'] = data['close'].pct_change().iloc[-1]
+            results['volatility'] = data['close'].pct_change().std() * np.sqrt(252)
+            
+            self.logger.info("Technical analysis completed successfully")
+            return {'technical': results}
+            
+        except Exception as e:
+            self.logger.error(f"Error in technical analysis: {e}")
+            raise ValueError(f"Technical analysis failed: {str(e)}")
+            
+    def analyze_fundamental(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Perform fundamental analysis on the data."""
+        try:
+            self.logger.info("Starting fundamental analysis")
+            
+            # Calculate fundamental metrics
+            results = {}
+            
+            # Price-to-Earnings ratio (if available)
+            if 'pe_ratio' in data.columns:
+                results['pe_ratio'] = data['pe_ratio'].iloc[-1]
+                
+            # Price-to-Book ratio (if available)
+            if 'pb_ratio' in data.columns:
+                results['pb_ratio'] = data['pb_ratio'].iloc[-1]
+                
+            # Dividend yield (if available)
+            if 'dividend_yield' in data.columns:
+                results['dividend_yield'] = data['dividend_yield'].iloc[-1]
+                
+            # Market cap (if available)
+            if 'market_cap' in data.columns:
+                results['market_cap'] = data['market_cap'].iloc[-1]
+                
+            # Revenue growth (if available)
+            if 'revenue_growth' in data.columns:
+                results['revenue_growth'] = data['revenue_growth'].iloc[-1]
+                
+            # Profit margin (if available)
+            if 'profit_margin' in data.columns:
+                results['profit_margin'] = data['profit_margin'].iloc[-1]
+                
+            self.logger.info("Fundamental analysis completed successfully")
+            return {'fundamental': results}
+            
+        except Exception as e:
+            self.logger.error(f"Error in fundamental analysis: {e}")
+            raise ValueError(f"Fundamental analysis failed: {str(e)}")
+            
+    def analyze_sentiment(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Perform sentiment analysis on the data."""
+        try:
+            self.logger.info("Starting sentiment analysis")
+            
+            # Calculate sentiment metrics
+            results = {}
+            
+            # Social media sentiment (if available)
+            if 'social_sentiment' in data.columns:
+                results['social_sentiment'] = data['social_sentiment'].iloc[-1]
+                
+            # News sentiment (if available)
+            if 'news_sentiment' in data.columns:
+                results['news_sentiment'] = data['news_sentiment'].iloc[-1]
+                
+            # Market sentiment indicators
+            results['price_momentum'] = data['close'].pct_change(periods=5).iloc[-1]
+            results['volume_momentum'] = data['volume'].pct_change(periods=5).iloc[-1]
+            
+            # Volatility as a sentiment indicator
+            results['volatility'] = data['close'].pct_change().std() * np.sqrt(252)
+            
+            self.logger.info("Sentiment analysis completed successfully")
+            return {'sentiment': results}
+            
+        except Exception as e:
+            self.logger.error(f"Error in sentiment analysis: {e}")
+            raise ValueError(f"Sentiment analysis failed: {str(e)}") 
