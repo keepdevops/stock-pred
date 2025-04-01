@@ -118,6 +118,11 @@ class AsyncTaskManager(QObject):
         self.loop = None
         self._setup_event_loop()
         
+        # Create a timer to run the event loop
+        self.timer = QTimer()
+        self.timer.timeout.connect(self._run_event_loop)
+        self.timer.start(100)  # Run every 100ms
+        
     def _setup_event_loop(self):
         """Set up the asyncio event loop."""
         try:
@@ -129,13 +134,22 @@ class AsyncTaskManager(QObject):
             self.logger.error(f"Error setting up event loop: {e}")
             raise
             
+    def _run_event_loop(self):
+        """Run the event loop for a short time."""
+        try:
+            if self.loop and not self.loop.is_closed():
+                self.loop.stop()
+                self.loop.run_forever()
+        except Exception as e:
+            self.logger.error(f"Error running event loop: {e}")
+            
     def create_task(self, task_name: str, coro: Coroutine) -> None:
         """Create and start a new async task."""
         try:
+            # Cancel existing task if it exists
             if task_name in self.tasks:
                 self.logger.warning(f"Task {task_name} already exists, cancelling previous task")
-                self.tasks[task_name].cancel()
-                del self.tasks[task_name]
+                self._cancel_task(task_name)
                 
             # Ensure event loop is running
             if not self.loop.is_running():
@@ -155,9 +169,22 @@ class AsyncTaskManager(QObject):
             self.logger.error(f"Error creating task {task_name}: {e}")
             self.task_error.emit(task_name, str(e))
             
+    def _cancel_task(self, task_name: str) -> None:
+        """Cancel a specific task."""
+        try:
+            if task_name in self.tasks:
+                task = self.tasks[task_name]
+                if not task.done():
+                    task.cancel()
+                del self.tasks[task_name]
+                self.logger.info(f"Cancelled task: {task_name}")
+        except Exception as e:
+            self.logger.error(f"Error cancelling task {task_name}: {e}")
+            
     def _handle_task_completion(self, task_name: str, task: asyncio.Task) -> None:
         """Handle task completion."""
         try:
+            # Remove task from tracking
             if task_name in self.tasks:
                 del self.tasks[task_name]
                 
@@ -182,11 +209,13 @@ class AsyncTaskManager(QObject):
     def cleanup(self):
         """Clean up resources."""
         try:
+            # Stop the timer
+            if hasattr(self, 'timer'):
+                self.timer.stop()
+                
             # Cancel all tasks
-            for task_name, task in self.tasks.items():
-                self.logger.info(f"Cancelling task: {task_name}")
-                task.cancel()
-            self.tasks.clear()
+            for task_name in list(self.tasks.keys()):
+                self._cancel_task(task_name)
             
             # Stop the event loop
             if self.loop and not self.loop.is_closed():

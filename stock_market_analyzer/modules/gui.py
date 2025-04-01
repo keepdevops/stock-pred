@@ -277,12 +277,16 @@ class StockGUI(QMainWindow):
                     
             # Handle analysis task completion
             elif task_name.startswith("analysis_"):
+                self.logger.info(f"Processing analysis task completion for {task_name}")
                 if isinstance(result, dict):
+                    self.logger.info(f"Received analysis results with keys: {list(result.keys())}")
+                    
                     # Format analysis results
                     analysis_text = f"Analysis Results for {self.symbol_entry.text()}\n\n"
                     
                     # Add technical analysis results
                     if 'technical' in result:
+                        self.logger.info("Processing technical analysis results")
                         analysis_text += "Technical Analysis:\n"
                         tech_results = result['technical']
                         
@@ -318,6 +322,7 @@ class StockGUI(QMainWindow):
                             
                     # Add fundamental analysis results
                     if 'fundamental' in result:
+                        self.logger.info("Processing fundamental analysis results")
                         analysis_text += "\nFundamental Analysis:\n"
                         fund_results = result['fundamental']
                         for metric, value in fund_results.items():
@@ -328,6 +333,7 @@ class StockGUI(QMainWindow):
                             
                     # Add sentiment analysis results
                     if 'sentiment' in result:
+                        self.logger.info("Processing sentiment analysis results")
                         analysis_text += "\nSentiment Analysis:\n"
                         sent_results = result['sentiment']
                         for metric, value in sent_results.items():
@@ -337,11 +343,20 @@ class StockGUI(QMainWindow):
                                 analysis_text += f"  {metric}: {value}\n"
                             
                     # Update analysis display
+                    self.logger.info("Updating analysis text display")
                     self.analysis_text.setText(analysis_text)
                     
-                    # Show success message
-                    QMessageBox.information(self, "Success", "Analysis completed successfully")
+                    # Show success message without triggering rerun
+                    self.logger.info("Showing success message")
+                    msg = QMessageBox(self)
+                    msg.setWindowTitle("Success")
+                    msg.setText("Analysis completed successfully")
+                    msg.setStandardButtons(QMessageBox.Ok)
+                    msg.setDefaultButton(QMessageBox.Ok)
+                    msg.exec_()
+                    
                 else:
+                    self.logger.error(f"Invalid analysis results format: {type(result)}")
                     raise ValueError("Invalid analysis results format")
                     
         except Exception as e:
@@ -712,8 +727,12 @@ class StockGUI(QMainWindow):
             analysis_type = self.analysis_type.currentText()
             self.logger.info(f"Starting {analysis_type} analysis on {len(self.current_data)} rows of data")
             
-            # Show progress dialog
-            progress = self.show_progress_dialog("Analysis", f"Running {analysis_type} analysis...")
+            # Check if analysis is already running
+            task_name = f"analysis_{analysis_type.lower()}"
+            if task_name in self.async_manager.tasks:
+                self.logger.warning(f"Analysis task {task_name} is already running")
+                QMessageBox.warning(self, "Warning", "Analysis is already running. Please wait for it to complete.")
+                return
             
             # Create async task for analysis
             async def analysis_task():
@@ -744,7 +763,6 @@ class StockGUI(QMainWindow):
                     raise ValueError(f"Analysis failed: {str(e)}")
                     
             # Create and run the task
-            task_name = f"analysis_{analysis_type.lower()}"
             self.logger.info(f"Creating analysis task: {task_name}")
             self.async_manager.create_task(task_name, analysis_task())
             
@@ -1099,9 +1117,67 @@ class StockGUI(QMainWindow):
                         self.logger.info(f"Successfully loaded CSV data with {len(data)} rows")
                     elif format_type == "JSON":
                         self.logger.info("Attempting to load JSON data")
-                        data = pd.read_json(file_path)
-                        self.logger.info(f"Successfully loaded JSON data with {len(data)} rows")
-                        self.logger.info(f"JSON data columns: {data.columns.tolist()}")
+                        try:
+                            # Read the file content first to check for issues
+                            with open(file_path, 'r') as f:
+                                content = f.read()
+                                self.logger.info(f"File content preview: {content[:500]}")
+                            
+                            data = pd.read_json(file_path)
+                            self.logger.info(f"Successfully loaded JSON data with {len(data)} rows")
+                            self.logger.info(f"JSON data columns: {data.columns.tolist()}")
+                            
+                            # Validate data structure
+                            if data.empty:
+                                raise ValueError("JSON file contains no data")
+                                
+                            # Check for required columns
+                            required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+                            missing_columns = [col for col in required_columns if col not in data.columns]
+                            
+                            if missing_columns:
+                                self.logger.warning(f"Missing required columns: {missing_columns}")
+                                self.logger.info(f"Available columns: {data.columns.tolist()}")
+                                
+                                # Try to find similar column names
+                                column_mapping = {}
+                                for col in missing_columns:
+                                    # Look for similar column names
+                                    similar_cols = [c for c in data.columns if col in c.lower()]
+                                    if similar_cols:
+                                        column_mapping[col] = similar_cols[0]
+                                        self.logger.info(f"Mapping column {similar_cols[0]} to {col}")
+                                    else:
+                                        raise ValueError(f"Missing required column: {col}")
+                                
+                                # Rename columns according to mapping
+                                data = data.rename(columns={v: k for k, v in column_mapping.items()})
+                                self.logger.info("Successfully mapped column names")
+                            
+                            # Ensure date column is datetime
+                            self.logger.info("Converting date column to datetime")
+                            data['date'] = pd.to_datetime(data['date'])
+                            
+                            # Sort by date
+                            self.logger.info("Sorting data by date")
+                            data = data.sort_values('date')
+                            
+                            # Validate data types
+                            numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+                            for col in numeric_columns:
+                                if not pd.api.types.is_numeric_dtype(data[col]):
+                                    self.logger.warning(f"Column {col} is not numeric, attempting conversion")
+                                    data[col] = pd.to_numeric(data[col], errors='coerce')
+                                    if data[col].isna().any():
+                                        raise ValueError(f"Column {col} contains invalid numeric values")
+                            
+                            self.logger.info("Data validation completed successfully")
+                            return data
+                            
+                        except Exception as e:
+                            self.logger.error(f"Error loading JSON data: {str(e)}")
+                            raise ValueError(f"Failed to load JSON data: {str(e)}")
+                            
                     elif format_type == "DuckDB":
                         try:
                             import duckdb
@@ -1145,37 +1221,10 @@ class StockGUI(QMainWindow):
                         data = pl.read_csv(file_path).to_pandas()
                         self.logger.info(f"Successfully loaded Polars DataFrame with {len(data)} rows")
                     
-                    # Ensure required columns exist
-                    required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
-                    missing_columns = [col for col in required_columns if col not in data.columns]
-                    
-                    if missing_columns:
-                        self.logger.warning(f"Missing required columns: {missing_columns}")
-                        self.logger.info(f"Available columns: {data.columns.tolist()}")
-                        # Try to find similar column names
-                        column_mapping = {}
-                        for col in missing_columns:
-                            # Look for similar column names
-                            similar_cols = [c for c in data.columns if col in c.lower()]
-                            if similar_cols:
-                                column_mapping[col] = similar_cols[0]
-                                self.logger.info(f"Mapping column {similar_cols[0]} to {col}")
-                            else:
-                                self.logger.error(f"Missing required column: {col}")
-                                raise ValueError(f"Missing required column: {col}")
+                    # Final validation
+                    if data is None or data.empty:
+                        raise ValueError("No data was loaded")
                         
-                        # Rename columns according to mapping
-                        data = data.rename(columns={v: k for k, v in column_mapping.items()})
-                        self.logger.info("Successfully mapped column names")
-                    
-                    # Ensure date column is datetime
-                    self.logger.info("Converting date column to datetime")
-                    data['date'] = pd.to_datetime(data['date'])
-                    
-                    # Sort by date
-                    self.logger.info("Sorting data by date")
-                    data = data.sort_values('date')
-                    
                     self.logger.info("Data import task completed successfully")
                     return data
                     
