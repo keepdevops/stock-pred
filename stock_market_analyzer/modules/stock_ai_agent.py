@@ -256,41 +256,92 @@ class StockAIAgent:
     def predict_future(self, data: pd.DataFrame, days: int = None) -> np.ndarray:
         """Predict future values based on the last known sequence."""
         try:
-            if self.model is None:
-                raise ValueError("Model has not been trained yet")
+            if self.active_model is None:
+                raise ValueError("No active model has been set. Please load or train a model first.")
                 
             if days is None:
                 days = self.prediction_days
                 
             # Prepare the last sequence
-            features = data[['close', 'volume']].values[-self.lookback_days:]
+            features = data[['open', 'high', 'low', 'close', 'volume']].values[-self.lookback_days:]
+            
+            # Create feature scaler if not exists
+            if not hasattr(self, 'feature_scaler'):
+                self.feature_scaler = MinMaxScaler()
+                self.feature_scaler.fit(features)
+                
             scaled_features = self.feature_scaler.transform(features)
-            last_sequence = scaled_features.reshape(1, -1)  # Flatten for LGBM
+            
+            # Reshape based on model type
+            if isinstance(self.active_model, xgb.XGBRegressor):
+                last_sequence = scaled_features.reshape(1, -1)  # Flatten for XGBoost
+            else:  # For Keras models (LSTM, Transformer)
+                last_sequence = scaled_features.reshape(1, self.lookback_days, scaled_features.shape[1])
             
             predictions = []
             current_sequence = last_sequence.copy()
             
             for _ in range(days):
                 # Predict next value
-                next_pred = self.model.predict(current_sequence)[0]
-                predictions.append(next_pred)  # Take the predicted value
+                prediction = self.active_model.predict(current_sequence)
+                
+                # Handle different output shapes based on model type
+                if isinstance(prediction, list):
+                    next_pred = prediction[0]
+                elif isinstance(prediction, np.ndarray):
+                    # If prediction is multi-dimensional, flatten to single value
+                    if prediction.ndim > 1:
+                        next_pred = prediction[0]
+                        if isinstance(next_pred, np.ndarray) and len(next_pred) > 0:
+                            next_pred = next_pred[0]
+                    else:
+                        next_pred = prediction[0]
+                else:
+                    next_pred = prediction
+                
+                # Ensure next_pred is a scalar
+                if hasattr(next_pred, 'shape') and next_pred.shape:
+                    next_pred = float(next_pred)
+                
+                predictions.append(next_pred)
                 
                 # Update sequence for next prediction
-                new_row = np.zeros(2)
-                new_row[0] = next_pred
-                new_row[1] = current_sequence[0, -1]  # Keep last volume
-                current_sequence = np.roll(current_sequence.reshape(-1, 2), -1, axis=0)
-                current_sequence[-1] = new_row
-                current_sequence = current_sequence.reshape(1, -1)
-                
+                if isinstance(self.active_model, xgb.XGBRegressor):
+                    # Update for XGBoost
+                    new_row = np.zeros(scaled_features.shape[1])
+                    new_row[3] = next_pred  # Set close price (index 3)
+                    current_sequence = np.roll(current_sequence.reshape(-1, scaled_features.shape[1]), -1, axis=0)
+                    current_sequence[-1] = new_row
+                    current_sequence = current_sequence.reshape(1, -1)
+                else:
+                    # Update for Keras models
+                    new_row = scaled_features[-1].copy()
+                    new_row[3] = next_pred  # Set close price (index 3)
+                    current_sequence = np.roll(current_sequence.reshape(self.lookback_days, scaled_features.shape[1]), -1, axis=0)
+                    current_sequence[-1] = new_row
+                    current_sequence = current_sequence.reshape(1, self.lookback_days, scaled_features.shape[1])
+            
             # Reshape predictions for inverse transform
-            reshaped_predictions = np.zeros((len(predictions), 2))
-            reshaped_predictions[:, 0] = predictions
-            
-            # Inverse transform predictions
-            final_predictions = self.feature_scaler.inverse_transform(reshaped_predictions)[:, 0]
-            
-            return final_predictions
+            if len(predictions) > 0:
+                # Create a properly shaped array for inverse transformation
+                reshaped_predictions = np.zeros((len(predictions), scaled_features.shape[1]))
+                
+                # Convert predictions to numpy array of floats explicitly
+                predictions_array = np.array(predictions, dtype=float)
+                
+                # Set close price (index 3)
+                reshaped_predictions[:, 3] = predictions_array
+                
+                # Use the last row's values for other columns
+                for i in range(scaled_features.shape[1]):
+                    if i != 3:  # Skip close price
+                        reshaped_predictions[:, i] = scaled_features[-1, i]
+                
+                # Inverse transform predictions
+                final_predictions = self.feature_scaler.inverse_transform(reshaped_predictions)[:, 3]
+                return final_predictions
+            else:
+                return np.array([])
             
         except Exception as e:
             self.logger.error(f"Error predicting future values: {e}")
