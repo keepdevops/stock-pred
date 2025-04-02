@@ -3,9 +3,9 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox,
     QProgressBar, QMessageBox, QFileDialog, QSplitter, QDialog, QCheckBox,
-    QInputDialog
+    QInputDialog, QGridLayout
 )
-from PyQt5.QtCore import Qt, QTimer, QDateTime, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QDateTime, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont
 import logging
 import pandas as pd
@@ -15,7 +15,52 @@ import os
 from .charts import StockChart, TechnicalIndicatorChart
 from .realtime import RealTimeDataManager, AsyncTaskManager
 
+class ModelTrainingWorker(QObject):
+    """Worker class for model training in a separate thread."""
+    finished = pyqtSignal()
+    progress = pyqtSignal(int)
+    log = pyqtSignal(str)
+    error = pyqtSignal(str)
+    
+    def __init__(self, ai_agent, data, model_type, params):
+        super().__init__()
+        self.ai_agent = ai_agent
+        self.data = data
+        self.model_type = model_type
+        self.params = params
+        
+    def run(self):
+        """Run the model training process."""
+        try:
+            self.log.emit(f"Starting {self.model_type} model training")
+            
+            # Create model
+            model = self.ai_agent.create_model(self.model_type, self.params)
+            self.log.emit("Model created successfully")
+            
+            # Prepare data
+            X, y = self.ai_agent.prepare_training_data(self.data)
+            self.log.emit(f"Training data prepared: X shape {X.shape}, y shape {y.shape}")
+            
+            # Train model
+            history = self.ai_agent.train_model(model, X, y)
+            self.log.emit("Model training completed successfully")
+            self.progress.emit(100)
+            
+            # Signal completion
+            self.finished.emit()
+            
+        except Exception as e:
+            self.log.emit(f"Error during training: {str(e)}")
+            self.error.emit(str(e))
+
 class StockGUI(QMainWindow):
+    # Define signals at class level
+    training_progress_signal = pyqtSignal(int)
+    training_log_signal = pyqtSignal(str)
+    training_complete_signal = pyqtSignal()
+    training_error_signal = pyqtSignal(str)
+    
     def __init__(self, db, data_loader, ai_agent, trading_agent, parent=None):
         super().__init__(parent)
         self.logger = logging.getLogger(__name__)
@@ -23,15 +68,19 @@ class StockGUI(QMainWindow):
         self.data_loader = data_loader
         self.ai_agent = ai_agent
         self.trading_agent = trading_agent
-        
-        # Initialize data storage
         self.current_data = None
+        self.current_symbol = None
+        self.training_thread = None
+        self.is_training = False
         
         # Initialize managers
         self.realtime_manager = RealTimeDataManager()
         self.async_manager = AsyncTaskManager()
         
-        # Connect signals
+        # Set up GUI first
+        self.setup_gui()
+        
+        # Connect manager signals
         self.realtime_manager.price_update.connect(self.on_price_update)
         self.realtime_manager.indicator_update.connect(self.on_indicator_update)
         self.realtime_manager.error_occurred.connect(self.on_realtime_error)
@@ -39,8 +88,11 @@ class StockGUI(QMainWindow):
         self.async_manager.task_completed.connect(self.on_task_completed)
         self.async_manager.task_error.connect(self.on_task_error)
         
-        # Set up GUI
-        self.setup_gui()
+        # Connect training signals to slots
+        self.training_progress_signal.connect(self.training_progress.setValue)
+        self.training_log_signal.connect(self.training_log.append)
+        self.training_complete_signal.connect(self._on_training_complete)
+        self.training_error_signal.connect(self._on_training_error)
         
     def setup_gui(self):
         """Set up the main GUI window."""
@@ -238,6 +290,48 @@ class StockGUI(QMainWindow):
                 self.logger.info(f"Processing import data task completion for {task_name}")
                 if isinstance(result, pd.DataFrame):
                     self.logger.info(f"Received DataFrame with {len(result)} rows")
+                    self.logger.info(f"DataFrame columns: {result.columns.tolist()}")
+                    
+                    # Check for required columns and map if necessary
+                    required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+                    missing_columns = [col for col in required_columns if col not in result.columns]
+                    
+                    if missing_columns:
+                        self.logger.warning(f"Missing required columns: {missing_columns}")
+                        self.logger.info(f"Available columns: {result.columns.tolist()}")
+                        
+                        # Try to find similar column names
+                        column_mapping = {}
+                        for col in missing_columns:
+                            # Look for similar column names
+                            similar_cols = [c for c in result.columns if col in c.lower()]
+                            if similar_cols:
+                                column_mapping[col] = similar_cols[0]
+                                self.logger.info(f"Mapping column {similar_cols[0]} to {col}")
+                            else:
+                                raise ValueError(f"Missing required column: {col}")
+                        
+                        # Rename columns according to mapping
+                        result = result.rename(columns={v: k for k, v in column_mapping.items()})
+                        self.logger.info("Successfully mapped column names")
+                    
+                    # Ensure date column is datetime
+                    self.logger.info("Converting date column to datetime")
+                    result['date'] = pd.to_datetime(result['date'])
+                    
+                    # Sort by date
+                    self.logger.info("Sorting data by date")
+                    result = result.sort_values('date')
+                    
+                    # Validate data types
+                    numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+                    for col in numeric_columns:
+                        if not pd.api.types.is_numeric_dtype(result[col]):
+                            self.logger.warning(f"Column {col} is not numeric, attempting conversion")
+                            result[col] = pd.to_numeric(result[col], errors='coerce')
+                            if result[col].isna().any():
+                                raise ValueError(f"Column {col} contains invalid numeric values")
+                    
                     # Store the data
                     self.current_data = result
                     self.logger.info("Successfully stored data in current_data")
@@ -542,98 +636,318 @@ class StockGUI(QMainWindow):
         return trading_widget
         
     def create_models_tab(self):
-        """Set up the model management tab."""
-        model_widget = QWidget()
-        layout = QVBoxLayout(model_widget)
+        """Set up the models tab with model selection and training controls."""
+        try:
+            self.logger.info("Setting up models tab")
+            self.models_tab = QWidget()
+            layout = QVBoxLayout()
+            
+            # Model Type Selection
+            self.logger.info("Added model type selection")
+            model_type_layout = QHBoxLayout()
+            model_type_label = QLabel("Model Type:")
+            self.model_type_combo = QComboBox()
+            self.model_type_combo.addItems(['LSTM', 'XGBoost', 'Transformer'])
+            model_type_layout.addWidget(model_type_label)
+            model_type_layout.addWidget(self.model_type_combo)
+            layout.addLayout(model_type_layout)
+            
+            # Model Description
+            self.model_description = QTextEdit()
+            self.model_description.setReadOnly(True)
+            self.model_description.setMaximumHeight(100)
+            self.model_description.setPlainText(
+                "LSTM: Long Short-Term Memory neural network for time series prediction\n"
+                "XGBoost: Gradient boosting model for regression\n"
+                "Transformer: Attention-based model for sequence prediction"
+            )
+            layout.addWidget(self.model_description)
+            
+            # Model Parameters
+            self.logger.info("Added LSTM parameters")
+            self.lstm_params = QWidget()
+            lstm_layout = QGridLayout()
+            lstm_layout.addWidget(QLabel("Input Dimension:"), 0, 0)
+            self.lstm_input_dim = QSpinBox()
+            self.lstm_input_dim.setRange(1, 100)
+            self.lstm_input_dim.setValue(5)
+            lstm_layout.addWidget(self.lstm_input_dim, 0, 1)
+            
+            lstm_layout.addWidget(QLabel("Hidden Dimension:"), 1, 0)
+            self.lstm_hidden_dim = QSpinBox()
+            self.lstm_hidden_dim.setRange(32, 512)
+            self.lstm_hidden_dim.setValue(64)
+            lstm_layout.addWidget(self.lstm_hidden_dim, 1, 1)
+            
+            lstm_layout.addWidget(QLabel("Number of Layers:"), 2, 0)
+            self.lstm_num_layers = QSpinBox()
+            self.lstm_num_layers.setRange(1, 5)
+            self.lstm_num_layers.setValue(2)
+            lstm_layout.addWidget(self.lstm_num_layers, 2, 1)
+            
+            lstm_layout.addWidget(QLabel("Dropout:"), 3, 0)
+            self.lstm_dropout = QDoubleSpinBox()
+            self.lstm_dropout.setRange(0.0, 0.5)
+            self.lstm_dropout.setValue(0.2)
+            self.lstm_dropout.setSingleStep(0.1)
+            lstm_layout.addWidget(self.lstm_dropout, 3, 1)
+            
+            self.lstm_params.setLayout(lstm_layout)
+            layout.addWidget(self.lstm_params)
+            
+            self.logger.info("Added XGBoost parameters")
+            self.xgb_params = QWidget()
+            xgb_layout = QGridLayout()
+            xgb_layout.addWidget(QLabel("Learning Rate:"), 0, 0)
+            self.xgb_learning_rate = QDoubleSpinBox()
+            self.xgb_learning_rate.setRange(0.01, 1.0)
+            self.xgb_learning_rate.setValue(0.1)
+            self.xgb_learning_rate.setSingleStep(0.01)
+            xgb_layout.addWidget(self.xgb_learning_rate, 0, 1)
+            
+            xgb_layout.addWidget(QLabel("Max Depth:"), 1, 0)
+            self.xgb_max_depth = QSpinBox()
+            self.xgb_max_depth.setRange(3, 10)
+            self.xgb_max_depth.setValue(6)
+            xgb_layout.addWidget(self.xgb_max_depth, 1, 1)
+            
+            xgb_layout.addWidget(QLabel("Number of Trees:"), 2, 0)
+            self.xgb_n_trees = QSpinBox()
+            self.xgb_n_trees.setRange(50, 500)
+            self.xgb_n_trees.setValue(100)
+            xgb_layout.addWidget(self.xgb_n_trees, 2, 1)
+            
+            self.xgb_params.setLayout(xgb_layout)
+            layout.addWidget(self.xgb_params)
+            
+            self.logger.info("Added Transformer parameters")
+            self.transformer_params = QWidget()
+            transformer_layout = QGridLayout()
+            transformer_layout.addWidget(QLabel("Input Dimension:"), 0, 0)
+            self.transformer_input_dim = QSpinBox()
+            self.transformer_input_dim.setRange(1, 100)
+            self.transformer_input_dim.setValue(5)
+            transformer_layout.addWidget(self.transformer_input_dim, 0, 1)
+            
+            transformer_layout.addWidget(QLabel("Hidden Dimension:"), 1, 0)
+            self.transformer_hidden_dim = QSpinBox()
+            self.transformer_hidden_dim.setRange(64, 1024)
+            self.transformer_hidden_dim.setValue(256)
+            transformer_layout.addWidget(self.transformer_hidden_dim, 1, 1)
+            
+            transformer_layout.addWidget(QLabel("Number of Heads:"), 2, 0)
+            self.transformer_n_heads = QSpinBox()
+            self.transformer_n_heads.setRange(1, 8)
+            self.transformer_n_heads.setValue(4)
+            transformer_layout.addWidget(self.transformer_n_heads, 2, 1)
+            
+            transformer_layout.addWidget(QLabel("Number of Layers:"), 3, 0)
+            self.transformer_n_layers = QSpinBox()
+            self.transformer_n_layers.setRange(1, 6)
+            self.transformer_n_layers.setValue(2)
+            transformer_layout.addWidget(self.transformer_n_layers, 3, 1)
+            
+            self.transformer_params.setLayout(transformer_layout)
+            layout.addWidget(self.transformer_params)
+            
+            # Training Controls
+            self.logger.info("Added training controls")
+            training_layout = QHBoxLayout()
+            
+            self.train_button = QPushButton("Train Model")
+            self.train_button.clicked.connect(self.train_model)
+            training_layout.addWidget(self.train_button)
+            
+            self.stop_button = QPushButton("Stop Training")
+            self.stop_button.clicked.connect(self.stop_training)
+            self.stop_button.setEnabled(False)
+            training_layout.addWidget(self.stop_button)
+            
+            layout.addLayout(training_layout)
+            
+            # Progress Bar
+            self.training_progress = QProgressBar()
+            self.training_progress.setRange(0, 100)
+            layout.addWidget(self.training_progress)
+            
+            # Training Log
+            self.training_log = QTextEdit()
+            self.training_log.setReadOnly(True)
+            layout.addWidget(self.training_log)
+            
+            # Model Management
+            model_management_layout = QHBoxLayout()
+            
+            # Save Model Button
+            self.save_model_button = QPushButton("Save Model")
+            self.save_model_button.clicked.connect(self.save_model)
+            self.save_model_button.setEnabled(False)  # Disabled until model is trained
+            model_management_layout.addWidget(self.save_model_button)
+            
+            # Load Model Button
+            self.load_model_button = QPushButton("Load Model")
+            self.load_model_button.clicked.connect(self.load_model)
+            model_management_layout.addWidget(self.load_model_button)
+            
+            layout.addLayout(model_management_layout)
+            
+            # Set layout for the models tab
+            self.logger.info("Models tab layout set")
+            self.models_tab.setLayout(layout)
+            
+            self.logger.info("Models tab setup completed successfully")
+            return self.models_tab
+            
+        except Exception as e:
+            self.logger.error(f"Error setting up models tab: {e}")
+            raise
+
+    def save_model(self):
+        """Save the currently trained model."""
+        try:
+            if self.ai_agent.active_model is None:
+                QMessageBox.warning(self, "Warning", "No trained model to save!")
+                return
+                
+            # Get model name from user
+            name, ok = QInputDialog.getText(self, "Save Model", "Enter model name:")
+            if ok and name:
+                try:
+                    self.ai_agent.save_model(self.ai_agent.active_model, name)
+                    self.save_model_button.setEnabled(False)  # Disable until new model is trained
+                    QMessageBox.information(self, "Success", f"Model saved as: {name}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to save model: {str(e)}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error saving model: {e}")
+            QMessageBox.critical(self, "Error", f"Error saving model: {str(e)}")
+
+    def load_model(self):
+        """Load a saved model."""
+        try:
+            available_models = self.ai_agent.get_available_models()
+            if not available_models:
+                QMessageBox.warning(self, "Warning", "No saved models available!")
+                return
+                
+            # Show model selection dialog
+            model_name, ok = QInputDialog.getItem(
+                self, "Load Model", "Select model to load:",
+                available_models, 0, False
+            )
+            
+            if ok and model_name:
+                try:
+                    self.ai_agent.set_active_model(model_name)
+                    QMessageBox.information(self, "Success", f"Model loaded: {model_name}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to load model: {str(e)}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error loading model: {e}")
+            QMessageBox.critical(self, "Error", f"Error loading model: {str(e)}")
+
+    def train_model(self):
+        """Start model training in a separate thread."""
+        try:
+            if self.current_data is None or self.current_data.empty:
+                QMessageBox.warning(self, "Warning", "No data available for training!")
+                return
+                
+            self.logger.info("Starting model training")
+            
+            # Get model type and parameters
+            model_type = self.model_type_combo.currentText()
+            self.logger.info(f"Selected model type: {model_type}")
+            
+            # Collect model parameters based on type
+            if model_type == 'LSTM':
+                params = {
+                    'input_dim': self.lstm_input_dim.value(),
+                    'hidden_dim': self.lstm_hidden_dim.value(),
+                    'num_layers': self.lstm_num_layers.value(),
+                    'dropout': self.lstm_dropout.value()
+                }
+            elif model_type == 'XGBoost':
+                params = {
+                    'learning_rate': self.xgb_learning_rate.value(),
+                    'max_depth': self.xgb_max_depth.value(),
+                    'n_trees': self.xgb_n_trees.value()
+                }
+            else:  # Transformer
+                params = {
+                    'input_dim': self.transformer_input_dim.value(),
+                    'hidden_dim': self.transformer_hidden_dim.value(),
+                    'n_heads': self.transformer_n_heads.value(),
+                    'n_layers': self.transformer_n_layers.value()
+                }
+                
+            self.logger.info(f"Model parameters: {params}")
+            
+            # Create and start training thread
+            self.training_thread = QThread()
+            self.training_worker = ModelTrainingWorker(
+                self.ai_agent,
+                self.current_data,
+                model_type,
+                params
+            )
+            self.training_worker.moveToThread(self.training_thread)
+            
+            # Connect signals
+            self.training_thread.started.connect(self.training_worker.run)
+            self.training_worker.finished.connect(self.training_thread.quit)
+            self.training_worker.progress.connect(self.update_training_progress)
+            self.training_worker.log.connect(self.update_training_log)
+            self.training_worker.error.connect(self.handle_training_error)
+            
+            # Update UI state
+            self.train_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.training_progress.setValue(0)
+            self.training_log.clear()
+            
+            # Start training
+            self.logger.info("Training thread started")
+            self.training_thread.start()
+            
+        except Exception as e:
+            self.logger.error(f"Error starting model training: {e}")
+            QMessageBox.critical(self, "Error", f"Error starting model training: {str(e)}")
+
+    def update_training_progress(self, value):
+        """Update the training progress bar."""
+        self.training_progress.setValue(value)
         
-        # Model selection
-        selection_layout = QHBoxLayout()
-        model_label = QLabel("Active Model:")
-        self.model_combo = QComboBox()
-        self.model_combo.addItems(self.ai_agent.get_available_models())
-        self.model_combo.currentTextChanged.connect(self.on_model_change)
-        selection_layout.addWidget(model_label)
-        selection_layout.addWidget(self.model_combo)
+    def update_training_log(self, message):
+        """Update the training log display."""
+        self.training_log.append(message)
         
-        # Refresh button
-        refresh_button = QPushButton("Refresh Models")
-        refresh_button.clicked.connect(self.refresh_models)
-        selection_layout.addWidget(refresh_button)
+    def handle_training_error(self, error):
+        """Handle training errors."""
+        self.logger.error(f"Error in training thread: {error}")
+        QMessageBox.critical(self, "Training Error", str(error))
+        self.stop_training()
         
-        layout.addLayout(selection_layout)
-        
-        # Model parameters
-        param_group = QGroupBox("Model Parameters")
-        param_layout = QVBoxLayout()
-        self.param_widgets = {}
-        self.create_param_widgets(param_layout)
-        param_group.setLayout(param_layout)
-        layout.addWidget(param_group)
-        
-        # Training controls
-        train_group = QGroupBox("Training")
-        train_layout = QVBoxLayout()
-        
-        # Training parameters
-        param_layout = QHBoxLayout()
-        
-        # Epochs
-        epochs_label = QLabel("Epochs:")
-        self.epochs_spin = QSpinBox()
-        self.epochs_spin.setRange(1, 1000)
-        self.epochs_spin.setValue(100)
-        param_layout.addWidget(epochs_label)
-        param_layout.addWidget(self.epochs_spin)
-        
-        # Batch size
-        batch_label = QLabel("Batch Size:")
-        self.batch_spin = QSpinBox()
-        self.batch_spin.setRange(1, 256)
-        self.batch_spin.setValue(32)
-        param_layout.addWidget(batch_label)
-        param_layout.addWidget(self.batch_spin)
-        
-        # Sequence length (for LSTM)
-        seq_label = QLabel("Sequence Length:")
-        self.seq_spin = QSpinBox()
-        self.seq_spin.setRange(1, 100)
-        self.seq_spin.setValue(10)
-        param_layout.addWidget(seq_label)
-        param_layout.addWidget(self.seq_spin)
-        
-        train_layout.addLayout(param_layout)
-        
-        # Training buttons
-        button_layout = QHBoxLayout()
-        train_button = QPushButton("Train Model")
-        train_button.clicked.connect(self.train_model)
-        tune_button = QPushButton("Tune Hyperparameters")
-        tune_button.clicked.connect(self.tune_model)
-        predict_button = QPushButton("Make Prediction")
-        predict_button.clicked.connect(self.make_prediction)
-        save_button = QPushButton("Save Model")
-        save_button.clicked.connect(self.save_model)
-        
-        button_layout.addWidget(train_button)
-        button_layout.addWidget(tune_button)
-        button_layout.addWidget(predict_button)
-        button_layout.addWidget(save_button)
-        train_layout.addLayout(button_layout)
-        
-        train_group.setLayout(train_layout)
-        layout.addWidget(train_group)
-        
-        # Model status
-        status_group = QGroupBox("Model Status")
-        status_layout = QVBoxLayout()
-        self.model_status = QTextEdit()
-        self.model_status.setReadOnly(True)
-        status_layout.addWidget(self.model_status)
-        status_group.setLayout(status_layout)
-        layout.addWidget(status_group)
-        
-        return model_widget
-        
+    def stop_training(self):
+        """Stop the model training process."""
+        try:
+            if hasattr(self, 'training_thread') and self.training_thread.isRunning():
+                self.training_thread.terminate()
+                self.training_thread.wait()
+                self.logger.info("Training stopped by user")
+                
+            # Reset UI state
+            self.train_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.training_progress.setValue(0)
+            self.save_model_button.setEnabled(True)  # Enable save button after training
+            
+        except Exception as e:
+            self.logger.error(f"Error stopping training: {e}")
+            QMessageBox.critical(self, "Error", f"Error stopping training: {str(e)}")
+
     def create_settings_tab(self):
         """Set up the settings tab."""
         settings_widget = QWidget()
@@ -923,48 +1237,6 @@ class StockGUI(QMainWindow):
         dialog.setStandardButtons(QMessageBox.NoButton)
         dialog.show()
         return dialog
-
-    def train_model(self):
-        """Train the active model."""
-        try:
-            # Get model parameters
-            model = self.ai_agent.get_active_model()
-            if model is None:
-                QMessageBox.warning(self, "Warning", "No model selected")
-                return
-            
-            # Get training parameters
-            epochs = self.epochs_spin.value()
-            batch_size = self.batch_spin.value()
-            
-            # Train the model
-            self.ai_agent.train_model(model, epochs, batch_size)
-            
-            # Update model status
-            self.update_model_status()
-            
-        except Exception as e:
-            self.logger.error(f"Error training model: {e}")
-            QMessageBox.critical(self, "Error", f"Training failed: {str(e)}")
-            
-    def tune_model(self):
-        """Tune the hyperparameters of the active model."""
-        try:
-            # Get model parameters
-            model = self.ai_agent.get_active_model()
-            if model is None:
-                QMessageBox.warning(self, "Warning", "No model selected")
-                return
-            
-            # Tune the model
-            self.ai_agent.tune_model(model)
-            
-            # Update model status
-            self.update_model_status()
-            
-        except Exception as e:
-            self.logger.error(f"Error tuning model: {e}")
-            QMessageBox.critical(self, "Error", f"Tuning failed: {str(e)}")
 
     def update_chart(self):
         """Update the charts based on the selected chart type."""
@@ -1348,4 +1620,58 @@ class StockGUI(QMainWindow):
                 
         except Exception as e:
             self.logger.error(f"Error saving model: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to save model: {str(e)}") 
+            QMessageBox.critical(self, "Error", f"Failed to save model: {str(e)}")
+
+    def _on_training_complete(self):
+        """Handle training completion in the main thread."""
+        try:
+            self.logger.info("Training completed successfully")
+            self.train_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.save_model_button.setEnabled(True)  # Enable save button after training
+            QMessageBox.information(self, "Success", "Model training completed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Error handling training completion: {e}")
+            QMessageBox.critical(self, "Error", f"Error handling training completion: {str(e)}")
+            
+    def _on_training_error(self, error_msg: str):
+        """Handle training error in the main thread."""
+        try:
+            self.logger.error(f"Training error: {error_msg}")
+            self.train_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.save_model_button.setEnabled(False)  # Disable save button on error
+            QMessageBox.critical(self, "Error", f"Training failed: {error_msg}")
+            
+        except Exception as e:
+            self.logger.error(f"Error handling training error: {e}")
+            QMessageBox.critical(self, "Error", f"Error handling training error: {str(e)}")
+
+    def _train_model_thread(self, model_type: str, params: dict):
+        """Thread function for model training."""
+        try:
+            self.logger.info(f"Training {model_type} model in thread")
+            # Create model using AI agent
+            model = self.ai_agent.create_model(model_type, params)
+            self.logger.info("Model created successfully")
+            self.training_log_signal.emit("Model created successfully")
+            
+            # Prepare data for training
+            X, y = self.ai_agent.prepare_training_data(self.current_data)
+            self.logger.info(f"Training data prepared: X shape {X.shape}, y shape {y.shape}")
+            self.training_log_signal.emit(f"Training data prepared: X shape {X.shape}, y shape {y.shape}")
+            
+            # Train model
+            history = self.ai_agent.train_model(model, X, y)
+            self.logger.info("Model training completed")
+            self.training_log_signal.emit("Training completed successfully")
+            self.training_progress_signal.emit(100)
+            
+            # Emit completion signal
+            self.training_complete_signal.emit()
+            
+        except Exception as e:
+            self.logger.error(f"Error in training thread: {e}")
+            self.training_log_signal.emit(f"Error during training: {str(e)}")
+            self.training_error_signal.emit(str(e)) 

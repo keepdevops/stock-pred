@@ -8,6 +8,7 @@ import os
 import pickle
 from typing import Dict, List, Optional, Any
 import tensorflow as tf
+import xgboost as xgb
 
 class StockAIAgent:
     def __init__(self, config: Dict[str, Any]):
@@ -15,6 +16,7 @@ class StockAIAgent:
         self.config = config
         self.models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
         self.active_model = None
+        self.active_model_type = None
         self.available_models = {}
         self.load_available_models()
         
@@ -35,12 +37,20 @@ class StockAIAgent:
             
             # Scan for model files
             for file in os.listdir(self.models_dir):
-                if file.endswith('.h5'):  # Keras model files
+                if file.endswith('.keras'):  # Keras model files (new format)
                     model_name = os.path.splitext(file)[0]
                     model_path = os.path.join(self.models_dir, file)
                     self.available_models[model_name] = {
                         'path': model_path,
                         'type': 'keras',
+                        'name': model_name
+                    }
+                elif file.endswith('.h5'):  # Legacy Keras model files
+                    model_name = os.path.splitext(file)[0]
+                    model_path = os.path.join(self.models_dir, file)
+                    self.available_models[model_name] = {
+                        'path': model_path,
+                        'type': 'keras_legacy',
                         'name': model_name
                     }
                 elif file.endswith('.pkl'):  # Scikit-learn model files
@@ -69,7 +79,7 @@ class StockAIAgent:
             
         model_info = self.available_models[model_name]
         try:
-            if model_info['type'] == 'keras':
+            if model_info['type'] in ['keras', 'keras_legacy']:
                 self.active_model = tf.keras.models.load_model(model_info['path'])
             elif model_info['type'] == 'sklearn':
                 with open(model_info['path'], 'rb') as f:
@@ -89,8 +99,9 @@ class StockAIAgent:
         """Save a model to the models directory."""
         try:
             if isinstance(model, tf.keras.Model):
-                model_path = os.path.join(self.models_dir, f"{name}.h5")
-                model.save(model_path)
+                # Use the newer .keras format for Keras models
+                model_path = os.path.join(self.models_dir, f"{name}.keras")
+                model.save(model_path, save_format='keras')
                 self.available_models[name] = {
                     'path': model_path,
                     'type': 'keras',
@@ -112,24 +123,33 @@ class StockAIAgent:
             self.logger.error(f"Error saving model {name}: {e}")
             raise
         
-    def prepare_data(self, data: pd.DataFrame) -> tuple:
-        """Prepare data for training or prediction."""
+    def prepare_training_data(self, data: pd.DataFrame) -> tuple:
+        """Prepare data for model training."""
         try:
-            # Extract features
-            features = data[['close', 'volume']].values
+            self.logger.info("Preparing training data")
             
-            # Scale features
-            scaled_features = self.scaler.fit_transform(features)
+            # Create feature scaler if not exists
+            if not hasattr(self, 'feature_scaler'):
+                self.feature_scaler = MinMaxScaler()
             
+            # Prepare features
+            features = data[['open', 'high', 'low', 'close', 'volume']].values
+            scaled_features = self.feature_scaler.fit_transform(features)
+            
+            # Create sequences
             X, y = [], []
             for i in range(self.lookback_days, len(scaled_features)):
-                X.append(scaled_features[i - self.lookback_days:i].flatten())  # Flatten for LGBM
-                y.append(scaled_features[i, 0])  # Predict only the next day's closing price
-                
-            return np.array(X), np.array(y)
+                X.append(scaled_features[i - self.lookback_days:i])
+                y.append(scaled_features[i, 3])  # Predict closing price
+            
+            X = np.array(X)
+            y = np.array(y)
+            
+            self.logger.info(f"Prepared training data: X shape {X.shape}, y shape {y.shape}")
+            return X, y
             
         except Exception as e:
-            self.logger.error(f"Error preparing data: {e}")
+            self.logger.error(f"Error preparing training data: {e}")
             raise
             
     def build_model(self):
@@ -151,7 +171,7 @@ class StockAIAgent:
         """Train the model with the provided data."""
         try:
             # Prepare training data
-            X_train, y_train = self.prepare_data(data)
+            X_train, y_train = self.prepare_training_data(data)
             
             # Build model if not already built
             if self.model is None:
@@ -160,7 +180,7 @@ class StockAIAgent:
             # Prepare validation data if provided
             eval_set = None
             if validation_data is not None:
-                X_val, y_val = self.prepare_data(validation_data)
+                X_val, y_val = self.prepare_training_data(validation_data)
                 eval_set = [(X_val, y_val)]
                 
             # Train the model
@@ -183,7 +203,7 @@ class StockAIAgent:
                 raise ValueError("Model has not been trained yet")
                 
             # Prepare data for prediction
-            X, _ = self.prepare_data(data)
+            X, _ = self.prepare_training_data(data)
             
             # Make predictions
             scaled_predictions = self.model.predict(X)
@@ -193,7 +213,7 @@ class StockAIAgent:
             reshaped_predictions[:, 0] = scaled_predictions  # Use predictions directly
             
             # Inverse transform predictions
-            predictions = self.scaler.inverse_transform(reshaped_predictions)[:, 0]
+            predictions = self.feature_scaler.inverse_transform(reshaped_predictions)[:, 0]
             
             return predictions
             
@@ -212,7 +232,7 @@ class StockAIAgent:
                 
             # Prepare the last sequence
             features = data[['close', 'volume']].values[-self.lookback_days:]
-            scaled_features = self.scaler.transform(features)
+            scaled_features = self.feature_scaler.transform(features)
             last_sequence = scaled_features.reshape(1, -1)  # Flatten for LGBM
             
             predictions = []
@@ -236,7 +256,7 @@ class StockAIAgent:
             reshaped_predictions[:, 0] = predictions
             
             # Inverse transform predictions
-            final_predictions = self.scaler.inverse_transform(reshaped_predictions)[:, 0]
+            final_predictions = self.feature_scaler.inverse_transform(reshaped_predictions)[:, 0]
             
             return final_predictions
             
@@ -251,7 +271,7 @@ class StockAIAgent:
                 raise ValueError("Model has not been trained yet")
                 
             # Prepare test data
-            X_test, y_test = self.prepare_data(test_data)
+            X_test, y_test = self.prepare_training_data(test_data)
             
             # Make predictions
             y_pred = self.model.predict(X_test)
@@ -427,4 +447,165 @@ class StockAIAgent:
             
         except Exception as e:
             self.logger.error(f"Error in sentiment analysis: {e}")
-            raise ValueError(f"Sentiment analysis failed: {str(e)}") 
+            raise ValueError(f"Sentiment analysis failed: {str(e)}")
+
+    def create_model(self, model_type: str, params: dict) -> Any:
+        """Create a new model of the specified type with given parameters."""
+        try:
+            self.logger.info(f"Creating {model_type} model with parameters: {params}")
+            self.active_model_type = model_type
+            
+            if model_type == 'LSTM':
+                # Create LSTM model
+                model = tf.keras.Sequential([
+                    tf.keras.layers.Input(shape=(self.lookback_days, params['input_dim'])),
+                    tf.keras.layers.LSTM(
+                        units=params['hidden_dim'],
+                        return_sequences=params['num_layers'] > 1
+                    ),
+                    tf.keras.layers.Dropout(params['dropout'])
+                ])
+                
+                # Add additional LSTM layers if specified
+                for _ in range(params['num_layers'] - 1):
+                    model.add(tf.keras.layers.LSTM(units=params['hidden_dim'], return_sequences=True))
+                    model.add(tf.keras.layers.Dropout(params['dropout']))
+                
+                # Add output layer
+                model.add(tf.keras.layers.Dense(1))
+                
+                # Compile model
+                model.compile(optimizer='adam', loss='mse')
+                self.logger.info("LSTM model created successfully")
+                
+            elif model_type == 'XGBoost':
+                # Create XGBoost model
+                model = xgb.XGBRegressor(
+                    learning_rate=params['learning_rate'],
+                    max_depth=params['max_depth'],
+                    n_estimators=params['n_trees'],
+                    objective='reg:squarederror'
+                )
+                self.logger.info("XGBoost model created successfully")
+                
+            elif model_type == 'Transformer':
+                # Create Transformer model using Functional API
+                inputs = tf.keras.Input(shape=(self.lookback_days, params['input_dim']))
+                
+                # Initial dense layer
+                x = tf.keras.layers.Dense(params['hidden_dim'])(inputs)
+                
+                # Transformer blocks
+                for _ in range(params['n_layers']):
+                    # Multi-head attention
+                    attn_output = tf.keras.layers.MultiHeadAttention(
+                        num_heads=params['n_heads'],
+                        key_dim=params['hidden_dim'] // params['n_heads']
+                    )(x, x)
+                    
+                    # Add & Norm
+                    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x + attn_output)
+                    
+                    # Feed-forward network
+                    ffn_output = tf.keras.layers.Dense(params['hidden_dim'])(x)
+                    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x + ffn_output)
+                    
+                    # Dropout
+                    x = tf.keras.layers.Dropout(0.1)(x)
+                
+                # Output layer
+                outputs = tf.keras.layers.Dense(1)(x)
+                
+                # Create model
+                model = tf.keras.Model(inputs=inputs, outputs=outputs)
+                model.compile(optimizer='adam', loss='mse')
+                self.logger.info("Transformer model created successfully")
+                
+            else:
+                raise ValueError(f"Unsupported model type: {model_type}")
+            
+            return model
+            
+        except Exception as e:
+            self.logger.error(f"Error creating {model_type} model: {e}")
+            raise
+
+    def train_model(self, model, X, y, epochs=100, batch_size=32, validation_split=0.2):
+        """Train the model with progress updates."""
+        try:
+            self.logger.info(f"Starting model training with {epochs} epochs")
+            
+            # Initialize training history
+            history = {
+                'loss': [],
+                'val_loss': [],
+                'best_val_loss': float('inf'),
+                'patience': 10,
+                'patience_counter': 0
+            }
+            
+            # Split data into training and validation sets
+            split_idx = int(len(X) * (1 - validation_split))
+            X_train, X_val = X[:split_idx], X[split_idx:]
+            y_train, y_val = y[:split_idx], y[split_idx:]
+            
+            if isinstance(model, xgb.XGBRegressor):
+                # XGBoost training
+                eval_set = [(X_train.reshape(X_train.shape[0], -1), y_train),
+                           (X_val.reshape(X_val.shape[0], -1), y_val)]
+                
+                model.fit(
+                    X_train.reshape(X_train.shape[0], -1),  # Flatten for XGBoost
+                    y_train,
+                    eval_set=eval_set,
+                    verbose=False
+                )
+                
+                # Get predictions for history
+                train_pred = model.predict(X_train.reshape(X_train.shape[0], -1))
+                val_pred = model.predict(X_val.reshape(X_val.shape[0], -1))
+                
+                history['loss'] = [mean_squared_error(y_train, train_pred)]
+                history['val_loss'] = [mean_squared_error(y_val, val_pred)]
+                
+            else:
+                # Keras model training
+                for epoch in range(epochs):
+                    # Train for one epoch
+                    train_result = model.fit(
+                        X_train, y_train,
+                        batch_size=batch_size,
+                        epochs=1,
+                        validation_data=(X_val, y_val),
+                        verbose=0
+                    )
+                    
+                    # Get loss values
+                    train_loss = train_result.history['loss'][0]
+                    val_loss = train_result.history['val_loss'][0]
+                    
+                    # Update history
+                    history['loss'].append(train_loss)
+                    history['val_loss'].append(val_loss)
+                    
+                    # Log progress
+                    self.logger.info(f"Epoch {epoch + 1}/{epochs}: loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+                    
+                    # Early stopping check
+                    if val_loss < history['best_val_loss']:
+                        history['best_val_loss'] = val_loss
+                        history['patience_counter'] = 0
+                        # Save best model
+                        self.save_model(model, f"best_model_{self.active_model_type}")
+                    else:
+                        history['patience_counter'] += 1
+                        if history['patience_counter'] >= history['patience']:
+                            self.logger.info(f"Early stopping triggered after {epoch + 1} epochs")
+                            break
+            
+            self.logger.info("Model training completed")
+            return history
+            
+        except Exception as e:
+            self.logger.error(f"Error training model: {str(e)}")
+            raise ValueError(f"Error training model: {str(e)}") 
