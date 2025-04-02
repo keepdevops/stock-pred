@@ -160,6 +160,10 @@ class StockChart(QWidget):
             # Clear existing data
             self.ax.clear()
             
+            # Ensure data has required columns
+            if 'date' not in data.columns or 'close' not in data.columns:
+                raise ValueError("Historical data must have 'date' and 'close' columns")
+                
             # Plot historical data
             self.ax.plot(data['date'], data['close'], label='Historical', color='blue')
             
@@ -177,8 +181,29 @@ class StockChart(QWidget):
             
             # Plot predictions if available
             if prediction_data is not None:
-                self.ax.plot(prediction_data['date'], prediction_data['close'],
-                           label='Predictions', color='red', linestyle='--')
+                try:
+                    # Verify prediction data has required columns
+                    if 'date' not in prediction_data.columns or 'close' not in prediction_data.columns:
+                        self.logger.error("Prediction data missing required columns: 'date' or 'close'")
+                    else:
+                        # Convert date column to datetime if needed
+                        if not pd.api.types.is_datetime64_any_dtype(prediction_data['date']):
+                            prediction_data['date'] = pd.to_datetime(prediction_data['date'])
+                            
+                        # Convert close column to numeric if needed
+                        if not pd.api.types.is_numeric_dtype(prediction_data['close']):
+                            prediction_data['close'] = pd.to_numeric(prediction_data['close'], errors='coerce')
+                            
+                        # Remove any NaN values
+                        prediction_data = prediction_data.dropna(subset=['close'])
+                        
+                        if not prediction_data.empty:
+                            self.ax.plot(prediction_data['date'], prediction_data['close'],
+                                       label='Predictions', color='red', linestyle='--')
+                        else:
+                            self.logger.warning("Prediction data is empty after cleaning")
+                except Exception as pred_error:
+                    self.logger.error(f"Error plotting prediction data: {pred_error}")
             
             # Set labels and title
             self.ax.set_title(title)
