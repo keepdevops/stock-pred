@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox,
     QProgressBar, QMessageBox, QFileDialog, QSplitter, QDialog, QCheckBox,
-    QInputDialog, QGridLayout
+    QInputDialog, QGridLayout, QApplication
 )
 from PyQt5.QtCore import Qt, QTimer, QDateTime, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont
@@ -286,8 +286,35 @@ class StockGUI(QMainWindow):
         self.logger.info(f"Task completed: {task_name}")
         
         try:
+            # Handle load_data task completion
+            if task_name.startswith("load_data_"):
+                # Extract symbol from task name
+                symbol = task_name.replace("load_data_", "")
+                self.current_symbol = symbol
+                self.logger.info(f"Set current_symbol to: {symbol}")
+                
+                # Update data
+                self.current_data = result
+                
+                # Update data table
+                self.data_table.setRowCount(len(result))
+                for i, (_, row) in enumerate(result.iterrows()):
+                    self.data_table.setItem(i, 0, QTableWidgetItem(row['date'].strftime('%Y-%m-%d')))
+                    self.data_table.setItem(i, 1, QTableWidgetItem(f"{row['open']:.2f}"))
+                    self.data_table.setItem(i, 2, QTableWidgetItem(f"{row['high']:.2f}"))
+                    self.data_table.setItem(i, 3, QTableWidgetItem(f"{row['low']:.2f}"))
+                    self.data_table.setItem(i, 4, QTableWidgetItem(f"{row['close']:.2f}"))
+                    self.data_table.setItem(i, 5, QTableWidgetItem(f"{row['volume']:,.0f}"))
+                
+                # Update charts
+                self.price_chart.update_data(result)
+                self.indicator_chart.update_data(result)
+                
+                # Show success message
+                QMessageBox.information(self, "Success", f"Data loaded for {symbol}")
+                
             # Handle import data task completion
-            if task_name.startswith("import_data_"):
+            elif task_name.startswith("import_data_"):
                 self.logger.info(f"Processing import data task completion for {task_name}")
                 if isinstance(result, pd.DataFrame):
                     self.logger.info(f"Received DataFrame with {len(result)} rows")
@@ -357,6 +384,7 @@ class StockGUI(QMainWindow):
                     base_name = os.path.splitext(os.path.basename(self.file_path.text()))[0]
                     symbol = f"IMPORT_{base_name[:8].upper()}"
                     self.symbol_entry.setText(symbol)
+                    self.current_symbol = symbol
                     self.logger.info(f"Set symbol to: {symbol}")
                     
                     # Stop any existing real-time updates
@@ -646,9 +674,9 @@ class StockGUI(QMainWindow):
             # Model Selection
             model_selection_layout = QHBoxLayout()
             model_selection_label = QLabel("Select Model:")
-        self.model_combo = QComboBox()
-        self.model_combo.addItems(self.ai_agent.get_available_models())
-        self.model_combo.currentTextChanged.connect(self.on_model_change)
+            self.model_combo = QComboBox()
+            self.model_combo.addItems(self.ai_agent.get_available_models())
+            self.model_combo.currentTextChanged.connect(self.on_model_change)
             model_selection_layout.addWidget(model_selection_label)
             model_selection_layout.addWidget(self.model_combo)
             layout.addLayout(model_selection_layout)
@@ -1043,37 +1071,23 @@ class StockGUI(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to change model: {str(e)}")
             
     def run_analysis(self):
-        """Run analysis on the loaded data."""
+        """Run the selected analysis on the current data."""
         try:
-            if self.current_data is None:
-                self.logger.warning("No data available for analysis")
-                QMessageBox.warning(self, "Warning", "No data available for analysis. Please import or load data first.")
+            if self.current_data is None or self.current_data.empty:
+                QMessageBox.warning(self, "Warning", "No data loaded")
                 return
                 
-            # Validate data format
-            required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
-            missing_columns = [col for col in required_columns if col not in self.current_data.columns]
-            if missing_columns:
-                self.logger.error(f"Missing required columns for analysis: {missing_columns}")
-                QMessageBox.warning(self, "Warning", f"Missing required columns: {', '.join(missing_columns)}")
-                return
-                
-            # Get analysis type
+            # Get the selected analysis type
             analysis_type = self.analysis_type.currentText()
-            self.logger.info(f"Starting {analysis_type} analysis on {len(self.current_data)} rows of data")
+            self.logger.info(f"Running {analysis_type} analysis")
             
-            # Check if analysis is already running
-            task_name = f"analysis_{analysis_type.lower()}"
-            if task_name in self.async_manager.tasks:
-                self.logger.warning(f"Analysis task {task_name} is already running")
-                QMessageBox.warning(self, "Warning", "Analysis is already running. Please wait for it to complete.")
-                return
+            # Create a unique task name
+            task_name = f"analysis_{analysis_type}_{pd.Timestamp.now().strftime('%Y%m%d%H%M%S')}"
             
-            # Create async task for analysis
+            # Define the analysis task
             async def analysis_task():
                 try:
-                    self.logger.info(f"Running {analysis_type} analysis")
-                    # Run analysis based on type
+                    # Perform the analysis based on the type
                     if analysis_type == 'Technical':
                         self.logger.info("Calculating technical indicators")
                         results = self.ai_agent.analyze_technical(self.current_data)
@@ -1092,11 +1106,10 @@ class StockGUI(QMainWindow):
                         
                     self.logger.info(f"Analysis completed successfully with {len(results)} results")
                     return results
-            
-        except Exception as e:
+                except Exception as e:
                     self.logger.error(f"Analysis failed: {str(e)}")
                     raise ValueError(f"Analysis failed: {str(e)}")
-                    
+            
             # Create and run the task
             self.logger.info(f"Creating analysis task: {task_name}")
             self.async_manager.create_task(task_name, analysis_task())
@@ -1117,13 +1130,13 @@ class StockGUI(QMainWindow):
                 QMessageBox.warning(self, "Warning", "Please enter both symbol and position size")
                 return
                 
-                try:
-                    size = float(size_str)
-                    if size <= 0:
+            try:
+                size = float(size_str)
+                if size <= 0:
                     raise ValueError("Position size must be positive")
-                except ValueError:
+            except ValueError:
                 QMessageBox.warning(self, "Warning", "Please enter a valid number for position size")
-                    return
+                return
             
             # Get current price
             if self.current_data is None or self.current_data.empty:
@@ -1215,11 +1228,11 @@ class StockGUI(QMainWindow):
         """Save the current settings."""
         try:
             # Implementation depends on what settings need to be saved
-            messagebox.showinfo("Success", "Settings saved successfully")
+            QMessageBox.information(self, "Success", "Settings saved successfully")
             
         except Exception as e:
             self.logger.error(f"Error saving settings: {e}")
-            messagebox.showerror("Error", f"Failed to save settings: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to save settings: {str(e)}")
 
     def update_model_status(self):
         """Update the model status display."""
@@ -1325,7 +1338,7 @@ class StockGUI(QMainWindow):
                 
         except Exception as e:
             self.logger.error(f"Error making predictions: {e}")
-            QMessageBox.critical(self, "Error", f"Prediction failed: {str(e)}") 
+            QMessageBox.critical(self, "Error", f"Prediction failed: {str(e)}")
 
     def show_import_dialog(self):
         """Show dialog for importing data from various formats."""
@@ -1750,16 +1763,35 @@ class StockGUI(QMainWindow):
             if self.ai_agent.get_active_model() is None:
                 QMessageBox.warning(self, "Warning", "No model selected. Please select a model first.")
                 return
+            
+            # Set current_symbol if not already set
+            if not hasattr(self, 'current_symbol') or self.current_symbol is None:
+                self.current_symbol = self.symbol_entry.text().strip().upper()
+                if not self.current_symbol:
+                    self.current_symbol = "UNKNOWN"
                 
             # Get prediction range
             days = self.prediction_range.value()
             
+            # Show a progress message
+            self.prediction_metrics.setText("Generating predictions... Please wait.")
+            QApplication.processEvents()  # Update the UI
+            
             # Generate predictions
+            self.logger.info(f"Generating {days} days of predictions using active model")
             predictions = self.ai_agent.predict_future(self.current_data, days=days)
+            
+            # Validate predictions
+            if predictions is None or len(predictions) == 0:
+                self.logger.error("Model returned empty predictions")
+                QMessageBox.warning(self, "Warning", "The model generated empty predictions. Please try a different model or data.")
+                return
+                
+            self.logger.info(f"Successfully generated {len(predictions)} predictions")
             
             # Create prediction dates
             last_date = pd.to_datetime(self.current_data['date'].iloc[-1])
-            prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=days)
+            prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=len(predictions))
             
             # Create prediction DataFrame
             prediction_df = pd.DataFrame({
@@ -1767,30 +1799,42 @@ class StockGUI(QMainWindow):
                 'close': predictions
             })
             
+            self.logger.info(f"Created prediction DataFrame with shape {prediction_df.shape}")
+            
             # Update prediction chart
-            self.prediction_chart.plot_data(
-                self.current_data,
-                prediction_data=prediction_df,
-                title=f"Price Prediction for {self.current_symbol}",
-                show_volume=False
-            )
+            try:
+                self.prediction_chart.plot_data(
+                    self.current_data,
+                    prediction_data=prediction_df,
+                    title=f"Price Prediction for {self.current_symbol}",
+                    show_volume=False
+                )
+                self.logger.info("Successfully updated prediction chart")
+            except Exception as chart_error:
+                self.logger.error(f"Error updating prediction chart: {chart_error}")
+                QMessageBox.warning(self, "Chart Error", f"Could not display predictions: {str(chart_error)}")
             
             # Calculate and display metrics
-            last_price = self.current_data['close'].iloc[-1]
-            predicted_price = predictions[-1]
-            price_change = predicted_price - last_price
-            price_change_pct = (price_change / last_price) * 100
-            
-            metrics_text = f"""
-            Prediction Metrics:
-            -------------------
-            Last Price: ${last_price:.2f}
-            Predicted Price: ${predicted_price:.2f}
-            Price Change: ${price_change:.2f} ({price_change_pct:.2f}%)
-            Prediction Range: {days} days
-            """
-            
-            self.prediction_metrics.setText(metrics_text)
+            try:
+                last_price = self.current_data['close'].iloc[-1]
+                predicted_price = predictions[-1]
+                price_change = predicted_price - last_price
+                price_change_pct = (price_change / last_price) * 100
+                
+                metrics_text = f"""
+                Prediction Metrics:
+                -------------------
+                Last Price: ${last_price:.2f}
+                Predicted Price: ${predicted_price:.2f}
+                Price Change: ${price_change:.2f} ({price_change_pct:.2f}%)
+                Prediction Range: {days} days
+                """
+                
+                self.prediction_metrics.setText(metrics_text)
+                self.logger.info("Successfully updated prediction metrics")
+            except Exception as metrics_error:
+                self.logger.error(f"Error calculating prediction metrics: {metrics_error}")
+                self.prediction_metrics.setText("Error calculating prediction metrics")
             
         except Exception as e:
             self.logger.error(f"Error generating prediction: {e}")
