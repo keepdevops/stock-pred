@@ -147,6 +147,61 @@ class StockChart(QWidget):
         except Exception as e:
             self.logger.error(f"Error adding predictions: {e}")
 
+    def plot_data(self, data: pd.DataFrame, prediction_data: pd.DataFrame = None, title: str = 'Stock Price', show_volume: bool = True):
+        """Plot historical data and predictions.
+        
+        Args:
+            data: DataFrame with historical data
+            prediction_data: DataFrame with prediction data
+            title: Chart title
+            show_volume: Whether to show volume data
+        """
+        try:
+            # Clear existing data
+            self.ax.clear()
+            
+            # Plot historical data
+            self.ax.plot(data['date'], data['close'], label='Historical', color='blue')
+            
+            # Plot volume if requested
+            if show_volume and 'volume' in data.columns:
+                # Create twin axis for volume
+                ax2 = self.ax.twinx()
+                ax2.bar(data['date'], data['volume'], alpha=0.3, color='gray', label='Volume')
+                ax2.set_ylabel('Volume')
+                
+                # Add volume to legend
+                lines1, labels1 = self.ax.get_legend_handles_labels()
+                lines2, labels2 = ax2.get_legend_handles_labels()
+                self.ax.legend(lines1 + lines2, labels1 + labels2)
+            
+            # Plot predictions if available
+            if prediction_data is not None:
+                self.ax.plot(prediction_data['date'], prediction_data['close'],
+                           label='Predictions', color='red', linestyle='--')
+            
+            # Set labels and title
+            self.ax.set_title(title)
+            self.ax.set_xlabel('Date')
+            self.ax.set_ylabel('Price')
+            self.ax.grid(True)
+            
+            # Add legend if not showing volume
+            if not show_volume:
+                self.ax.legend()
+            
+            # Rotate x-axis labels for better readability
+            plt.xticks(rotation=45)
+            
+            # Adjust layout to prevent label cutoff
+            self.figure.tight_layout()
+            
+            # Update canvas
+            self.canvas.draw()
+            
+        except Exception as e:
+            self.logger.error(f"Error plotting data: {e}")
+
 class TechnicalIndicatorChart(StockChart):
     """Widget for displaying technical indicators."""
     

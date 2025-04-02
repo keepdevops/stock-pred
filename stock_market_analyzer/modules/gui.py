@@ -110,6 +110,7 @@ class StockGUI(QMainWindow):
         self.tabs.addTab(self.create_charts_tab(), "Charts")
         self.tabs.addTab(self.create_trading_tab(), "Trading")
         self.tabs.addTab(self.create_models_tab(), "Models")
+        self.tabs.addTab(self.create_prediction_tab(), "Prediction")
         self.tabs.addTab(self.create_settings_tab(), "Settings")
         
     def create_import_tab(self):
@@ -459,7 +460,7 @@ class StockGUI(QMainWindow):
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             QMessageBox.critical(self, "Error", f"Failed to process results: {str(e)}")
-            
+        
     def on_task_error(self, task_name: str, error: str):
         """Handle task errors."""
         self.logger.error(f"Task error: {task_name} - {error}")
@@ -642,6 +643,16 @@ class StockGUI(QMainWindow):
             self.models_tab = QWidget()
             layout = QVBoxLayout()
             
+            # Model Selection
+            model_selection_layout = QHBoxLayout()
+            model_selection_label = QLabel("Select Model:")
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(self.ai_agent.get_available_models())
+        self.model_combo.currentTextChanged.connect(self.on_model_change)
+            model_selection_layout.addWidget(model_selection_label)
+            model_selection_layout.addWidget(self.model_combo)
+            layout.addLayout(model_selection_layout)
+            
             # Model Type Selection
             self.logger.info("Added model type selection")
             model_type_layout = QHBoxLayout()
@@ -662,6 +673,12 @@ class StockGUI(QMainWindow):
                 "Transformer: Attention-based model for sequence prediction"
             )
             layout.addWidget(self.model_description)
+            
+            # Model Status
+            self.model_status = QTextEdit()
+            self.model_status.setReadOnly(True)
+            self.model_status.setMaximumHeight(100)
+            layout.addWidget(self.model_status)
             
             # Model Parameters
             self.logger.info("Added LSTM parameters")
@@ -789,6 +806,11 @@ class StockGUI(QMainWindow):
             self.load_model_button.clicked.connect(self.load_model)
             model_management_layout.addWidget(self.load_model_button)
             
+            # Refresh Models Button
+            refresh_button = QPushButton("Refresh Models")
+            refresh_button.clicked.connect(self.refresh_models)
+            model_management_layout.addWidget(refresh_button)
+            
             layout.addLayout(model_management_layout)
             
             # Set layout for the models tab
@@ -803,25 +825,25 @@ class StockGUI(QMainWindow):
             raise
 
     def save_model(self):
-        """Save the currently trained model."""
+        """Save the current model."""
         try:
-            if self.ai_agent.active_model is None:
-                QMessageBox.warning(self, "Warning", "No trained model to save!")
+            model = self.ai_agent.get_active_model()
+            if model is None:
+                QMessageBox.warning(self, "Warning", "No model selected")
                 return
                 
             # Get model name from user
             name, ok = QInputDialog.getText(self, "Save Model", "Enter model name:")
             if ok and name:
-                try:
-                    self.ai_agent.save_model(self.ai_agent.active_model, name)
-                    self.save_model_button.setEnabled(False)  # Disable until new model is trained
-                    QMessageBox.information(self, "Success", f"Model saved as: {name}")
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to save model: {str(e)}")
-                    
+                # Construct the model path
+                model_path = os.path.join(self.ai_agent.models_dir, f"{name}.keras")
+                self.ai_agent.save_model(model_path, model)
+                self.refresh_models()
+                QMessageBox.information(self, "Success", f"Model saved as: {name}")
+                
         except Exception as e:
             self.logger.error(f"Error saving model: {e}")
-            QMessageBox.critical(self, "Error", f"Error saving model: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to save model: {str(e)}")
 
     def load_model(self):
         """Load a saved model."""
@@ -947,7 +969,7 @@ class StockGUI(QMainWindow):
         except Exception as e:
             self.logger.error(f"Error stopping training: {e}")
             QMessageBox.critical(self, "Error", f"Error stopping training: {str(e)}")
-
+        
     def create_settings_tab(self):
         """Set up the settings tab."""
         settings_widget = QWidget()
@@ -1015,7 +1037,6 @@ class StockGUI(QMainWindow):
         """Handle model selection change."""
         try:
             self.ai_agent.set_active_model(model_id)
-            self.create_param_widgets(self.param_widgets['layout'])
             self.update_model_status()
         except Exception as e:
             self.logger.error(f"Error changing model: {e}")
@@ -1071,8 +1092,8 @@ class StockGUI(QMainWindow):
                         
                     self.logger.info(f"Analysis completed successfully with {len(results)} results")
                     return results
-                    
-                except Exception as e:
+            
+        except Exception as e:
                     self.logger.error(f"Analysis failed: {str(e)}")
                     raise ValueError(f"Analysis failed: {str(e)}")
                     
@@ -1087,113 +1108,108 @@ class StockGUI(QMainWindow):
     def execute_buy(self):
         """Execute a buy order."""
         try:
-            # Get the current symbol
+            # Get order details
             symbol = self.symbol_entry.text().strip().upper()
-            if not symbol:
-                QMessageBox.warning(self, "Warning", "Please enter a stock symbol")
-                return
-                
-            # Get the current price from the data table
-            if self.data_table.rowCount() == 0:
-                QMessageBox.warning(self, "Warning", "No data available. Please load data first.")
-                return
-                
-            # Get the most recent price
-            latest_row = self.data_table.rowCount() - 1
-            latest_values = [self.data_table.item(latest_row, col).text() for col in range(self.data_table.columnCount())]
-            current_price = float(latest_values[4])  # Close price
-            
-            # Get current balance
-            current_balance = self.trading_agent.get_balance()
-            
-            # Calculate maximum position size based on risk management
-            max_position_size = self.trading_agent.calculate_position_size(symbol, current_price)
-            
-            # Get position size from user
             size_str = self.position_entry.text().strip()
-            if not size_str:
-                # If no size specified, use the calculated maximum
-                size = max_position_size
-                self.position_entry.clear()
-                self.position_entry.insert(0, f"{size:.2f}")
-            else:
+            
+            # Validate inputs
+            if not symbol or not size_str:
+                QMessageBox.warning(self, "Warning", "Please enter both symbol and position size")
+                return
+                
                 try:
                     size = float(size_str)
                     if size <= 0:
-                        QMessageBox.warning(self, "Warning", "Position size must be greater than 0")
-                        return
-                    if size > max_position_size:
-                        QMessageBox.warning(
-                            self, 
-                            "Warning", 
-                            f"Position size too large. Maximum allowed: {max_position_size:.2f} shares\n"
-                            f"Current balance: ${current_balance:.2f}\n"
-                            f"Current price: ${current_price:.2f}"
-                        )
-                        return
+                    raise ValueError("Position size must be positive")
                 except ValueError:
-                    messagebox.showwarning("Warning", "Please enter a valid number for position size")
+                QMessageBox.warning(self, "Warning", "Please enter a valid number for position size")
                     return
             
-            # Place the buy order
-            if self.trading_agent.place_buy_order(symbol, size, current_price):
-                self.update_trading_display()
-                messagebox.showinfo(
-                    "Success",
-                    f"Buy order placed successfully:\n"
-                    f"Symbol: {symbol}\n"
-                    f"Size: {size:.2f} shares\n"
-                    f"Price: ${current_price:.2f}\n"
-                    f"Total: ${(size * current_price):.2f}\n"
-                    f"Remaining balance: ${(current_balance - size * current_price):.2f}"
-                )
-            else:
-                messagebox.showerror("Error", "Failed to place buy order")
+            # Get current price
+            if self.current_data is None or self.current_data.empty:
+                QMessageBox.warning(self, "Warning", "No price data available")
+                return
+                
+            current_price = self.current_data['close'].iloc[-1]
+            
+            # Calculate total value
+            total_value = size * current_price
+            
+            # Create order
+            order = {
+                'type': 'BUY',
+                'symbol': symbol,
+                'size': size,
+                'price': current_price,
+                'total_value': total_value,
+                'timestamp': pd.Timestamp.now()
+            }
+            
+            # Add to orders list
+            self.orders.append(order)
+            
+            # Update orders table
+            self.update_orders_table()
+            
+            # Show success message
+            QMessageBox.information(self, "Success", f"Buy order executed:\nSymbol: {symbol}\nSize: {size}\nPrice: ${current_price:.2f}\nTotal: ${total_value:.2f}")
             
         except Exception as e:
-            self.logger.error(f"Error executing buy order: {e}")
-            messagebox.showerror("Error", f"Buy order failed: {str(e)}")
+            self.logger.error(f"Error executing buy order: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Buy order failed: {str(e)}")
             
     def execute_sell(self):
         """Execute a sell order."""
         try:
-            # Get the current symbol
-            symbol = self.symbol_entry.get().strip().upper()
-            if not symbol:
-                messagebox.showwarning("Warning", "Please enter a stock symbol")
-                return
-                
-            # Get the current price from the data tree
-            if not self.data_tree.get_children():
-                messagebox.showwarning("Warning", "No data available. Please load data first.")
-                return
-                
-            # Get the most recent price
-            latest_item = self.data_tree.get_children()[-1]
-            latest_values = self.data_tree.item(latest_item)['values']
-            current_price = float(latest_values[4])  # Close price
+            # Get order details
+            symbol = self.symbol_entry.text().strip().upper()
+            size_str = self.position_entry.text().strip()
             
-            # Get position size
-            size_str = self.position_entry.get().strip()
-            if not size_str:
-                messagebox.showwarning("Warning", "Please enter a position size")
+            # Validate inputs
+            if not symbol or not size_str:
+                QMessageBox.warning(self, "Warning", "Please enter both symbol and position size")
                 return
                 
             try:
                 size = float(size_str)
                 if size <= 0:
-                    messagebox.showwarning("Warning", "Position size must be greater than 0")
-                    return
+                    raise ValueError("Position size must be positive")
             except ValueError:
-                messagebox.showwarning("Warning", "Please enter a valid number for position size")
+                QMessageBox.warning(self, "Warning", "Please enter a valid number for position size")
                 return
                 
-            self.trading_agent.place_sell_order(symbol, size, current_price)
-            self.update_trading_display()
+            # Get current price
+            if self.current_data is None or self.current_data.empty:
+                QMessageBox.warning(self, "Warning", "No price data available")
+                return
+                
+            current_price = self.current_data['close'].iloc[-1]
+            
+            # Calculate total value
+            total_value = size * current_price
+            
+            # Create order
+            order = {
+                'type': 'SELL',
+                'symbol': symbol,
+                'size': size,
+                'price': current_price,
+                'total_value': total_value,
+                'timestamp': pd.Timestamp.now()
+            }
+            
+            # Add to orders list
+            self.orders.append(order)
+            
+            # Update orders table
+            self.update_orders_table()
+            
+            # Show success message
+            QMessageBox.information(self, "Success", f"Sell order executed:\nSymbol: {symbol}\nSize: {size}\nPrice: ${current_price:.2f}\nTotal: ${total_value:.2f}")
             
         except Exception as e:
-            self.logger.error(f"Error executing sell order: {e}")
-            messagebox.showerror("Error", f"Sell order failed: {str(e)}")
+            self.logger.error(f"Error executing sell order: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Sell order failed: {str(e)}")
             
     def save_settings(self):
         """Save the current settings."""
@@ -1204,7 +1220,7 @@ class StockGUI(QMainWindow):
         except Exception as e:
             self.logger.error(f"Error saving settings: {e}")
             messagebox.showerror("Error", f"Failed to save settings: {str(e)}")
-            
+
     def update_model_status(self):
         """Update the model status display."""
         model = self.ai_agent.get_active_model()
@@ -1309,7 +1325,7 @@ class StockGUI(QMainWindow):
                 
         except Exception as e:
             self.logger.error(f"Error making predictions: {e}")
-            QMessageBox.critical(self, "Error", f"Prediction failed: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Prediction failed: {str(e)}") 
 
     def show_import_dialog(self):
         """Show dialog for importing data from various formats."""
@@ -1603,25 +1619,6 @@ class StockGUI(QMainWindow):
             self.logger.error(f"Error refreshing models: {e}")
             QMessageBox.critical(self, "Error", f"Failed to refresh models: {str(e)}")
             
-    def save_model(self):
-        """Save the current model."""
-        try:
-            model = self.ai_agent.get_active_model()
-            if model is None:
-                QMessageBox.warning(self, "Warning", "No model selected")
-                return
-                
-            # Get model name from user
-            name, ok = QInputDialog.getText(self, "Save Model", "Enter model name:")
-            if ok and name:
-                self.ai_agent.save_model(model, name)
-                self.refresh_models()
-                QMessageBox.information(self, "Success", f"Model saved as: {name}")
-                
-        except Exception as e:
-            self.logger.error(f"Error saving model: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to save model: {str(e)}")
-
     def _on_training_complete(self):
         """Handle training completion in the main thread."""
         try:
@@ -1674,4 +1671,127 @@ class StockGUI(QMainWindow):
         except Exception as e:
             self.logger.error(f"Error in training thread: {e}")
             self.training_log_signal.emit(f"Error during training: {str(e)}")
-            self.training_error_signal.emit(str(e)) 
+            self.training_error_signal.emit(str(e))
+
+    def create_prediction_tab(self):
+        """Create the prediction tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Prediction controls
+        controls_group = QGroupBox("Prediction Controls")
+        controls_layout = QGridLayout()
+        
+        # Model selection
+        controls_layout.addWidget(QLabel("Model:"), 0, 0)
+        self.prediction_model_combo = QComboBox()
+        self.prediction_model_combo.addItems(self.ai_agent.get_available_models())
+        self.prediction_model_combo.currentTextChanged.connect(self.on_prediction_model_change)
+        controls_layout.addWidget(self.prediction_model_combo, 0, 1)
+        
+        # Prediction range
+        controls_layout.addWidget(QLabel("Prediction Range (days):"), 1, 0)
+        self.prediction_range = QSpinBox()
+        self.prediction_range.setRange(1, 350)
+        self.prediction_range.setValue(30)
+        controls_layout.addWidget(self.prediction_range, 1, 1)
+        
+        # Predict button
+        self.predict_button = QPushButton("Generate Prediction")
+        self.predict_button.clicked.connect(self.generate_prediction)
+        controls_layout.addWidget(self.predict_button, 2, 0, 1, 2)
+        
+        controls_group.setLayout(controls_layout)
+        layout.addWidget(controls_group)
+        
+        # Prediction chart
+        chart_group = QGroupBox("Prediction Chart")
+        chart_layout = QVBoxLayout()
+        
+        self.prediction_chart = StockChart()
+        chart_layout.addWidget(self.prediction_chart)
+        
+        chart_group.setLayout(chart_layout)
+        layout.addWidget(chart_group)
+        
+        # Prediction metrics
+        metrics_group = QGroupBox("Prediction Metrics")
+        metrics_layout = QGridLayout()
+        
+        self.prediction_metrics = QTextEdit()
+        self.prediction_metrics.setReadOnly(True)
+        metrics_layout.addWidget(self.prediction_metrics, 0, 0)
+        
+        metrics_group.setLayout(metrics_layout)
+        layout.addWidget(metrics_group)
+        
+        return tab
+        
+    def on_prediction_model_change(self, model_name: str):
+        """Handle prediction model selection change."""
+        try:
+            if not model_name:
+                return
+                
+            self.ai_agent.set_active_model(model_name)
+            self.logger.info(f"Selected prediction model: {model_name}")
+            
+        except Exception as e:
+            self.logger.error(f"Error changing prediction model: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to change model: {str(e)}")
+            
+    def generate_prediction(self):
+        """Generate predictions using the selected model."""
+        try:
+            if self.current_data is None:
+                QMessageBox.warning(self, "Warning", "No data loaded. Please load data first.")
+                return
+                
+            if self.ai_agent.get_active_model() is None:
+                QMessageBox.warning(self, "Warning", "No model selected. Please select a model first.")
+                return
+                
+            # Get prediction range
+            days = self.prediction_range.value()
+            
+            # Generate predictions
+            predictions = self.ai_agent.predict_future(self.current_data, days=days)
+            
+            # Create prediction dates
+            last_date = pd.to_datetime(self.current_data['date'].iloc[-1])
+            prediction_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=days)
+            
+            # Create prediction DataFrame
+            prediction_df = pd.DataFrame({
+                'date': prediction_dates,
+                'close': predictions
+            })
+            
+            # Update prediction chart
+            self.prediction_chart.plot_data(
+                self.current_data,
+                prediction_data=prediction_df,
+                title=f"Price Prediction for {self.current_symbol}",
+                show_volume=False
+            )
+            
+            # Calculate and display metrics
+            last_price = self.current_data['close'].iloc[-1]
+            predicted_price = predictions[-1]
+            price_change = predicted_price - last_price
+            price_change_pct = (price_change / last_price) * 100
+            
+            metrics_text = f"""
+            Prediction Metrics:
+            -------------------
+            Last Price: ${last_price:.2f}
+            Predicted Price: ${predicted_price:.2f}
+            Price Change: ${price_change:.2f} ({price_change_pct:.2f}%)
+            Prediction Range: {days} days
+            """
+            
+            self.prediction_metrics.setText(metrics_text)
+            
+        except Exception as e:
+            self.logger.error(f"Error generating prediction: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to generate prediction: {str(e)}") 

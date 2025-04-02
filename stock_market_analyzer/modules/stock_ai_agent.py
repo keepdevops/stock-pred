@@ -74,13 +74,33 @@ class StockAIAgent:
         
     def set_active_model(self, model_name: str):
         """Set the active model by name."""
+        if not model_name:
+            raise ValueError("Model name cannot be empty")
+            
         if model_name not in self.available_models:
             raise ValueError(f"Unknown model: {model_name}")
             
         model_info = self.available_models[model_name]
         try:
             if model_info['type'] in ['keras', 'keras_legacy']:
-                self.active_model = tf.keras.models.load_model(model_info['path'])
+                # Define custom objects for Keras models
+                custom_objects = {
+                    'MultiHeadAttention': tf.keras.layers.MultiHeadAttention,
+                    'LayerNormalization': tf.keras.layers.LayerNormalization,
+                    'Dense': tf.keras.layers.Dense,
+                    'Dropout': tf.keras.layers.Dropout,
+                    'LSTM': tf.keras.layers.LSTM,
+                    'Input': tf.keras.layers.Input,
+                    'Dense': tf.keras.layers.Dense,
+                    'Flatten': tf.keras.layers.Flatten
+                }
+                
+                # Load the model with custom objects
+                self.active_model = tf.keras.models.load_model(
+                    model_info['path'],
+                    custom_objects=custom_objects,
+                    compile=False
+                )
             elif model_info['type'] == 'sklearn':
                 with open(model_info['path'], 'rb') as f:
                     self.active_model = pickle.load(f)
@@ -95,32 +115,35 @@ class StockAIAgent:
         """Get the currently active model."""
         return self.active_model
         
-    def save_model(self, model: Any, name: str):
-        """Save a model to the models directory."""
+    def save_model(self, model_path: str, model: Optional[Any] = None) -> None:
+        """Save the current model to disk.
+        
+        Args:
+            model_path: Path where to save the model
+            model: Optional model to save. If None, uses self.active_model
+        """
         try:
-            if isinstance(model, tf.keras.Model):
-                # Use the newer .keras format for Keras models
-                model_path = os.path.join(self.models_dir, f"{name}.keras")
-                model.save(model_path, save_format='keras')
-                self.available_models[name] = {
-                    'path': model_path,
-                    'type': 'keras',
-                    'name': name
-                }
-            else:
-                model_path = os.path.join(self.models_dir, f"{name}.pkl")
-                with open(model_path, 'wb') as f:
-                    pickle.dump(model, f)
-                self.available_models[name] = {
-                    'path': model_path,
-                    'type': 'sklearn',
-                    'name': name
-                }
+            # Use provided model or active model
+            model_to_save = model if model is not None else self.active_model
+            if model_to_save is None:
+                raise ValueError("No model to save")
                 
-            self.logger.info(f"Saved model: {name}")
-            
+            # Try saving as Keras model first
+            try:
+                if isinstance(model_to_save, (tf.keras.Model, tf.keras.Sequential)):
+                    model_to_save.save(model_path)
+                    self.logger.info(f"Saved Keras model to {model_path}")
+                else:
+                    # For non-Keras models, use pickle
+                    with open(model_path, 'wb') as f:
+                        pickle.dump(model_to_save, f)
+                    self.logger.info(f"Saved model to {model_path}")
+            except Exception as e:
+                self.logger.error(f"Error saving model: {e}")
+                raise ValueError(f"Failed to save model: {str(e)}")
+                    
         except Exception as e:
-            self.logger.error(f"Error saving model {name}: {e}")
+            self.logger.error(f"Error saving model: {e}")
             raise
         
     def prepare_training_data(self, data: pd.DataFrame) -> tuple:
@@ -139,13 +162,22 @@ class StockAIAgent:
             # Create sequences
             X, y = [], []
             for i in range(self.lookback_days, len(scaled_features)):
-                X.append(scaled_features[i - self.lookback_days:i])
-                y.append(scaled_features[i, 3])  # Predict closing price
+                # Get sequence of lookback_days
+                sequence = scaled_features[i - self.lookback_days:i]
+                X.append(sequence)
+                # Target is the next day's closing price
+                y.append(scaled_features[i, 3])  # 3 is the index of 'close' in our features
             
             X = np.array(X)
             y = np.array(y)
             
+            # Log shapes for debugging
             self.logger.info(f"Prepared training data: X shape {X.shape}, y shape {y.shape}")
+            
+            # Ensure X has the correct shape for LSTM (samples, time steps, features)
+            if len(X.shape) == 2:
+                X = X.reshape(X.shape[0], X.shape[1], 1)
+            
             return X, y
             
         except Exception as e:
@@ -535,6 +567,9 @@ class StockAIAgent:
         try:
             self.logger.info(f"Starting model training with {epochs} epochs")
             
+            # Store the model as active model
+            self.active_model = model
+            
             # Initialize training history
             history = {
                 'loss': [],
@@ -596,7 +631,9 @@ class StockAIAgent:
                         history['best_val_loss'] = val_loss
                         history['patience_counter'] = 0
                         # Save best model
-                        self.save_model(model, f"best_model_{self.active_model_type}")
+                        model_path = os.path.join(self.models_dir, f"best_model_{self.active_model_type}.keras")
+                        model.save(model_path)
+                        self.logger.info(f"Saved best model to {model_path}")
                     else:
                         history['patience_counter'] += 1
                         if history['patience_counter'] >= history['patience']:
@@ -608,4 +645,25 @@ class StockAIAgent:
             
         except Exception as e:
             self.logger.error(f"Error training model: {str(e)}")
-            raise ValueError(f"Error training model: {str(e)}") 
+            raise ValueError(f"Error training model: {str(e)}")
+
+    def load_model(self, model_path: str) -> None:
+        """Load a saved model from disk."""
+        try:
+            # Try loading as Keras model first
+            try:
+                self.active_model = tf.keras.models.load_model(model_path)
+                self.logger.info(f"Loaded Keras model from {model_path}")
+            except:
+                # If that fails, try loading as pickle
+                try:
+                    with open(model_path, 'rb') as f:
+                        self.active_model = pickle.load(f)
+                    self.logger.info(f"Loaded model from {model_path}")
+                except Exception as e:
+                    self.logger.error(f"Error loading model: {e}")
+                    raise ValueError(f"Failed to load model: {str(e)}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error loading model: {e}")
+            raise 
