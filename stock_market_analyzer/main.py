@@ -1,10 +1,19 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Stock Market Analyzer Main File
+"""
 import sys
 import os
+import argparse
 import logging
 from pathlib import Path
 from PyQt5.QtWidgets import QApplication
 
-# Add the project root directory to the Python path
+# Configure matplotlib font manager logging level to INFO to reduce verbosity
+logging.getLogger('matplotlib.font_manager').setLevel(logging.INFO)
+
+# Add project root to Python path
 project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
