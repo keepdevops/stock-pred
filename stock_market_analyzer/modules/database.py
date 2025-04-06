@@ -1,6 +1,9 @@
 import duckdb
 import pandas as pd
 import logging
+import os
+import time
+import psutil
 from datetime import datetime, timedelta
 
 class DatabaseConnector:
@@ -9,44 +12,109 @@ class DatabaseConnector:
         self.logger = logging.getLogger(__name__)
         self.setup_database()
         
-    def setup_database(self):
-        """Set up the database schema."""
+    def _release_db_locks(self):
+        """Attempt to release any locks on the database file."""
         try:
-            self.conn = duckdb.connect(self.db_path)
+            if not os.path.exists(self.db_path):
+                return
+                
+            self.logger.info(f"Attempting to release locks on {self.db_path}")
             
-            # Create tables
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS stock_data (
-                    date DATE,
-                    symbol VARCHAR,
-                    open DOUBLE,
-                    high DOUBLE,
-                    low DOUBLE,
-                    close DOUBLE,
-                    volume BIGINT,
-                    PRIMARY KEY (date, symbol)
-                )
-            """)
+            # Get current process ID
+            current_pid = os.getpid()
             
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS predictions (
-                    date DATE,
-                    symbol VARCHAR,
-                    predicted_price DOUBLE,
-                    model_name VARCHAR,
-                    PRIMARY KEY (date, symbol, model_name)
-                )
-            """)
-            
-            self.logger.info("Database setup completed successfully")
+            # Look for other Python processes that might be holding the lock
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    # Skip current process
+                    if proc.info['pid'] == current_pid:
+                        continue
+                        
+                    # Check if it's a Python process
+                    if 'python' in proc.info['name'].lower():
+                        cmdline = proc.info['cmdline']
+                        if any('stock_market_analyzer' in str(cmd) for cmd in cmdline if cmd):
+                            self.logger.warning(f"Found potential locking process: PID {proc.info['pid']}")
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+                    
+            self.logger.info("Lock release attempt completed")
             
         except Exception as e:
-            self.logger.error(f"Error setting up database: {e}")
-            raise
+            self.logger.error(f"Error while trying to release database locks: {e}")
             
+    def setup_database(self):
+        """Set up the database schema."""
+        max_retries = 3
+        retry_delay = 1  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                # Try to release any existing locks
+                if attempt > 0:
+                    self._release_db_locks()
+                    
+                # Try to connect with write access
+                self.conn = duckdb.connect(self.db_path)
+                
+                # Create tables
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS stock_data (
+                        date DATE,
+                        symbol VARCHAR,
+                        open DOUBLE,
+                        high DOUBLE,
+                        low DOUBLE,
+                        close DOUBLE,
+                        volume BIGINT,
+                        PRIMARY KEY (date, symbol)
+                    )
+                """)
+                
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS predictions (
+                        date DATE,
+                        symbol VARCHAR,
+                        predicted_price DOUBLE,
+                        model_name VARCHAR,
+                        PRIMARY KEY (date, symbol, model_name)
+                    )
+                """)
+                
+                self.logger.info("Database setup completed successfully")
+                # Successfully connected, exit the retry loop
+                break
+                
+            except Exception as e:
+                self.logger.warning(f"Database connection attempt {attempt+1}/{max_retries} failed: {e}")
+                
+                if attempt == max_retries - 1:
+                    # Last attempt, try read-only as fallback
+                    try:
+                        self.logger.info("Attempting read-only database connection")
+                        self.conn = duckdb.connect(self.db_path, read_only=True)
+                        self.logger.info("Connected to database in read-only mode")
+                    except Exception as read_only_error:
+                        self.logger.error(f"Error setting up database: {e}")
+                        self.logger.error(f"Read-only fallback also failed: {read_only_error}")
+                        raise
+                else:
+                    # Wait before retrying
+                    time.sleep(retry_delay)
+                    
     def save_stock_data(self, data: pd.DataFrame, symbol: str):
         """Save stock data to the database."""
         try:
+            # Check if connection is read-only
+            try:
+                is_read_only = self.conn.execute("PRAGMA read_only").fetchone()[0] == 1
+            except:
+                is_read_only = False
+                
+            if is_read_only:
+                self.logger.warning("Cannot save data - database is in read-only mode")
+                return
+                
             # Ensure data has the correct columns
             required_columns = ['open', 'high', 'low', 'close', 'volume']
             if not all(col in data.columns for col in required_columns):

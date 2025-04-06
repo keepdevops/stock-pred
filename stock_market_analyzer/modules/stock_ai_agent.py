@@ -68,9 +68,55 @@ class StockAIAgent:
             self.logger.error(f"Error loading available models: {e}")
             raise
         
-    def get_available_models(self) -> List[str]:
-        """Get list of available model names."""
-        return list(self.available_models.keys())
+    def get_available_models(self) -> List[Dict[str, Any]]:
+        """Get list of available models with their details.
+        
+        Returns:
+            List of dictionaries with model information:
+            [
+                {
+                    'name': model_name,
+                    'type': model_type,
+                    'path': model_path,
+                    'features': model_features,
+                    'last_updated': timestamp
+                },
+                ...
+            ]
+        """
+        models = []
+        for name, info in self.available_models.items():
+            # Get file modification time for last updated
+            try:
+                mod_time = os.path.getmtime(info['path'])
+                last_updated = pd.to_datetime(mod_time, unit='s').strftime('%Y-%m-%d %H:%M')
+            except:
+                last_updated = "Unknown"
+                
+            # Extract model type from file or name
+            if name.startswith('lstm_'):
+                model_type = "LSTM"
+            elif name.startswith('xgb_'):
+                model_type = "XGBoost"
+            elif name.startswith('gru_'):
+                model_type = "GRU"
+            elif name.startswith('transformer_'):
+                model_type = "Transformer"
+            else:
+                model_type = info.get('type', 'Unknown')
+                
+            # Create model info dictionary
+            model_info = {
+                'name': name,
+                'type': model_type,
+                'path': info['path'],
+                'features': 'price,volume',  # Default features
+                'last_updated': last_updated
+            }
+            
+            models.append(model_info)
+            
+        return models
         
     def set_active_model(self, model_name: str):
         """Set the active model by name."""
@@ -151,12 +197,36 @@ class StockAIAgent:
         try:
             self.logger.info("Preparing training data")
             
+            # Normalize column names to lowercase if needed
+            column_mapping = {}
+            for col in data.columns:
+                if col.lower() in ['open', 'high', 'low', 'close', 'volume']:
+                    column_mapping[col] = col.lower()
+            
+            # Create a copy of the dataframe with normalized column names
+            data_normalized = data.copy()
+            if column_mapping:
+                data_normalized = data_normalized.rename(columns=column_mapping)
+            
+            # Check if required columns exist
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            missing_columns = [col for col in required_columns if col not in data_normalized.columns]
+            
+            if missing_columns:
+                self.logger.warning(f"Missing required columns: {missing_columns}")
+                # Try to find capitalized versions
+                for col in missing_columns:
+                    cap_col = col.capitalize()
+                    if cap_col in data.columns:
+                        data_normalized[col] = data[cap_col]
+                        self.logger.info(f"Using {cap_col} for {col}")
+            
             # Create feature scaler if not exists
             if not hasattr(self, 'feature_scaler'):
                 self.feature_scaler = MinMaxScaler()
             
             # Prepare features
-            features = data[['open', 'high', 'low', 'close', 'volume']].values
+            features = data_normalized[['open', 'high', 'low', 'close', 'volume']].values
             scaled_features = self.feature_scaler.fit_transform(features)
             
             # Create sequences
@@ -262,8 +332,32 @@ class StockAIAgent:
             if days is None:
                 days = self.prediction_days
                 
+            # Normalize column names to lowercase if needed
+            column_mapping = {}
+            for col in data.columns:
+                if col.lower() in ['open', 'high', 'low', 'close', 'volume']:
+                    column_mapping[col] = col.lower()
+            
+            # Create a copy of the dataframe with normalized column names
+            data_normalized = data.copy()
+            if column_mapping:
+                data_normalized = data_normalized.rename(columns=column_mapping)
+            
+            # Check if required columns exist
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            missing_columns = [col for col in required_columns if col not in data_normalized.columns]
+            
+            if missing_columns:
+                self.logger.warning(f"Missing required columns: {missing_columns}")
+                # Try to find capitalized versions
+                for col in missing_columns:
+                    cap_col = col.capitalize()
+                    if cap_col in data.columns:
+                        data_normalized[col] = data[cap_col]
+                        self.logger.info(f"Using {cap_col} for {col}")
+            
             # Prepare the last sequence
-            features = data[['open', 'high', 'low', 'close', 'volume']].values[-self.lookback_days:]
+            features = data_normalized[['open', 'high', 'low', 'close', 'volume']].values[-self.lookback_days:]
             
             # Create feature scaler if not exists
             if not hasattr(self, 'feature_scaler'):
@@ -418,43 +512,110 @@ class StockAIAgent:
         try:
             self.logger.info("Starting technical analysis")
             
+            # Normalize column names to lowercase if needed
+            column_mapping = {}
+            for col in data.columns:
+                if col.lower() in ['open', 'high', 'low', 'close', 'volume']:
+                    column_mapping[col] = col.lower()
+            
+            # Create a copy of the dataframe with normalized column names
+            data_normalized = data.copy()
+            if column_mapping:
+                data_normalized = data_normalized.rename(columns=column_mapping)
+            
+            # Check if required columns exist
+            required_columns = ['close']
+            missing_columns = [col for col in required_columns if col not in data_normalized.columns]
+            
+            if missing_columns:
+                self.logger.warning(f"Missing required columns: {missing_columns}")
+                # Try to find capitalized versions
+                for col in missing_columns:
+                    cap_col = col.capitalize()
+                    if cap_col in data.columns:
+                        data_normalized[col] = data[cap_col]
+                        self.logger.info(f"Using {cap_col} for {col}")
+            
+            # Import our technical indicators module
+            from modules.technical_indicators import TechnicalIndicators, PatternRecognition, SentimentAnalysis
+            
             # Calculate technical indicators
             results = {}
             
             # Moving averages
-            results['sma_20'] = data['close'].rolling(window=20).mean().iloc[-1]
-            results['sma_50'] = data['close'].rolling(window=50).mean().iloc[-1]
-            results['sma_200'] = data['close'].rolling(window=200).mean().iloc[-1]
+            results['sma_20'] = data_normalized['close'].rolling(window=20).mean().iloc[-1]
+            results['sma_50'] = data_normalized['close'].rolling(window=50).mean().iloc[-1]
+            results['sma_200'] = data_normalized['close'].rolling(window=200).mean().iloc[-1]
             
             # RSI
-            delta = data['close'].diff()
+            delta = data_normalized['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / loss
             results['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
             
             # MACD
-            exp1 = data['close'].ewm(span=12, adjust=False).mean()
-            exp2 = data['close'].ewm(span=26, adjust=False).mean()
+            exp1 = data_normalized['close'].ewm(span=12, adjust=False).mean()
+            exp2 = data_normalized['close'].ewm(span=26, adjust=False).mean()
             macd = exp1 - exp2
             signal = macd.ewm(span=9, adjust=False).mean()
             results['macd'] = macd.iloc[-1]
             results['macd_signal'] = signal.iloc[-1]
             
             # Bollinger Bands
-            middle_band = data['close'].rolling(window=20).mean()
-            std = data['close'].rolling(window=20).std()
+            middle_band = data_normalized['close'].rolling(window=20).mean()
+            std = data_normalized['close'].rolling(window=20).std()
             results['bb_upper'] = middle_band.iloc[-1] + (std.iloc[-1] * 2)
             results['bb_middle'] = middle_band.iloc[-1]
             results['bb_lower'] = middle_band.iloc[-1] - (std.iloc[-1] * 2)
             
             # Volume indicators
-            results['volume_ma'] = data['volume'].rolling(window=20).mean().iloc[-1]
-            results['volume_ratio'] = data['volume'].iloc[-1] / results['volume_ma']
+            results['volume_ma'] = data_normalized['volume'].rolling(window=20).mean().iloc[-1]
+            results['volume_ratio'] = data_normalized['volume'].iloc[-1] / results['volume_ma']
             
             # Price momentum
-            results['daily_return'] = data['close'].pct_change().iloc[-1]
-            results['volatility'] = data['close'].pct_change().std() * np.sqrt(252)
+            results['daily_return'] = data_normalized['close'].pct_change().iloc[-1]
+            results['volatility'] = data_normalized['close'].pct_change().std() * np.sqrt(252)
+            
+            # Add advanced indicators if data has sufficient length
+            if len(data) >= 60:
+                # Add Ichimoku Cloud
+                try:
+                    ichimoku_df = TechnicalIndicators.add_ichimoku_cloud(data_normalized)
+                    results['tenkan_sen'] = ichimoku_df['tenkan_sen'].iloc[-1]
+                    results['kijun_sen'] = ichimoku_df['kijun_sen'].iloc[-1]
+                    results['senkou_span_a'] = ichimoku_df['senkou_span_a'].iloc[-1]
+                    results['senkou_span_b'] = ichimoku_df['senkou_span_b'].iloc[-1]
+                except Exception as e:
+                    self.logger.warning(f"Error calculating Ichimoku Cloud: {e}")
+                
+                # Add VWAP
+                try:
+                    vwap_df = TechnicalIndicators.add_vwap(data_normalized)
+                    results['vwap'] = vwap_df['vwap'].iloc[-1]
+                except Exception as e:
+                    self.logger.warning(f"Error calculating VWAP: {e}")
+                
+                # Detect patterns
+                try:
+                    patterns_df = PatternRecognition.find_all_patterns(data_normalized)
+                    # Extract pattern results from the last row
+                    for col in ['head_shoulders', 'double_top', 'double_bottom', 
+                               'ascending_triangle', 'descending_triangle', 'symmetrical_triangle']:
+                        if col in patterns_df.columns:
+                            results[col] = bool(patterns_df[col].iloc[-1])
+                except Exception as e:
+                    self.logger.warning(f"Error detecting patterns: {e}")
+                
+                # Add sentiment analysis if symbol is available
+                try:
+                    symbol = data_normalized.get('symbol', 'Unknown')
+                    if hasattr(data_normalized, 'name'):
+                        symbol = data_normalized.name
+                    sentiment = SentimentAnalysis.get_combined_sentiment(symbol)
+                    results.update(sentiment)
+                except Exception as e:
+                    self.logger.warning(f"Error calculating sentiment: {e}")
             
             self.logger.info("Technical analysis completed successfully")
             return {'technical': results}
@@ -507,16 +668,29 @@ class StockAIAgent:
         try:
             self.logger.info("Starting sentiment analysis")
             
+            # Import our sentiment analysis module
+            from modules.technical_indicators import SentimentAnalysis
+            
             # Calculate sentiment metrics
             results = {}
             
-            # Social media sentiment (if available)
+            # Get symbol information
+            symbol = data.get('symbol', 'Unknown')
+            if hasattr(data, 'name'):
+                symbol = data.name
+            
+            # Get comprehensive sentiment analysis
+            sentiment_results = SentimentAnalysis.get_combined_sentiment(symbol)
+            results.update(sentiment_results)
+            
+            # Add traditional indicators as well
+            # Social media sentiment (if available in data)
             if 'social_sentiment' in data.columns:
-                results['social_sentiment'] = data['social_sentiment'].iloc[-1]
+                results['historic_social_sentiment'] = data['social_sentiment'].iloc[-1]
                 
-            # News sentiment (if available)
+            # News sentiment (if available in data)
             if 'news_sentiment' in data.columns:
-                results['news_sentiment'] = data['news_sentiment'].iloc[-1]
+                results['historic_news_sentiment'] = data['news_sentiment'].iloc[-1]
                 
             # Market sentiment indicators
             results['price_momentum'] = data['close'].pct_change(periods=5).iloc[-1]
@@ -539,20 +713,26 @@ class StockAIAgent:
             self.active_model_type = model_type
             
             if model_type == 'LSTM':
+                # Ensure input_dim is set with a default value if not provided
+                if 'input_dim' not in params:
+                    # Default to 5 features (OHLCV)
+                    params['input_dim'] = 5
+                    self.logger.info(f"Using default input_dim of {params['input_dim']}")
+                
                 # Create LSTM model
                 model = tf.keras.Sequential([
                     tf.keras.layers.Input(shape=(self.lookback_days, params['input_dim'])),
                     tf.keras.layers.LSTM(
-                        units=params['hidden_dim'],
-                        return_sequences=params['num_layers'] > 1
+                        units=params.get('hidden_dim', 64),
+                        return_sequences=params.get('num_layers', 2) > 1
                     ),
-                    tf.keras.layers.Dropout(params['dropout'])
+                    tf.keras.layers.Dropout(params.get('dropout', 0.2))
                 ])
                 
                 # Add additional LSTM layers if specified
-                for _ in range(params['num_layers'] - 1):
-                    model.add(tf.keras.layers.LSTM(units=params['hidden_dim'], return_sequences=True))
-                    model.add(tf.keras.layers.Dropout(params['dropout']))
+                for _ in range(params.get('num_layers', 2) - 1):
+                    model.add(tf.keras.layers.LSTM(units=params.get('hidden_dim', 64), return_sequences=True))
+                    model.add(tf.keras.layers.Dropout(params.get('dropout', 0.2)))
                 
                 # Add output layer
                 model.add(tf.keras.layers.Dense(1))
@@ -564,37 +744,42 @@ class StockAIAgent:
             elif model_type == 'XGBoost':
                 # Create XGBoost model
                 model = xgb.XGBRegressor(
-                    learning_rate=params['learning_rate'],
-                    max_depth=params['max_depth'],
-                    n_estimators=params['n_trees'],
+                    learning_rate=params.get('learning_rate', 0.01),
+                    max_depth=params.get('max_depth', 6),
+                    n_estimators=params.get('n_trees', 100),
                     objective='reg:squarederror'
                 )
                 self.logger.info("XGBoost model created successfully")
                 
             elif model_type == 'Transformer':
                 # Create Transformer model using Functional API
+                if 'input_dim' not in params:
+                    # Default to 5 features (OHLCV)
+                    params['input_dim'] = 5
+                    self.logger.info(f"Using default input_dim of {params['input_dim']}")
+                
                 inputs = tf.keras.Input(shape=(self.lookback_days, params['input_dim']))
                 
                 # Initial dense layer
-                x = tf.keras.layers.Dense(params['hidden_dim'])(inputs)
+                x = tf.keras.layers.Dense(params.get('hidden_dim', 128))(inputs)
                 
                 # Transformer blocks
-                for _ in range(params['n_layers']):
+                for _ in range(params.get('n_layers', 2)):
                     # Multi-head attention
                     attn_output = tf.keras.layers.MultiHeadAttention(
-                        num_heads=params['n_heads'],
-                        key_dim=params['hidden_dim'] // params['n_heads']
+                        num_heads=params.get('n_heads', 4),
+                        key_dim=params.get('hidden_dim', 128) // params.get('n_heads', 4)
                     )(x, x)
                     
                     # Add & Norm
                     x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x + attn_output)
                     
                     # Feed-forward network
-                    ffn_output = tf.keras.layers.Dense(params['hidden_dim'])(x)
+                    ffn_output = tf.keras.layers.Dense(params.get('hidden_dim', 128))(x)
                     x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x + ffn_output)
                     
                     # Dropout
-                    x = tf.keras.layers.Dropout(0.1)(x)
+                    x = tf.keras.layers.Dropout(params.get('dropout', 0.1))(x)
                 
                 # Output layer
                 outputs = tf.keras.layers.Dense(1)(x)
@@ -701,20 +886,72 @@ class StockAIAgent:
     def load_model(self, model_path: str) -> None:
         """Load a saved model from disk."""
         try:
+            # Check if the file exists
+            if not os.path.exists(model_path):
+                self.logger.error(f"Model file not found: {model_path}")
+                raise FileNotFoundError(f"Model file not found: {model_path}")
+                
             # Try loading as Keras model first
             try:
-                self.active_model = tf.keras.models.load_model(model_path)
+                # Define custom objects for all model types
+                custom_objects = {
+                    'MultiHeadAttention': tf.keras.layers.MultiHeadAttention,
+                    'LayerNormalization': tf.keras.layers.LayerNormalization,
+                    'Dense': tf.keras.layers.Dense,
+                    'Dropout': tf.keras.layers.Dropout,
+                    'LSTM': tf.keras.layers.LSTM,
+                    'Input': tf.keras.layers.Input,
+                    'Flatten': tf.keras.layers.Flatten
+                }
+                
+                # Determine if this is a transformer model based on filename
+                is_transformer = "transformer" in model_path.lower()
+                
+                # Load the model with appropriate configuration
+                if is_transformer:
+                    self.active_model = tf.keras.models.load_model(
+                        model_path,
+                        custom_objects=custom_objects,
+                        compile=False  # Don't compile transformer models to avoid parameter mismatches
+                    )
+                else:
+                    self.active_model = tf.keras.models.load_model(model_path)
+                    
                 self.logger.info(f"Loaded Keras model from {model_path}")
-            except:
+            except Exception as keras_error:
+                self.logger.warning(f"Failed to load as Keras model: {keras_error}")
                 # If that fails, try loading as pickle
                 try:
                     with open(model_path, 'rb') as f:
                         self.active_model = pickle.load(f)
                     self.logger.info(f"Loaded model from {model_path}")
-                except Exception as e:
-                    self.logger.error(f"Error loading model: {e}")
-                    raise ValueError(f"Failed to load model: {str(e)}")
+                except Exception as pickle_error:
+                    self.logger.error(f"Error loading model as pickle: {pickle_error}")
+                    raise ValueError(f"Failed to load model: {str(keras_error)}. Also failed as pickle: {str(pickle_error)}")
                     
+        except FileNotFoundError as e:
+            self.logger.error(f"Model file not found: {e}")
+            raise
         except Exception as e:
             self.logger.error(f"Error loading model: {e}")
+            raise
+
+    def load_model_by_name(self, model_name: str) -> None:
+        """Load a model by its name.
+        
+        Args:
+            model_name: Name of the model to load
+        """
+        try:
+            # Check if model exists
+            if model_name in self.available_models:
+                model_path = self.available_models[model_name]['path']
+                self.load_model(model_path)
+                self.logger.info(f"Loaded model {model_name} from {model_path}")
+            else:
+                self.logger.error(f"Model not found: {model_name}")
+                raise ValueError(f"Model not found: {model_name}")
+                
+        except Exception as e:
+            self.logger.error(f"Error loading model {model_name}: {e}")
             raise 

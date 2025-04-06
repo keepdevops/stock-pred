@@ -142,19 +142,51 @@ class AsyncTaskManager(QObject):
                 self.loop.run_forever()
         except Exception as e:
             self.logger.error(f"Error running event loop: {e}")
+    
+    def run_task(self, task_name: str, coro_or_func) -> None:
+        """Run an async task with the given name.
+        
+        Args:
+            task_name: Unique name to identify the task
+            coro_or_func: Coroutine object or async function to run
+        """
+        try:
+            # Handle both coroutine objects and async functions
+            if asyncio.iscoroutine(coro_or_func):
+                # It's already a coroutine object, use directly
+                coro = coro_or_func
+            elif asyncio.iscoroutinefunction(coro_or_func):
+                # It's an async function, call it to get a coroutine
+                coro = coro_or_func()
+            elif callable(coro_or_func):
+                # It's a regular function, assume it returns a coroutine when called
+                coro = coro_or_func()
+                if not asyncio.iscoroutine(coro):
+                    raise TypeError(f"Function {coro_or_func.__name__} did not return a coroutine")
+            else:
+                raise TypeError("Expected a coroutine object or async function")
+            
+            return self.create_task(task_name, coro)
+        except Exception as e:
+            self.logger.error(f"Error preparing task {task_name}: {e}")
+            self.task_error.emit(task_name, str(e))
             
     def create_task(self, task_name: str, coro: Coroutine) -> None:
         """Create and start a new async task."""
         try:
+            # Ensure we have a coroutine object
+            if not asyncio.iscoroutine(coro):
+                raise TypeError("Expected a coroutine object, not a function reference")
+            
             # Cancel existing task if it exists
             if task_name in self.tasks:
                 self.logger.warning(f"Task {task_name} already exists, cancelling previous task")
                 self._cancel_task(task_name)
-                
+            
             # Ensure event loop is running
             if not self.loop.is_running():
                 self._setup_event_loop()
-                
+            
             # Create and store the task
             task = self.loop.create_task(coro)
             self.tasks[task_name] = task
@@ -209,19 +241,92 @@ class AsyncTaskManager(QObject):
     def cleanup(self):
         """Clean up resources."""
         try:
-            # Stop the timer
+            self.logger.info("Starting AsyncTaskManager cleanup")
+            
+            # Stop the timer first to prevent new events
             if hasattr(self, 'timer'):
-                self.timer.stop()
-                
+                if self.timer.isActive():
+                    self.logger.info("Stopping timer")
+                    self.timer.stop()
+            
             # Cancel all tasks
-            for task_name in list(self.tasks.keys()):
-                self._cancel_task(task_name)
+            task_names = list(self.tasks.keys())
+            if task_names:
+                self.logger.info(f"Cancelling {len(task_names)} active tasks")
+                for task_name in task_names:
+                    try:
+                        self._cancel_task(task_name)
+                    except Exception as e:
+                        self.logger.error(f"Error cancelling task {task_name}: {e}")
+            
+            # Process any pending events
+            import time
+            from PyQt5.QtCore import QCoreApplication
+            QCoreApplication.processEvents()
+            
+            # Allow some time for tasks to finish
+            time.sleep(0.2)  # Slightly longer delay to allow cancellation to take effect
+            
+            # Process events again
+            QCoreApplication.processEvents()
             
             # Stop the event loop
             if self.loop and not self.loop.is_closed():
-                self.loop.stop()
-                self.loop.close()
-                self.loop = None
+                try:
+                    self.logger.info("Stopping event loop")
+                    
+                    # First, stop the loop
+                    if self.loop.is_running():
+                        self.loop.stop()
+                    
+                    # Run final iteration to handle task cancellation
+                    for _ in range(10):  # Run more iterations to ensure all callbacks are processed
+                        if not self.loop.is_closed():
+                            # Process any pending callbacks in the loop
+                            self.loop.call_soon_threadsafe(lambda: None)  # Dummy callback to wake the loop
+                            self.loop.stop()
+                            self.loop.run_forever()
+                        else:
+                            break
+                    
+                    # Process Qt events one more time
+                    QCoreApplication.processEvents()
+                    
+                    # Close the loop
+                    if not self.loop.is_closed():
+                        try:
+                            # Use run_until_complete with a completed future to flush any callbacks
+                            future = asyncio.Future(loop=self.loop)
+                            future.set_result(None)
+                            self.loop.run_until_complete(future)
+                        except Exception as e:
+                            self.logger.error(f"Error flushing event loop: {e}")
+                        
+                        # Finally close the loop
+                        self.loop.close()
+                        
+                    self.loop = None
+                except Exception as e:
+                    self.logger.error(f"Error stopping event loop: {e}")
+            
+            # Additional cleanup for PyQt integration
+            self.tasks.clear()
+            
+            # Final processing of Qt events
+            QCoreApplication.processEvents()
+            
+            self.logger.info("AsyncTaskManager cleanup completed")
                 
         except Exception as e:
-            self.logger.error(f"Error during cleanup: {e}") 
+            self.logger.error(f"Error during AsyncTaskManager cleanup: {e}")
+            # Try to ensure critical cleanup happens even with errors
+            try:
+                if hasattr(self, 'timer') and self.timer.isActive():
+                    self.timer.stop()
+                
+                if self.loop and not self.loop.is_closed():
+                    self.loop.close()
+                    
+                self.tasks.clear()
+            except:
+                pass 
