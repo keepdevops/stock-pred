@@ -2,11 +2,12 @@
 Stock Market Analyzer package.
 """
 
-from .modules.gui import StockGUI
-from .modules.database import DatabaseConnector
-from .modules.data_loader import DataLoader
-from .modules.stock_ai_agent import StockAIAgent
-from .modules.trading.real_trading_agent import RealTradingAgent
+# Remove circular imports
+# from .modules.gui import StockGUI
+# from .modules.database import DatabaseConnector
+# from .modules.data_loader import DataLoader
+# from .modules.stock_ai_agent import StockAIAgent
+# from .modules.trading.real_trading_agent import RealTradingAgent
 
 __all__ = [
     'StockGUI',
