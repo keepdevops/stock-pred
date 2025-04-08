@@ -9,168 +9,242 @@ import pickle
 from typing import Dict, List, Optional, Any
 import tensorflow as tf
 import xgboost as xgb
+import traceback
 
 class StockAIAgent:
-    def __init__(self, config: Dict[str, Any]):
+    """AI agent for stock market analysis and prediction."""
+    
+    def __init__(self, data_loader):
+        """Initialize the AI agent with a data loader."""
         self.logger = logging.getLogger(__name__)
-        self.config = config
-        self.models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
-        self.active_model = None
-        self.active_model_type = None
-        self.available_models = {}
-        self.load_available_models()
+        self.data_loader = data_loader
         
-        # Model parameters
-        self.lookback_days = config.get('lookback_days', 60)
-        self.prediction_days = config.get('prediction_days', 5)
+        # Default configuration
+        self.lookback_days = 60
+        self.prediction_days = 5
+        self.training_config = {
+            'n_estimators': 100,
+            'learning_rate': 0.1,
+            'validation_split': 0.2
+        }
         
-        # Training parameters
-        self.n_estimators = config.get('training', {}).get('n_estimators', 100)
-        self.learning_rate = config.get('training', {}).get('learning_rate', 0.1)
-        self.validation_split = config.get('training', {}).get('validation_split', 0.2)
+        # Load available models
+        self.models = self.load_available_models()
+        self.current_model = None
         
+        self.logger.info(f"Loaded {len(self.models)} available models")
+    
     def load_available_models(self):
         """Load available models from the models directory."""
         try:
-            # Create models directory if it doesn't exist
-            os.makedirs(self.models_dir, exist_ok=True)
+            models = []
+            models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
             
-            # Scan for model files
-            for file in os.listdir(self.models_dir):
-                if file.endswith('.keras'):  # Keras model files (new format)
-                    model_name = os.path.splitext(file)[0]
-                    model_path = os.path.join(self.models_dir, file)
-                    self.available_models[model_name] = {
-                        'path': model_path,
-                        'type': 'keras',
-                        'name': model_name
-                    }
-                elif file.endswith('.h5'):  # Legacy Keras model files
-                    model_name = os.path.splitext(file)[0]
-                    model_path = os.path.join(self.models_dir, file)
-                    self.available_models[model_name] = {
-                        'path': model_path,
-                        'type': 'keras_legacy',
-                        'name': model_name
-                    }
-                elif file.endswith('.pkl'):  # Scikit-learn model files
-                    model_name = os.path.splitext(file)[0]
-                    model_path = os.path.join(self.models_dir, file)
-                    self.available_models[model_name] = {
-                        'path': model_path,
-                        'type': 'sklearn',
-                        'name': model_name
-                    }
-                    
-            self.logger.info(f"Loaded {len(self.available_models)} available models")
+            # Ensure models directory exists
+            if not os.path.exists(models_dir):
+                os.makedirs(models_dir)
+            
+            # Add default models
+            models.extend([
+                {'name': 'LSTM', 'type': 'deep_learning'},
+                {'name': 'GRU', 'type': 'deep_learning'},
+                {'name': 'XGBoost', 'type': 'ensemble'},
+                {'name': 'RandomForest', 'type': 'ensemble'},
+                {'name': 'LightGBM', 'type': 'ensemble'},
+                {'name': 'Prophet', 'type': 'statistical'},
+                {'name': 'ARIMA', 'type': 'statistical'},
+                {'name': 'SARIMA', 'type': 'statistical'},
+                {'name': 'VAR', 'type': 'statistical'},
+                {'name': 'Transformer', 'type': 'deep_learning'},
+                {'name': 'Ensemble', 'type': 'ensemble'}
+            ])
+            
+            return models
             
         except Exception as e:
-            self.logger.error(f"Error loading available models: {e}")
+            self.logger.error(f"Error loading available models: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
+    
+    def get_available_models(self):
+        """Get list of available models."""
+        return self.models
+    
+    def get_current_model(self):
+        """Get the current model."""
+        return self.current_model
+    
+    async def analyze_technical(self, data: pd.DataFrame, lookback: int = None) -> Dict:
+        """Run technical analysis on the data."""
+        try:
+            lookback = lookback or self.lookback_days
+            
+            # Calculate technical indicators
+            results = {}
+            
+            # Moving averages
+            results['SMA_20'] = data['close'].rolling(window=20).mean().iloc[-1]
+            results['SMA_50'] = data['close'].rolling(window=50).mean().iloc[-1]
+            results['EMA_20'] = data['close'].ewm(span=20).mean().iloc[-1]
+            
+            # RSI
+            delta = data['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            results['RSI'] = (100 - (100 / (1 + rs))).iloc[-1]
+            
+            # MACD
+            exp1 = data['close'].ewm(span=12, adjust=False).mean()
+            exp2 = data['close'].ewm(span=26, adjust=False).mean()
+            macd = exp1 - exp2
+            signal = macd.ewm(span=9, adjust=False).mean()
+            results['MACD'] = macd.iloc[-1]
+            results['MACD_Signal'] = signal.iloc[-1]
+            
+            # Bollinger Bands
+            sma = data['close'].rolling(window=20).mean()
+            std = data['close'].rolling(window=20).std()
+            results['BB_Upper'] = (sma + (std * 2)).iloc[-1]
+            results['BB_Lower'] = (sma - (std * 2)).iloc[-1]
+            
+            # Volume analysis
+            results['Volume_SMA'] = data['volume'].rolling(window=20).mean().iloc[-1]
+            results['Volume_Change'] = (data['volume'].iloc[-1] / data['volume'].iloc[-2] - 1) * 100
+            
+            # Price momentum
+            results['Price_Change'] = (data['close'].iloc[-1] / data['close'].iloc[-2] - 1) * 100
+            results['Price_Change_5D'] = (data['close'].iloc[-1] / data['close'].iloc[-6] - 1) * 100
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error in technical analysis: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             raise
-        
-    def get_available_models(self) -> List[Dict[str, Any]]:
-        """Get list of available models with their details.
-        
-        Returns:
-            List of dictionaries with model information:
-            [
-                {
-                    'name': model_name,
-                    'type': model_type,
-                    'path': model_path,
-                    'features': model_features,
-                    'last_updated': timestamp
-                },
-                ...
-            ]
-        """
-        models = []
-        for name, info in self.available_models.items():
-            # Get file modification time for last updated
-            try:
-                mod_time = os.path.getmtime(info['path'])
-                last_updated = pd.to_datetime(mod_time, unit='s').strftime('%Y-%m-%d %H:%M')
-            except:
-                last_updated = "Unknown"
-                
-            # Extract model type from file or name
-            if name.startswith('lstm_'):
-                model_type = "LSTM"
-            elif name.startswith('xgb_'):
-                model_type = "XGBoost"
-            elif name.startswith('gru_'):
-                model_type = "GRU"
-            elif name.startswith('transformer_'):
-                model_type = "Transformer"
-            else:
-                model_type = info.get('type', 'Unknown')
-                
-            # Create model info dictionary
-            model_info = {
-                'name': name,
-                'type': model_type,
-                'path': info['path'],
-                'features': 'price,volume',  # Default features
-                'last_updated': last_updated
+    
+    async def analyze_fundamental(self, symbol: str) -> Dict:
+        """Run fundamental analysis on the stock."""
+        try:
+            # Use yfinance for fundamental data
+            import yfinance as yf
+            
+            # Get stock info
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            
+            # Extract relevant metrics
+            results = {
+                'Market Cap': info.get('marketCap'),
+                'PE Ratio': info.get('trailingPE'),
+                'Forward PE': info.get('forwardPE'),
+                'PEG Ratio': info.get('pegRatio'),
+                'Price to Book': info.get('priceToBook'),
+                'Dividend Yield': info.get('dividendYield'),
+                'Profit Margin': info.get('profitMargins'),
+                'Operating Margin': info.get('operatingMargins'),
+                'Return on Equity': info.get('returnOnEquity'),
+                'Revenue Growth': info.get('revenueGrowth'),
+                'Earnings Growth': info.get('earningsGrowth'),
+                'Quick Ratio': info.get('quickRatio'),
+                'Current Ratio': info.get('currentRatio'),
+                'Debt to Equity': info.get('debtToEquity')
             }
             
-            models.append(model_info)
+            return results
             
-        return models
-        
+        except Exception as e:
+            self.logger.error(f"Error in fundamental analysis: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+    
+    async def train_model(self, model_name: str, epochs: int, batch_size: int, callback=None):
+        """Train a model with the given parameters."""
+        try:
+            self.logger.info(f"Training model {model_name}")
+            
+            # Get model class
+            model_class = self.get_model_class(model_name)
+            if model_class is None:
+                raise ValueError(f"Model {model_name} not found")
+            
+            # Create and train model
+            self.current_model = model_class(
+                lookback_days=self.lookback_days,
+                prediction_days=self.prediction_days,
+                **self.training_config
+            )
+            
+            # Train the model
+            history = await self.current_model.train(
+                epochs=epochs,
+                batch_size=batch_size,
+                callback=callback
+            )
+            
+            return history
+            
+        except Exception as e:
+            self.logger.error(f"Error training model: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+    
+    def get_model_class(self, model_name: str):
+        """Get the model class for the given name."""
+        try:
+            # Import model classes
+            from .models import (
+                LSTMModel, GRUModel, XGBoostModel, RandomForestModel,
+                LightGBMModel, ProphetModel, ARIMAModel, SARIMAModel,
+                VARModel, TransformerModel, EnsembleModel
+            )
+            
+            # Map model names to classes
+            model_map = {
+                'LSTM': LSTMModel,
+                'GRU': GRUModel,
+                'XGBoost': XGBoostModel,
+                'RandomForest': RandomForestModel,
+                'LightGBM': LightGBMModel,
+                'Prophet': ProphetModel,
+                'ARIMA': ARIMAModel,
+                'SARIMA': SARIMAModel,
+                'VAR': VARModel,
+                'Transformer': TransformerModel,
+                'Ensemble': EnsembleModel
+            }
+            
+            return model_map.get(model_name)
+            
+        except Exception as e:
+            self.logger.error(f"Error getting model class: {str(e)}")
+            return None
+
     def set_active_model(self, model_name: str):
         """Set the active model by name."""
         if not model_name:
             raise ValueError("Model name cannot be empty")
             
-        if model_name not in self.available_models:
+        if model_name not in self.models:
             raise ValueError(f"Unknown model: {model_name}")
             
-        model_info = self.available_models[model_name]
-        try:
-            if model_info['type'] in ['keras', 'keras_legacy']:
-                # Define custom objects for Keras models
-                custom_objects = {
-                    'MultiHeadAttention': tf.keras.layers.MultiHeadAttention,
-                    'LayerNormalization': tf.keras.layers.LayerNormalization,
-                    'Dense': tf.keras.layers.Dense,
-                    'Dropout': tf.keras.layers.Dropout,
-                    'LSTM': tf.keras.layers.LSTM,
-                    'Input': tf.keras.layers.Input,
-                    'Dense': tf.keras.layers.Dense,
-                    'Flatten': tf.keras.layers.Flatten
-                }
-                
-                # Load the model with custom objects
-                self.active_model = tf.keras.models.load_model(
-                    model_info['path'],
-                    custom_objects=custom_objects,
-                    compile=False
-                )
-            elif model_info['type'] == 'sklearn':
-                with open(model_info['path'], 'rb') as f:
-                    self.active_model = pickle.load(f)
-                    
-            self.logger.info(f"Set active model to: {model_name}")
-            
-        except Exception as e:
-            self.logger.error(f"Error loading model {model_name}: {e}")
-            raise
+        self.current_model = model_name
+        self.logger.info(f"Set active model to: {model_name}")
         
     def get_active_model(self) -> Optional[Any]:
         """Get the currently active model."""
-        return self.active_model
+        return self.current_model
         
     def save_model(self, model_path: str, model: Optional[Any] = None) -> None:
         """Save the current model to disk.
         
         Args:
             model_path: Path where to save the model
-            model: Optional model to save. If None, uses self.active_model
+            model: Optional model to save. If None, uses self.current_model
         """
         try:
             # Use provided model or active model
-            model_to_save = model if model is not None else self.active_model
+            model_to_save = model if model is not None else self.current_model
             if model_to_save is None:
                 raise ValueError("No model to save")
                 
@@ -258,8 +332,8 @@ class StockAIAgent:
         """Build the model."""
         try:
             self.model = LGBMRegressor(
-                n_estimators=self.n_estimators,
-                learning_rate=self.learning_rate,
+                n_estimators=self.training_config['n_estimators'],
+                learning_rate=self.training_config['learning_rate'],
                 objective='regression',
                 n_jobs=-1
             )
@@ -326,7 +400,7 @@ class StockAIAgent:
     def predict_future(self, data: pd.DataFrame, days: int = None) -> np.ndarray:
         """Predict future values based on the last known sequence."""
         try:
-            if self.active_model is None:
+            if self.current_model is None:
                 raise ValueError("No active model has been set. Please load or train a model first.")
                 
             if days is None:
@@ -367,7 +441,7 @@ class StockAIAgent:
             scaled_features = self.feature_scaler.transform(features)
             
             # Reshape based on model type
-            if isinstance(self.active_model, xgb.XGBRegressor):
+            if isinstance(self.current_model, xgb.XGBRegressor):
                 last_sequence = scaled_features.reshape(1, -1)  # Flatten for XGBoost
             else:  # For Keras models (LSTM, Transformer)
                 last_sequence = scaled_features.reshape(1, self.lookback_days, scaled_features.shape[1])
@@ -377,7 +451,7 @@ class StockAIAgent:
             
             for _ in range(days):
                 # Predict next value
-                prediction = self.active_model.predict(current_sequence)
+                prediction = self.current_model.predict(current_sequence)
                 
                 # Handle different output shapes based on model type
                 if isinstance(prediction, list):
@@ -400,7 +474,7 @@ class StockAIAgent:
                 predictions.append(next_pred)
                 
                 # Update sequence for next prediction
-                if isinstance(self.active_model, xgb.XGBRegressor):
+                if isinstance(self.current_model, xgb.XGBRegressor):
                     # Update for XGBoost
                     new_row = np.zeros(scaled_features.shape[1])
                     new_row[3] = next_pred  # Set close price (index 3)
@@ -467,16 +541,16 @@ class StockAIAgent:
             self.logger.error(f"Error evaluating model: {e}")
             raise
 
-    def analyze(self, data: pd.DataFrame) -> dict:
+    async def analyze(self, data: pd.DataFrame) -> dict:
         """Perform complete analysis including training, prediction, and evaluation."""
         try:
             # Split data into training and test sets
-            train_size = int(len(data) * (1 - self.validation_split))
+            train_size = int(len(data) * (1 - self.training_config['validation_split']))
             train_data = data[:train_size]
             test_data = data[train_size:]
             
             # Train the model
-            self.train(train_data)
+            await self.train_model(self.current_model, self.training_config['n_estimators'], 32)
             
             # Make predictions
             predictions = self.predict(test_data)
@@ -492,12 +566,7 @@ class StockAIAgent:
                 'evaluation_metrics': evaluation,
                 'last_prediction': predictions[-1],
                 'future_predictions': future_predictions.tolist(),
-                'model_info': {
-                    'lookback_days': self.lookback_days,
-                    'prediction_days': self.prediction_days,
-                    'n_estimators': self.n_estimators,
-                    'learning_rate': self.learning_rate
-                }
+                'model_info': self.training_config
             }
             
             self.logger.info("Analysis completed successfully")
@@ -507,7 +576,7 @@ class StockAIAgent:
             self.logger.error(f"Error performing analysis: {e}")
             raise
 
-    def analyze_technical(self, data: pd.DataFrame) -> Dict[str, Any]:
+    async def analyze_technical(self, data: pd.DataFrame) -> Dict[str, Any]:
         """Perform technical analysis on the data."""
         try:
             self.logger.info("Starting technical analysis")
@@ -624,7 +693,7 @@ class StockAIAgent:
             self.logger.error(f"Error in technical analysis: {e}")
             raise ValueError(f"Technical analysis failed: {str(e)}")
             
-    def analyze_fundamental(self, data: pd.DataFrame) -> Dict[str, Any]:
+    async def analyze_fundamental(self, data: pd.DataFrame) -> Dict[str, Any]:
         """Perform fundamental analysis on the data."""
         try:
             self.logger.info("Starting fundamental analysis")
@@ -663,7 +732,7 @@ class StockAIAgent:
             self.logger.error(f"Error in fundamental analysis: {e}")
             raise ValueError(f"Fundamental analysis failed: {str(e)}")
             
-    def analyze_sentiment(self, data: pd.DataFrame) -> Dict[str, Any]:
+    async def analyze_sentiment(self, data: pd.DataFrame) -> Dict[str, Any]:
         """Perform sentiment analysis on the data."""
         try:
             self.logger.info("Starting sentiment analysis")
@@ -710,7 +779,7 @@ class StockAIAgent:
         """Create a new model of the specified type with given parameters."""
         try:
             self.logger.info(f"Creating {model_type} model with parameters: {params}")
-            self.active_model_type = model_type
+            self.current_model = model_type
             
             if model_type == 'LSTM':
                 # Ensure input_dim is set with a default value if not provided
@@ -804,7 +873,7 @@ class StockAIAgent:
             self.logger.info(f"Starting model training with {epochs} epochs")
             
             # Store the model as active model
-            self.active_model = model
+            self.current_model = model
             
             # Initialize training history
             history = {
@@ -867,7 +936,7 @@ class StockAIAgent:
                         history['best_val_loss'] = val_loss
                         history['patience_counter'] = 0
                         # Save best model
-                        model_path = os.path.join(self.models_dir, f"best_model_{self.active_model_type}.keras")
+                        model_path = os.path.join(os.path.dirname(__file__), '..', 'models', f"best_model_{self.current_model}.keras")
                         model.save(model_path)
                         self.logger.info(f"Saved best model to {model_path}")
                     else:
@@ -909,13 +978,13 @@ class StockAIAgent:
                 
                 # Load the model with appropriate configuration
                 if is_transformer:
-                    self.active_model = tf.keras.models.load_model(
+                    self.current_model = tf.keras.models.load_model(
                         model_path,
                         custom_objects=custom_objects,
                         compile=False  # Don't compile transformer models to avoid parameter mismatches
                     )
                 else:
-                    self.active_model = tf.keras.models.load_model(model_path)
+                    self.current_model = tf.keras.models.load_model(model_path)
                     
                 self.logger.info(f"Loaded Keras model from {model_path}")
             except Exception as keras_error:
@@ -923,7 +992,7 @@ class StockAIAgent:
                 # If that fails, try loading as pickle
                 try:
                     with open(model_path, 'rb') as f:
-                        self.active_model = pickle.load(f)
+                        self.current_model = pickle.load(f)
                     self.logger.info(f"Loaded model from {model_path}")
                 except Exception as pickle_error:
                     self.logger.error(f"Error loading model as pickle: {pickle_error}")
@@ -944,8 +1013,8 @@ class StockAIAgent:
         """
         try:
             # Check if model exists
-            if model_name in self.available_models:
-                model_path = self.available_models[model_name]['path']
+            if model_name in self.models:
+                model_path = self.models[model_name]['path']
                 self.load_model(model_path)
                 self.logger.info(f"Loaded model {model_name} from {model_path}")
             else:
@@ -954,4 +1023,43 @@ class StockAIAgent:
                 
         except Exception as e:
             self.logger.error(f"Error loading model {model_name}: {e}")
-            raise 
+            raise
+
+    def get_model_names(self) -> List[str]:
+        """Get list of available model names."""
+        try:
+            # Get all .keras files in the models directory
+            model_files = [f for f in os.listdir(os.path.dirname(__file__)) if f.endswith('.keras')]
+            # Remove the .keras extension
+            model_names = [os.path.splitext(f)[0] for f in model_files]
+            self.logger.info(f"Found {len(model_names)} model(s): {model_names}")
+            return model_names if model_names else ["No models available"]
+        except Exception as e:
+            self.logger.error(f"Error getting model names: {str(e)}")
+            return ["No models available"]
+
+    def get_model_type(self, model_name: str) -> Optional[str]:
+        """Get the type of a model by its name."""
+        try:
+            # Check if model exists
+            model_path = os.path.join(os.path.dirname(__file__), f"{model_name}.keras")
+            if not os.path.exists(model_path):
+                self.logger.warning(f"Model file not found: {model_path}")
+                return None
+            
+            # Load model configuration
+            model = tf.keras.models.load_model(model_path)
+            
+            # Determine model type based on architecture
+            if any('lstm' in layer.name.lower() for layer in model.layers):
+                return 'LSTM'
+            elif any('transformer' in layer.name.lower() for layer in model.layers):
+                return 'Transformer'
+            elif any('xgboost' in layer.name.lower() for layer in model.layers):
+                return 'XGBoost'
+            else:
+                return 'Unknown'
+            
+        except Exception as e:
+            self.logger.error(f"Error determining model type for {model_name}: {str(e)}")
+            return None 

@@ -10,47 +10,217 @@ import glob
 import json
 import polars as pl
 from pathlib import Path
+import traceback
 
 class DataLoader:
-    """Class for loading stock data from various sources."""
+    """Class for loading and managing stock market data."""
     
-    def __init__(self, config):
+    def __init__(self, db_connector):
+        """Initialize the DataLoader with a database connector."""
         self.logger = logging.getLogger(__name__)
-        self.source = config.get('source', 'yahoo')
-        self.start_date = config.get('start_date', '2020-01-01')
-        self.end_date = config.get('end_date', 'today')
-        self.data_dir = config.get('data_dir', 'data')
-        self.file_types = config.get('file_types', ['csv', 'json', 'parquet', 'pkl'])
+        self.db_connector = db_connector
         
-        if self.end_date == 'today':
-            self.end_date = datetime.now().strftime('%Y-%m-%d')
-            
+        # Default configuration
+        self.source = 'yahoo'
+        self.start_date = '2020-01-01'
+        self.end_date = datetime.now().strftime('%Y-%m-%d')
+        self.data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
+        
+        # Initialize thread pool for async operations
         self.executor = ThreadPoolExecutor(max_workers=4)
         
-    async def load_data_async(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Load stock data asynchronously."""
+        # Initialize cache
+        self.data_cache = {}
+        self.last_update = {}
+        
+        self.logger.info("DataLoader initialized successfully")
+    
+    def __del__(self):
+        """Clean up resources."""
         try:
-            # Run the synchronous load_data method in a thread pool
-            loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(self.executor, self.load_data, symbol)
+            if hasattr(self, 'executor'):
+                self.executor.shutdown(wait=False)
+        except Exception as e:
+            self.logger.error(f"Error closing DataLoader: {str(e)}")
+    
+    async def load_data(self, symbol: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """Load stock data for the given symbol."""
+        try:
+            # Use provided dates or defaults
+            start = start_date or self.start_date
+            end = end_date or self.end_date
+            
+            # Check cache first
+            cache_key = f"{symbol}_{start}_{end}"
+            if cache_key in self.data_cache:
+                last_update = self.last_update.get(cache_key)
+                if last_update and (datetime.now() - last_update).seconds < 300:  # 5 minutes cache
+                    return self.data_cache[cache_key]
+            
+            # Load data from database first
+            data = self.db_connector.get_stock_data(symbol, start, end)
+            
+            # If no data in database or data is old, fetch from API
+            if data is None or data.empty:
+                data = await self.fetch_from_api(symbol, start, end)
+                if not data.empty:
+                    self.db_connector.save_stock_data(symbol, data)
+            
+            # Update cache
+            self.data_cache[cache_key] = data
+            self.last_update[cache_key] = datetime.now()
+            
             return data
             
         except Exception as e:
-            self.logger.error(f"Error loading data asynchronously: {e}")
-            return None
+            self.logger.error(f"Error loading data for {symbol}: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+    
+    async def load_from_database(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Load data from the database."""
+        try:
+            # Use the correct database connector method
+            data = await self.db_connector.get_stock_data(symbol, start_date, end_date)
+            if data is not None and not data.empty:
+                self.logger.info(f"Successfully loaded data from database for {symbol}")
+                return data
+            self.logger.info(f"No data found in database for {symbol}")
+            return pd.DataFrame()
+            
+        except Exception as e:
+            self.logger.error(f"Error loading data from database for {symbol}: {str(e)}")
+            return pd.DataFrame()
+    
+    async def fetch_from_api(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Fetch data from the API."""
+        try:
+            # Use yfinance for now, can be extended to support other sources
+            import yfinance as yf
+            
+            # Run in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(
+                self.executor,
+                lambda: yf.download(symbol, start=start_date, end=end_date, auto_adjust=True)
+            )
+            
+            if data.empty:
+                self.logger.warning(f"No data available from API for {symbol}")
+                return pd.DataFrame()
+                
+            # Clean and format data
+            data = data.reset_index()
+            
+            # Print column names for debugging
+            self.logger.info(f"API data columns before processing: {data.columns.tolist()}")
+            
+            # Rename columns to match our schema
+            column_mapping = {
+                'Date': 'date',
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume',
+                'Adj Close': 'adj_close'
+            }
+            
+            # Only map columns that exist in the data
+            existing_columns = {k: v for k, v in column_mapping.items() if k in data.columns}
+            data = data.rename(columns=existing_columns)
+            
+            # Print column names after renaming
+            self.logger.info(f"API data columns after renaming: {data.columns.tolist()}")
+            
+            # If adj_close is missing, use close as adj_close
+            if 'adj_close' not in data.columns and 'close' in data.columns:
+                data['adj_close'] = data['close']
+                self.logger.info("Using close price as adj_close since Adj Close is not available")
+            
+            # Ensure required columns exist
+            required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'adj_close']
+            if not all(col in data.columns for col in required_columns):
+                missing = [col for col in required_columns if col not in data.columns]
+                self.logger.error(f"Missing required columns in API data: {missing}")
+                return pd.DataFrame()
+            
+            # Convert date column to datetime if needed
+            if 'date' in data.columns:
+                data['date'] = pd.to_datetime(data['date'])
+            
+            # Print final column names and data shape
+            self.logger.info(f"Final data columns: {data.columns.tolist()}")
+            self.logger.info(f"Data shape: {data.shape}")
+            
+            self.logger.info(f"Successfully fetched data from API for {symbol}")
+            return data
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching data from API for {symbol}: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return pd.DataFrame()
+    
+    async def save_to_database(self, symbol: str, data: pd.DataFrame):
+        """Save data to the database."""
+        try:
+            # Save data using the database connector's save_stock_data method
+            await self.db_connector.save_stock_data(symbol, data)
+            self.logger.info(f"Successfully saved data to database for {symbol}")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving data to database for {symbol}: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+
+    async def load_data_async(self, symbol: str) -> Optional[pd.DataFrame]:
+        """Load stock data asynchronously."""
+        try:
+            self.logger.info(f"Loading data for {symbol}")
+            
+            # Load data from database first
+            data = self.db_connector.get_stock_data(symbol, self.start_date, self.end_date)
+            
+            # If no data in database or data is old, fetch from API
+            if data is None or data.empty:
+                self.logger.info(f"No data in database for {symbol}, fetching from API")
+                data = await self.fetch_from_api(symbol, self.start_date, self.end_date)
+                if not data.empty:
+                    self.logger.info(f"Successfully fetched data from API for {symbol}")
+                    self.db_connector.save_stock_data(symbol, data)
+                else:
+                    self.logger.warning(f"No data available from API for {symbol}")
+                    return pd.DataFrame()
+            
+            if data.empty:
+                self.logger.warning(f"No data available for {symbol}")
+                return pd.DataFrame()
+                
+            return data
+            
+        except Exception as e:
+            self.logger.error(f"Error loading data for {symbol}: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return pd.DataFrame()
             
     def load_data(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Load stock data from configured source."""
+        """Load stock data synchronously."""
         try:
-            if self.source == 'yahoo':
-                return self._load_from_yahoo(symbol)
-            elif self.source == 'directory':
-                return self._load_from_directory(symbol)
-            else:
-                raise ValueError(f"Unsupported data source: {self.source}")
-                
+            # Create a new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Run the async method
+            data = loop.run_until_complete(self.load_data_async(symbol))
+            
+            # Close the loop
+            loop.close()
+            
+            return data
+            
         except Exception as e:
-            self.logger.error(f"Error loading data for {symbol}: {e}")
+            self.logger.error(f"Error in load_data for {symbol}: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             raise
             
     def _load_from_yahoo(self, symbol: str) -> Optional[pd.DataFrame]:
@@ -167,10 +337,14 @@ class DataLoader:
             self.logger.error(f"Error updating data for {symbol}: {e}")
             return False 
 
-    def __del__(self):
+    def close(self):
         """Clean up resources."""
-        self.executor.shutdown(wait=True) 
-
+        try:
+            self.executor.shutdown(wait=True)
+            self.logger.info("DataLoader resources cleaned up")
+        except Exception as e:
+            self.logger.error(f"Error closing DataLoader: {e}")
+            
     def fetch_stock_data(self, symbol: str, start_date: Optional[datetime] = None, 
                         end_date: Optional[datetime] = None) -> Tuple[pd.DataFrame, str]:
         """

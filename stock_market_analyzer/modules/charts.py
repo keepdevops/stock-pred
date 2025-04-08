@@ -1,5 +1,5 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout
-from PyQt5.QtCore import Qt, QDateTime
+from PyQt6.QtWidgets import QWidget, QVBoxLayout
+from PyQt6.QtCore import Qt, QDateTime
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -10,6 +10,7 @@ from datetime import datetime
 import numpy as np
 import mplfinance as mpf
 import matplotlib.dates as mdates
+from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QCandlestickSeries, QCandlestickSet, QBarSeries, QBarSet, QDateTimeAxis, QValueAxis
 
 class StockChart(QWidget):
     """Widget for displaying stock price charts."""
@@ -39,7 +40,7 @@ class StockChart(QWidget):
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
         
-    def update_data(self, data: pd.DataFrame):
+    def update_data(self, data: pd.DataFrame, title: str = None):
         """Update the chart with new data."""
         try:
             if data is None or data.empty:
@@ -48,69 +49,106 @@ class StockChart(QWidget):
             # Make a copy to avoid modifying the original data
             df = data.copy()
             
-            # Check if we need to set the index to date
-            if not isinstance(df.index, pd.DatetimeIndex):
-                date_col = None
-                if 'date' in df.columns:
-                    date_col = 'date'
-                elif 'Date' in df.columns:
-                    date_col = 'Date'
-                    
-                if date_col:
-                    df = df.set_index(date_col)
-                    df.index = pd.to_datetime(df.index)
-            
-            # Make sure column names match what mplfinance expects
-            df.columns = [col.lower() for col in df.columns]
-            
-            # Ensure all required columns are present
-            required_cols = ['open', 'high', 'low', 'close', 'volume']
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            
-            if missing_cols:
-                # For missing columns, add dummy data based on 'close'
-                for col in missing_cols:
-                    if col == 'volume':
-                        df[col] = 0
-                    elif 'close' in df.columns:
-                        df[col] = df['close']
-            
             # Clear the axes
             self.ax.clear()
             if hasattr(self, 'volume_ax'):
                 self.volume_ax.clear()
-            
-            # Use the last 100 points for better visibility
-            if len(df) > 100:
-                df = df.iloc[-100:]
-            
-            # Set up style and colors
-            mc = mpf.make_marketcolors(
-                up='green', down='red',
-                wick={'up': 'green', 'down': 'red'},
-                volume={'up': 'green', 'down': 'red'},
-                edge={'up': 'green', 'down': 'red'},
-                ohlc='inherit'
-            )
-            
-            s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=False)
-            
-            # Create plot
-            if hasattr(self, 'volume_ax'):
-                mpf.plot(
-                    df, type='candle', style=s,
-                    ax=self.ax, volume=self.volume_ax,
-                    warn_too_much_data=10000  # Silence warnings for large datasets
-                )
+                
+            # Set title if provided
+            if title:
+                self.ax.set_title(title)
             else:
-                mpf.plot(
-                    df, type='candle', style=s,
-                    ax=self.ax, volume=False,
-                    warn_too_much_data=10000  # Silence warnings for large datasets
-                )
+                self.ax.set_title('Stock Price')
+                
+            # Check if we have multiple symbols
+            multiple_symbols = 'symbol' in df.columns and len(df['symbol'].unique()) > 1
             
-            # Configure date formatting
+            if multiple_symbols:
+                # Plot each symbol separately with different colors
+                symbols = df['symbol'].unique()
+                
+                # Define colors
+                colors = ['blue', 'red', 'green', 'purple', 'orange', 'brown', 'pink', 'gray', 'cyan', 'magenta']
+                
+                for i, symbol in enumerate(symbols):
+                    symbol_data = df[df['symbol'] == symbol].copy()
+                    
+                    # Sort by date
+                    if 'date' in symbol_data.columns:
+                        symbol_data = symbol_data.sort_values('date')
+                        
+                    # Plot line chart for the symbol with appropriate color
+                    color = colors[i % len(colors)]
+                    self.ax.plot(symbol_data['date'], symbol_data['close'], label=symbol, color=color)
+                
+                # Add legend
+                self.ax.legend()
+            else:
+                # Single symbol - use candlestick chart
+                # Check if we need to set the index to date
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    date_col = None
+                    if 'date' in df.columns:
+                        date_col = 'date'
+                    elif 'Date' in df.columns:
+                        date_col = 'Date'
+                        
+                    if date_col:
+                        df = df.set_index(date_col)
+                        df.index = pd.to_datetime(df.index)
+                
+                # Make sure column names match what mplfinance expects
+                df.columns = [col.lower() for col in df.columns]
+                
+                # Ensure all required columns are present
+                required_cols = ['open', 'high', 'low', 'close', 'volume']
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                
+                if missing_cols:
+                    # For missing columns, add dummy data based on 'close'
+                    for col in missing_cols:
+                        if col == 'volume':
+                            df[col] = 0
+                        elif 'close' in df.columns:
+                            df[col] = df['close']
+                
+                # Use the last 100 points for better visibility
+                if len(df) > 100:
+                    df = df.iloc[-100:]
+                
+                # Set up style and colors
+                mc = mpf.make_marketcolors(
+                    up='green', down='red',
+                    wick={'up': 'green', 'down': 'red'},
+                    volume={'up': 'green', 'down': 'red'},
+                    edge={'up': 'green', 'down': 'red'},
+                    ohlc='inherit'
+                )
+                
+                s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=False)
+                
+                # Create plot
+                if hasattr(self, 'volume_ax'):
+                    mpf.plot(
+                        df, type='candle', style=s,
+                        ax=self.ax, volume=self.volume_ax,
+                        warn_too_much_data=10000  # Silence warnings for large datasets
+                    )
+                else:
+                    mpf.plot(
+                        df, type='candle', style=s,
+                        ax=self.ax, volume=False,
+                        warn_too_much_data=10000  # Silence warnings for large datasets
+                    )
+            
+            # Configure date formatting and labels
             self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            self.ax.set_xlabel('Date')
+            self.ax.set_ylabel('Price')
+            self.ax.grid(True)
+            
+            # Rotate x-axis labels
+            plt.xticks(rotation=45)
             
             # Adjust layout
             self.figure.tight_layout()
@@ -293,26 +331,71 @@ class TechnicalIndicatorChart(StockChart):
         # Create additional axes for indicators
         self.ax2 = self.ax.twinx()
         
-    def update_data(self, data: pd.DataFrame):
+    def update_data(self, data: pd.DataFrame, title: str = None):
         """Update the chart with new data and indicators."""
         try:
             # Clear existing plots
             self.ax.clear()
             self.ax2.clear()
             
-            # Plot price data
-            self.ax.plot(data['date'], data['close'], label='Price', color='blue')
+            # Set title if provided
+            if title:
+                self.ax.set_title(title)
+            else:
+                self.ax.set_title('Technical Indicators')
             
-            # Plot indicators if available
-            if 'ma5' in data.columns:
-                self.ax.plot(data['date'], data['ma5'], label='MA5', color='orange')
-            if 'ma20' in data.columns:
-                self.ax.plot(data['date'], data['ma20'], label='MA20', color='green')
-            if 'rsi' in data.columns:
-                self.ax2.plot(data['date'], data['rsi'], label='RSI', color='red')
+            # Check if we have multiple symbols
+            multiple_symbols = 'symbol' in data.columns and len(data['symbol'].unique()) > 1
+            
+            if multiple_symbols:
+                # Plot each symbol separately with different colors
+                symbols = data['symbol'].unique()
                 
+                # Define colors
+                colors = ['blue', 'red', 'green', 'purple', 'orange', 'brown', 'pink', 'gray', 'cyan', 'magenta']
+                
+                for i, symbol in enumerate(symbols):
+                    symbol_data = data[data['symbol'] == symbol].copy()
+                    
+                    # Sort by date
+                    if 'date' in symbol_data.columns:
+                        symbol_data = symbol_data.sort_values('date')
+                        
+                    # Plot price data for the symbol with appropriate color
+                    color = colors[i % len(colors)]
+                    self.ax.plot(symbol_data['date'], symbol_data['close'], label=f"{symbol} Price", color=color)
+                    
+                    # Plot indicators if available for this symbol
+                    if 'ma5' in symbol_data.columns:
+                        self.ax.plot(symbol_data['date'], symbol_data['ma5'], 
+                                   label=f"{symbol} MA5", 
+                                   color=color, 
+                                   linestyle='--')
+                                   
+                    if 'ma20' in symbol_data.columns:
+                        self.ax.plot(symbol_data['date'], symbol_data['ma20'], 
+                                   label=f"{symbol} MA20", 
+                                   color=color, 
+                                   linestyle=':')
+                                   
+                    if 'rsi' in symbol_data.columns:
+                        rsi_color = colors[(i + 5) % len(colors)]  # Use different color for RSI
+                        self.ax2.plot(symbol_data['date'], symbol_data['rsi'], 
+                                    label=f"{symbol} RSI", 
+                                    color=rsi_color)
+            else:
+                # Plot price data
+                self.ax.plot(data['date'], data['close'], label='Price', color='blue')
+                
+                # Plot indicators if available
+                if 'ma5' in data.columns:
+                    self.ax.plot(data['date'], data['ma5'], label='MA5', color='orange')
+                if 'ma20' in data.columns:
+                    self.ax.plot(data['date'], data['ma20'], label='MA20', color='green')
+                if 'rsi' in data.columns:
+                    self.ax2.plot(data['date'], data['rsi'], label='RSI', color='red')
+            
             # Customize plot
-            self.ax.set_title('Technical Indicators')
             self.ax.set_xlabel('Date')
             self.ax.set_ylabel('Price', color='blue')
             self.ax2.set_ylabel('RSI', color='red')
@@ -334,7 +417,7 @@ class TechnicalIndicatorChart(StockChart):
             
         except Exception as e:
             self.logger.error(f"Error updating technical indicators: {e}")
-            
+
     def add_real_time_point(
         self,
         timestamp: QDateTime,
@@ -369,7 +452,6 @@ class TechnicalIndicatorChart(StockChart):
             
         except Exception as e:
             self.logger.error(f"Error adding real-time indicators: {e}")
-
 
 class IchimokuCloudChart(QWidget):
     """Chart for Ichimoku Cloud indicators."""
@@ -446,18 +528,29 @@ class IchimokuCloudChart(QWidget):
             # Use the last 100 points for better visibility
             if len(df_valid) > 100:
                 df_valid = df_valid.iloc[-100:]
+                # We need to also slice our indicators to match the df_valid length
+                valid_idx_subset = valid_idx[valid_idx].index[-100:]
+                tenkan_sen_subset = tenkan_sen.loc[valid_idx_subset]
+                kijun_sen_subset = kijun_sen.loc[valid_idx_subset]
+                senkou_span_a_subset = senkou_span_a.loc[valid_idx_subset]
+                senkou_span_b_subset = senkou_span_b.loc[valid_idx_subset]
+            else:
+                tenkan_sen_subset = tenkan_sen[valid_idx]
+                kijun_sen_subset = kijun_sen[valid_idx]
+                senkou_span_a_subset = senkou_span_a[valid_idx]
+                senkou_span_b_subset = senkou_span_b[valid_idx]
             
-            # Plot price data
+            # Plot price data - using the same df_valid.index for x-axis in all plots
             self.ax.plot(df_valid.index, df_valid['close'], label='Close', color='black', linewidth=1.5)
-            self.ax.plot(df_valid.index, tenkan_sen[valid_idx], label='Tenkan-sen', color='red', linewidth=1)
-            self.ax.plot(df_valid.index, kijun_sen[valid_idx], label='Kijun-sen', color='blue', linewidth=1)
+            self.ax.plot(df_valid.index, tenkan_sen_subset, label='Tenkan-sen', color='red', linewidth=1)
+            self.ax.plot(df_valid.index, kijun_sen_subset, label='Kijun-sen', color='blue', linewidth=1)
             
-            # Plot cloud with fill_between
+            # Plot cloud with fill_between - using the same df_valid.index
             self.ax.fill_between(
                 df_valid.index, 
-                senkou_span_a[valid_idx], 
-                senkou_span_b[valid_idx], 
-                where=(senkou_span_a[valid_idx] >= senkou_span_b[valid_idx]), 
+                senkou_span_a_subset, 
+                senkou_span_b_subset, 
+                where=(senkou_span_a_subset >= senkou_span_b_subset), 
                 color='lightgreen', 
                 alpha=0.3, 
                 label='Cloud (Bullish)'
@@ -465,9 +558,9 @@ class IchimokuCloudChart(QWidget):
             
             self.ax.fill_between(
                 df_valid.index, 
-                senkou_span_a[valid_idx], 
-                senkou_span_b[valid_idx], 
-                where=(senkou_span_a[valid_idx] < senkou_span_b[valid_idx]), 
+                senkou_span_a_subset, 
+                senkou_span_b_subset, 
+                where=(senkou_span_a_subset < senkou_span_b_subset), 
                 color='lightcoral', 
                 alpha=0.3, 
                 label='Cloud (Bearish)'
@@ -491,6 +584,8 @@ class IchimokuCloudChart(QWidget):
             
         except Exception as e:
             self.logger.error(f"Error updating Ichimoku Cloud chart: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             # Display error message on chart
             self.ax.clear()
             self.ax.text(0.5, 0.5, f"Error rendering Ichimoku Cloud chart:\n{str(e)}", 

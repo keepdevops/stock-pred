@@ -1,54 +1,116 @@
-from PyQt5.QtCore import QObject, pyqtSignal, QTimer, QDateTime
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QDateTime
 import asyncio
 import logging
-from typing import Dict, Any, Optional, Coroutine
+import time
+from typing import Dict, Any, Optional, Coroutine, Callable
 import pandas as pd
 import yfinance as yf
+import numpy as np
+from datetime import datetime, timedelta
 
 class RealTimeDataManager(QObject):
-    """Manager for real-time data updates and async operations."""
+    """Manages real-time data updates and async tasks."""
     
-    # Signals for data updates
-    price_update = pyqtSignal(str, float)  # symbol, price
-    indicator_update = pyqtSignal(str, dict)  # symbol, indicators
-    error_occurred = pyqtSignal(str)  # error message
-    
-    def __init__(self, parent=None):
+    price_updated = pyqtSignal(str, float)
+    indicators_updated = pyqtSignal(str, dict)
+    error_occurred = pyqtSignal(str)
+    task_started = pyqtSignal(str)
+    task_completed = pyqtSignal(str, object)
+    task_error = pyqtSignal(str, str)
+
+    def __init__(self, data_loader, parent=None):
+        """Initialize the RealTimeDataManager.
+        
+        Args:
+            data_loader: The data loader instance to use for fetching data
+            parent: Optional parent QObject
+        """
         super().__init__(parent)
+        self.data_loader = data_loader
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_data)
+        self.active_symbols = set()
+        self.tasks = {}
         self.logger = logging.getLogger(__name__)
         self.tickers: Dict[str, yf.Ticker] = {}
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_data)
         self.update_interval = 5000  # 5 seconds
         
-    def start_updates(self, symbol: str):
+        # Initialize asyncio event loop
+        try:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            self.logger.info("Event loop setup completed")
+        except Exception as e:
+            self.logger.error(f"Error setting up event loop: {e}")
+            raise
+            
+    def start(self, symbol: str) -> bool:
         """Start real-time updates for a symbol."""
         try:
-            if symbol not in self.tickers:
-                self.tickers[symbol] = yf.Ticker(symbol)
-                self.logger.info(f"Started real-time updates for {symbol}")
+            self.logger.info(f"Starting real-time updates for {symbol}")
+            
+            # Check if symbol is already being tracked
+            if symbol in self.tickers:
+                self.logger.warning(f"Symbol {symbol} is already being tracked")
+                return True
                 
+            # Create yfinance ticker
+            ticker = yf.Ticker(symbol)
+            
+            # Verify ticker is valid
+            if not ticker.info:
+                self.logger.error(f"Invalid symbol: {symbol}")
+                self.error_occurred.emit(f"Invalid symbol: {symbol}")
+                return False
+                
+            # Add to tracking
+            self.tickers[symbol] = ticker
+            
+            # Start update timer if not already running
             if not self.update_timer.isActive():
                 self.update_timer.start(self.update_interval)
+                self.logger.info("Started update timer")
                 
-        except Exception as e:
-            self.logger.error(f"Error starting updates for {symbol}: {e}")
-            self.error_occurred.emit(f"Failed to start updates: {str(e)}")
+            self.logger.info(f"Successfully started real-time updates for {symbol}")
+            return True
             
-    def stop_updates(self, symbol: str):
+        except Exception as e:
+            self.logger.error(f"Error starting real-time updates for {symbol}: {e}")
+            self.error_occurred.emit(f"Failed to start updates: {str(e)}")
+            return False
+
+    def stop(self, symbol: str) -> bool:
         """Stop real-time updates for a symbol."""
         try:
-            if symbol in self.tickers:
-                del self.tickers[symbol]
-                self.logger.info(f"Stopped real-time updates for {symbol}")
+            self.logger.info(f"Stopping real-time updates for {symbol}")
+            
+            # Check if symbol is being tracked
+            if symbol not in self.tickers:
+                self.logger.warning(f"Symbol {symbol} is not being tracked")
+                return True
                 
+            # Remove from tracking
+            del self.tickers[symbol]
+            
+            # Stop update timer if no symbols left
             if not self.tickers and self.update_timer.isActive():
                 self.update_timer.stop()
+                self.logger.info("Stopped update timer")
                 
-        except Exception as e:
-            self.logger.error(f"Error stopping updates for {symbol}: {e}")
-            self.error_occurred.emit(f"Failed to stop updates: {str(e)}")
+            self.logger.info(f"Successfully stopped real-time updates for {symbol}")
+            return True
             
+        except Exception as e:
+            self.logger.error(f"Error stopping real-time updates for {symbol}: {e}")
+            self.error_occurred.emit(f"Failed to stop updates: {str(e)}")
+            return False
+
+    def is_running(self, symbol: str) -> bool:
+        """Check if real-time updates are running for a symbol."""
+        return symbol in self.tickers
+
     def update_data(self):
         """Update data for all active symbols."""
         for symbol, ticker in self.tickers.items():
@@ -62,8 +124,8 @@ class RealTimeDataManager(QObject):
                     indicators = self.calculate_indicators(ticker)
                     
                     # Emit signals
-                    self.price_update.emit(symbol, current_price)
-                    self.indicator_update.emit(symbol, indicators)
+                    self.price_updated.emit(symbol, current_price)
+                    self.indicators_updated.emit(symbol, indicators)
                     
             except Exception as e:
                 self.logger.error(f"Error updating {symbol}: {e}")
@@ -103,6 +165,120 @@ class RealTimeDataManager(QObject):
         self.update_interval = interval
         if self.update_timer.isActive():
             self.update_timer.setInterval(interval)
+
+    def create_task(self, task_id: str, task_func: Callable, *args, **kwargs) -> str:
+        """Create a new task for real-time data operations."""
+        try:
+            self.logger.info(f"Creating new task: {task_id}")
+            
+            # Create task function with error handling
+            async def task_wrapper():
+                try:
+                    # Check if task_func is a coroutine
+                    if asyncio.iscoroutinefunction(task_func):
+                        result = await task_func(*args, **kwargs)
+                    else:
+                        result = await asyncio.to_thread(task_func, *args, **kwargs)
+                    self.task_completed.emit(task_id, result)
+                except Exception as e:
+                    self.logger.error(f"Task {task_id} failed: {str(e)}")
+                    self.task_error.emit(task_id, str(e))
+            
+            # Add task to event loop
+            task = self.loop.create_task(task_wrapper())
+            self.tasks[task_id] = task
+            self.task_started.emit(task_id)
+            
+            return task_id
+            
+        except Exception as e:
+            self.logger.error(f"Error creating task {task_id}: {str(e)}")
+            raise
+
+    def get_task_status(self, task_id: str) -> Dict[str, Any]:
+        """Get the status of a task."""
+        try:
+            task = self.tasks.get(task_id)
+            if task:
+                return {
+                    'id': task_id,
+                    'status': 'running' if not task.done() else 'completed',
+                    'result': task.result() if task.done() else None,
+                    'exception': task.exception() if task.done() and task.exception() else None
+                }
+            return {'id': task_id, 'status': 'not_found'}
+        except Exception as e:
+            self.logger.error(f"Error getting task status: {str(e)}")
+            return {'id': task_id, 'status': 'error', 'error': str(e)}
+
+    def cancel_task(self, task_id: str) -> bool:
+        """Cancel a running task."""
+        try:
+            task = self.tasks.get(task_id)
+            if task and not task.done():
+                task.cancel()
+                self.logger.info(f"Cancelled task: {task_id}")
+                return True
+            return False
+        except Exception as e:
+            self.logger.error(f"Error cancelling task: {str(e)}")
+            return False
+
+    def _run_event_loop(self):
+        """Run the event loop for a short time."""
+        try:
+            if self.loop and not self.loop.is_closed():
+                self.loop.stop()
+                self.loop.run_forever()
+        except Exception as e:
+            self.logger.error(f"Error running event loop: {e}")
+            
+    def cleanup(self):
+        """Clean up resources."""
+        try:
+            self.logger.info("Starting RealTimeDataManager cleanup")
+            
+            # Stop the timer first to prevent new events
+            if hasattr(self, 'timer'):
+                if self.timer.isActive():
+                    self.logger.info("Stopping timer")
+                    self.timer.stop()
+            
+            # Cancel all tasks
+            task_names = list(self.tasks.keys())
+            if task_names:
+                self.logger.info(f"Cancelling {len(task_names)} active tasks")
+                for task_name in task_names:
+                    try:
+                        self.cancel_task(task_name)
+                    except Exception as e:
+                        self.logger.error(f"Error cancelling task {task_name}: {e}")
+            
+            # Stop the event loop
+            if self.loop and not self.loop.is_closed():
+                try:
+                    self.logger.info("Stopping event loop")
+                    self.loop.stop()
+                    self.loop.close()
+                    self.loop = None
+                except Exception as e:
+                    self.logger.error(f"Error stopping event loop: {e}")
+            
+            self.logger.info("RealTimeDataManager cleanup completed")
+                
+        except Exception as e:
+            self.logger.error(f"Error during RealTimeDataManager cleanup: {e}")
+            # Try to ensure critical cleanup happens even with errors
+            try:
+                if hasattr(self, 'timer') and self.timer.isActive():
+                    self.timer.stop()
+                
+                if self.loop and not self.loop.is_closed():
+                    self.loop.close()
+                    
+                self.tasks.clear()
+            except:
+                pass
 
 class AsyncTaskManager(QObject):
     """Manages asynchronous tasks in the application."""
@@ -261,7 +437,7 @@ class AsyncTaskManager(QObject):
             
             # Process any pending events
             import time
-            from PyQt5.QtCore import QCoreApplication
+            from PyQt6.QtCore import QCoreApplication
             QCoreApplication.processEvents()
             
             # Allow some time for tasks to finish
