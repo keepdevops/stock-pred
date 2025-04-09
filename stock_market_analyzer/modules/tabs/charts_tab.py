@@ -14,23 +14,24 @@ from matplotlib.figure import Figure
 from stock_market_analyzer.modules.message_bus import MessageBus
 
 # Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.append(project_root)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 class ChartsTab(QWidget):
-    """Charts tab for visualizing stock data."""
+    """Charts tab for the stock market analyzer."""
     
-    def __init__(self):
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.message_bus = MessageBus()
+        self.logger = logging.getLogger(__name__)
         self.current_data = None
         self.setup_ui()
         
     def setup_ui(self):
         """Set up the user interface."""
-        layout = QVBoxLayout()
-        self.setLayout(layout)
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
         
         # Chart controls
         controls_layout = QHBoxLayout()
@@ -49,16 +50,18 @@ class ChartsTab(QWidget):
         self.refresh_button.clicked.connect(self.refresh_chart)
         controls_layout.addWidget(self.refresh_button)
         
-        layout.addLayout(controls_layout)
+        self.layout.addLayout(controls_layout)
         
         # Matplotlib figure
         self.figure = Figure(figsize=(8, 6))
         self.canvas = FigureCanvas(self.figure)
-        layout.addWidget(self.canvas)
+        self.layout.addWidget(self.canvas)
         
         # Status label
         self.status_label = QLabel("Ready to display charts")
-        layout.addWidget(self.status_label)
+        self.layout.addWidget(self.status_label)
+        
+        self.logger.info("Charts tab initialized")
         
         # Subscribe to message bus
         self.message_bus.subscribe("Charts", self.handle_message)
@@ -179,11 +182,20 @@ class ChartsTab(QWidget):
                 self.status_label.setText(f"Analysis completed: {data[1]}")
                 
             elif message_type == "error":
-                self.status_label.setText(f"Error: {data}")
+                error_msg = f"Received error from {sender}: {data}"
+                self.logger.error(error_msg)
                 
         except Exception as e:
-            self.logger.error(f"Error handling message: {str(e)}")
-            self.message_bus.publish("Charts", "error", str(e))
+            error_log = f"Error handling message in Charts tab: {str(e)}"
+            self.logger.error(error_log)
+            
+    def publish_message(self, message_type: str, data: Any):
+        """Publish a message to the message bus."""
+        try:
+            self.message_bus.publish("Charts", message_type, data)
+        except Exception as e:
+            error_log = f"Error publishing message from Charts tab: {str(e)}"
+            self.logger.error(error_log)
 
 def main():
     """Main function for the charts tab process."""

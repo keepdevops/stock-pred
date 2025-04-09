@@ -11,18 +11,19 @@ from PyQt6.QtCore import QObject, pyqtSignal, Qt
 import pandas as pd
 
 # Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.append(project_root)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from stock_market_analyzer.modules.message_bus import MessageBus
 
 class TradingTab(QWidget):
-    """Trading tab implementation with inter-tab communication."""
+    """Trading tab for the stock market analyzer."""
     
-    def __init__(self):
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.message_bus = MessageBus()
+        self.logger = logging.getLogger(__name__)
         self.positions = {}
         self.setup_ui()
         
@@ -87,6 +88,8 @@ class TradingTab(QWidget):
         # Subscribe to message bus
         self.message_bus.subscribe("Trading", self.handle_message)
         
+        self.logger.info("Trading tab initialized")
+        
     def handle_message(self, sender: str, message_type: str, data: Any):
         """Handle incoming messages."""
         try:
@@ -97,11 +100,12 @@ class TradingTab(QWidget):
                 if ticker in self.positions:
                     self.update_position(ticker, data['Close'].iloc[-1])
             elif message_type == "error":
-                self.status_label.setText(f"Error: {data}")
+                error_msg = f"Received error from {sender}: {data}"
+                self.logger.error(error_msg)
                 
         except Exception as e:
-            self.logger.error(f"Error handling message: {str(e)}")
-            self.message_bus.publish("Trading", "error", str(e))
+            error_log = f"Error handling message in Trading tab: {str(e)}"
+            self.logger.error(error_log)
             
     def handle_trading_signal(self, data: Any):
         """Handle trading signals."""
@@ -210,6 +214,14 @@ class TradingTab(QWidget):
             pl_item = QTableWidgetItem(f"{pl:.2f}")
             pl_item.setForeground(Qt.GlobalColor.green if pl >= 0 else Qt.GlobalColor.red)
             self.positions_table.setItem(row, 4, pl_item)
+
+    def publish_message(self, message_type: str, data: Any):
+        """Publish a message to the message bus."""
+        try:
+            self.message_bus.publish("Trading", message_type, data)
+        except Exception as e:
+            error_log = f"Error publishing message from Trading tab: {str(e)}"
+            self.logger.error(error_log)
 
 def main():
     """Main function for the trading tab process."""
