@@ -1,402 +1,277 @@
-import duckdb
-import pandas as pd
+import sqlite3
 import logging
 import os
-import time
+from pathlib import Path
+from typing import List, Dict, Optional, Any
 import psutil
-from datetime import datetime, timedelta
-import sqlite3
-import threading
-from typing import Optional, Dict, Any
-import traceback
+from datetime import datetime
 
 class DatabaseConnector:
-    """Handles database operations for stock data."""
+    """Class to handle database connections and operations."""
     
-    def __init__(self, db_path: str = None):
-        """Initialize the database connector."""
+    def __init__(self):
+        self.project_root = Path(__file__).parent.parent.parent
+        self.db_path = self.project_root / "data" / "stock_data.db"
         self.logger = logging.getLogger(__name__)
-        self.db_path = db_path or os.path.join(os.path.dirname(__file__), '..', 'data', 'stock_data.db')
-        self.connection = None
-        self._ensure_db_directory()
-        self._initialize_database()
-        self.logger.info("Database connector initialized")
         
-    def _ensure_db_directory(self):
-        """Ensure the database directory exists."""
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        # Ensure the data directory exists
+        os.makedirs(self.db_path.parent, exist_ok=True)
         
+        # Initialize connection
+        self.conn = None
+        self.cursor = None
+        self.connect()
+        
+    def connect(self):
+        """Establish a connection to the SQLite database."""
+        try:
+            self.conn = sqlite3.connect(str(self.db_path))
+            self.cursor = self.conn.cursor()
+            self.logger.info(f"Connected to database at {self.db_path}")
+            
+            # Initialize tables if they don't exist
+            self._initialize_database()
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error connecting to database: {e}")
+            raise
+    
+    def disconnect(self):
+        """Close the database connection."""
+        if self.conn:
+            self.conn.close()
+            self.logger.info("Database connection closed")
+    
+    def get_stock_data(self, symbol: Optional[str] = None, market_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Retrieve stock data from the database.
+        
+        Args:
+            symbol: Optional filter by stock symbol
+            market_type: Optional filter by market type
+        
+        Returns:
+            List of dictionaries containing stock data
+        """
+        try:
+            conditions = []
+            params = []
+            
+            if symbol:
+                conditions.append("symbol = ?")
+                params.append(symbol)
+            
+            if market_type:
+                conditions.append("market_type = ?")
+                params.append(market_type)
+            
+            query = "SELECT * FROM stock_data"
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            
+            self.cursor.execute(query, params)
+            columns = [description[0] for description in self.cursor.description]
+            results = []
+            
+            for row in self.cursor.fetchall():
+                results.append(dict(zip(columns, row)))
+            
+            return results
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error retrieving stock data: {e}")
+            return []
+    
+    def insert_stock_data(self, data: Dict[str, Any]) -> bool:
+        """
+        Insert stock data into the database.
+        
+        Args:
+            data: Dictionary containing stock data
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            columns = ", ".join(data.keys())
+            placeholders = ", ".join(["?" for _ in data])
+            query = f"INSERT INTO stock_data ({columns}) VALUES ({placeholders})"
+            
+            self.cursor.execute(query, list(data.values()))
+            self.conn.commit()
+            
+            self.logger.info(f"Inserted stock data for symbol: {data.get('symbol')}")
+            return True
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error inserting stock data: {e}")
+            self.conn.rollback()
+            return False
+    
+    def update_stock_data(self, symbol: str, data: Dict[str, Any]) -> bool:
+        """
+        Update stock data in the database.
+        
+        Args:
+            symbol: Stock symbol to update
+            data: Dictionary containing updated stock data
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+            query = f"UPDATE stock_data SET {set_clause} WHERE symbol = ?"
+            
+            params = list(data.values())
+            params.append(symbol)
+            
+            self.cursor.execute(query, params)
+            self.conn.commit()
+            
+            self.logger.info(f"Updated stock data for symbol: {symbol}")
+            return True
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error updating stock data: {e}")
+            self.conn.rollback()
+            return False
+    
+    def delete_stock_data(self, symbol: str) -> bool:
+        """
+        Delete stock data from the database.
+        
+        Args:
+            symbol: Stock symbol to delete
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.cursor.execute("DELETE FROM stock_data WHERE symbol = ?", (symbol,))
+            self.conn.commit()
+            
+            self.logger.info(f"Deleted stock data for symbol: {symbol}")
+            return True
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error deleting stock data: {e}")
+            self.conn.rollback()
+            return False
+    
     def _initialize_database(self):
         """Initialize the database with required tables."""
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
             # Create stock_data table
-            cursor.execute("""
+            self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS stock_data (
-                    symbol TEXT,
-                    date DATE,
-                    open REAL,
-                    high REAL,
-                    low REAL,
-                    close REAL,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    name TEXT,
+                    market_type TEXT,
+                    last_price REAL,
                     volume INTEGER,
-                    adj_close REAL,
-                    PRIMARY KEY (symbol, date)
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
-            conn.commit()
+            # Create predictions table
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS predictions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    predicted_price REAL NOT NULL,
+                    model_name TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Create indexes
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON stock_data(symbol)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_market_type ON stock_data(market_type)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_pred_symbol ON predictions(symbol)")
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_pred_model ON predictions(model_name)")
+            
+            self.conn.commit()
             self.logger.info("Database initialized successfully")
             
-        except Exception as e:
-            self.logger.error(f"Error initializing database: {str(e)}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+        except sqlite3.Error as e:
+            self.logger.error(f"Error initializing database: {e}")
+            self.conn.rollback()
             raise
+    
+    def save_prediction(self, symbol: str, predicted_price: float, model_name: str) -> bool:
+        """
+        Save a prediction to the database.
         
-    def _get_connection(self):
-        """Get a database connection."""
-        if self.connection is None:
-            self.connection = sqlite3.connect(self.db_path)
-        return self.connection
-        
-    def save_stock_data(self, symbol: str, data: pd.DataFrame):
-        """Save stock data to the database."""
+        Args:
+            symbol: Stock symbol
+            predicted_price: Predicted price value
+            model_name: Name of the model used for prediction
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            # Convert Series to DataFrame if necessary
-            if isinstance(data, pd.Series):
-                data = data.to_frame().T
-                
-            # Ensure data is a DataFrame
-            if not isinstance(data, pd.DataFrame):
-                raise ValueError("Data must be a pandas DataFrame")
-                
-            # Add symbol column if it doesn't exist
-            if 'symbol' not in data.columns:
-                data['symbol'] = symbol
-                
-            # Get connection
-            conn = self._get_connection()
+            self.cursor.execute("""
+                INSERT INTO predictions (symbol, predicted_price, model_name)
+                VALUES (?, ?, ?)
+            """, (symbol, predicted_price, model_name))
             
-            # Save data to database
-            data.to_sql('stock_data', conn, if_exists='append', index=False)
-            
-            self.logger.info(f"Successfully saved data for {symbol} to database")
-            
-        except Exception as e:
-            self.logger.error(f"Error saving data for {symbol} to database: {str(e)}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
-        
-    def get_stock_data(self, symbol: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-        """Get stock data from the database."""
-        try:
-            conn = self._get_connection()
-            
-            # Build query
-            query = "SELECT * FROM stock_data WHERE symbol = ?"
-            params = [symbol]
-            
-            if start_date:
-                query += " AND date >= ?"
-                params.append(start_date)
-            if end_date:
-                query += " AND date <= ?"
-                params.append(end_date)
-            
-            # Execute query
-            df = pd.read_sql_query(query, conn, params=params)
-            
-            if not df.empty:
-                self.logger.info(f"Successfully loaded data from database for {symbol}")
-            else:
-                self.logger.info(f"No data found in database for {symbol}")
-                
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"Error loading data from database for {symbol}: {str(e)}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return pd.DataFrame()
-        
-    def close(self):
-        """Close the database connection."""
-        try:
-            if self.connection:
-                self.connection.close()
-                self.connection = None
-                self.logger.info("Database connection closed")
-        except Exception as e:
-            self.logger.error(f"Error closing database connection: {str(e)}")
-            
-    def connect(self):
-        """Establish connection to the database with retry logic."""
-        for attempt in range(self.max_retries):
-            try:
-                self.logger.info(f"Attempting database connection (attempt {attempt + 1}/{self.max_retries})")
-                
-                # Ensure directory exists
-                os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-                
-                # Try to connect
-                self.connection = duckdb.connect(self.db_path)
-                
-                # Test the connection
-                self.connection.execute("SELECT 1")
-                
-                self.logger.info("Database connection established successfully")
-                return True
-                
-            except Exception as e:
-                self.logger.warning(f"Database connection attempt {attempt + 1}/{self.max_retries} failed: {str(e)}")
-                
-                # Try to release locks if this isn't the first attempt
-                if attempt > 0:
-                    self._release_db_locks()
-                
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay)
-                else:
-                    # Last attempt, try force unlock
-                    if self.force_unlock():
-                        try:
-                            self.connection = duckdb.connect(self.db_path)
-                            self.connection.execute("SELECT 1")
-                            self.logger.info("Database connection established after force unlock")
-                            return True
-                        except Exception as force_error:
-                            self.logger.error(f"Force unlock didn't help: {force_error}")
-                    
-                    self.logger.error("Failed to establish database connection after all retries")
-                    return False
-                    
-    def _release_db_locks(self):
-        """Attempt to release any locks on the database file."""
-        try:
-            if not os.path.exists(self.db_path):
-                return
-                
-            self.logger.info(f"Attempting to release locks on {self.db_path}")
-            
-            # Get current process ID
-            current_pid = os.getpid()
-            
-            # Look for other Python processes that might be holding the lock
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    # Skip current process
-                    if proc.info['pid'] == current_pid:
-                        continue
-                        
-                    # Check if it's a Python process
-                    if 'python' in proc.info['name'].lower():
-                        cmdline = proc.info['cmdline']
-                        if any('stock_market_analyzer' in str(cmd) for cmd in cmdline if cmd):
-                            self.logger.warning(f"Found potential locking process: PID {proc.info['pid']}")
-                            
-                            # Try to release locks by closing database connections in other processes
-                            # This is a soft approach and won't kill the process
-                            try:
-                                # Check if the process is still running
-                                if psutil.pid_exists(proc.info['pid']):
-                                    self.logger.info(f"Attempting to release locks from process {proc.info['pid']}")
-                                    # Try to unlock by creating a temporary read-only connection
-                                    try:
-                                        temp_conn = duckdb.connect(self.db_path, read_only=True)
-                                        temp_conn.close()
-                                        self.logger.info(f"Successfully released locks via temporary connection")
-                                    except Exception as e:
-                                        self.logger.warning(f"Could not create temporary connection: {e}")
-                            except Exception as e:
-                                self.logger.warning(f"Error checking process {proc.info['pid']}: {e}")
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-                    
-            self.logger.info("Lock release attempt completed")
-            
-        except Exception as e:
-            self.logger.error(f"Error while trying to release database locks: {e}")
-            
-    def force_unlock(self):
-        """Force unlock the database by recreating it if necessary."""
-        try:
-            if not os.path.exists(self.db_path):
-                self.logger.info(f"Database file {self.db_path} doesn't exist, no need to unlock")
-                return True
-                
-            self.logger.warning(f"Attempting to force unlock database {self.db_path}")
-            
-            # First try the gentle approach - release locks
-            self._release_db_locks()
-            
-            # Try to connect to verify if locks are released
-            try:
-                temp_conn = duckdb.connect(self.db_path)
-                temp_conn.close()
-                self.logger.info("Database unlocked successfully")
-                return True
-            except Exception as e:
-                self.logger.warning(f"Soft unlock failed: {e}")
-            
-            # If still locked, try to create a temporary backup and restore
-            backup_path = f"{self.db_path}.backup_{int(time.time())}"
-            self.logger.warning(f"Creating backup at {backup_path} before force unlock")
-            
-            try:
-                # Copy the database file to backup
-                import shutil
-                if os.path.exists(self.db_path):
-                    shutil.copy2(self.db_path, backup_path)
-                    self.logger.info(f"Created backup at {backup_path}")
-                    
-                    # Remove the current file
-                    os.remove(self.db_path)
-                    self.logger.info(f"Removed locked database file")
-                    
-                    # Create a new empty database
-                    temp_conn = duckdb.connect(self.db_path)
-                    temp_conn.close()
-                    self.logger.info("Created new database file")
-                    
-                    return True
-            except Exception as e:
-                self.logger.error(f"Force unlock failed: {e}")
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"Error during force unlock: {e}")
-            return False
-            
-    def setup_database(self):
-        """Set up the database schema."""
-        max_retries = 3
-        retry_delay = 1  # seconds
-        
-        for attempt in range(max_retries):
-            try:
-                # Try to release any existing locks
-                if attempt > 0:
-                    self._release_db_locks()
-                    
-                # Try to connect with write access
-                self.connection = duckdb.connect(self.db_path)
-                
-                # Create tables
-                self.connection.execute("""
-                    CREATE TABLE IF NOT EXISTS stock_data (
-                        date DATE,
-                        symbol VARCHAR,
-                        open DOUBLE,
-                        high DOUBLE,
-                        low DOUBLE,
-                        close DOUBLE,
-                        volume BIGINT,
-                        PRIMARY KEY (date, symbol)
-                    )
-                """)
-                
-                self.connection.execute("""
-                    CREATE TABLE IF NOT EXISTS predictions (
-                        date DATE,
-                        symbol VARCHAR,
-                        predicted_price DOUBLE,
-                        model_name VARCHAR,
-                        PRIMARY KEY (date, symbol, model_name)
-                    )
-                """)
-                
-                self.logger.info("Database setup completed successfully")
-                # Successfully connected, exit the retry loop
-                break
-                
-            except Exception as e:
-                self.logger.warning(f"Database connection attempt {attempt+1}/{max_retries} failed: {e}")
-                
-                if attempt == max_retries - 1:
-                    # Last attempt, try to force unlock and retry one more time
-                    self.logger.warning("Final connection attempt failed, trying force unlock")
-                    if self.force_unlock():
-                        try:
-                            # Try again after force unlock
-                            self.connection = duckdb.connect(self.db_path)
-                            
-                            # Create tables
-                            self.connection.execute("""
-                                CREATE TABLE IF NOT EXISTS stock_data (
-                                    date DATE,
-                                    symbol VARCHAR,
-                                    open DOUBLE,
-                                    high DOUBLE,
-                                    low DOUBLE,
-                                    close DOUBLE,
-                                    volume BIGINT,
-                                    PRIMARY KEY (date, symbol)
-                                )
-                            """)
-                            
-                            self.connection.execute("""
-                                CREATE TABLE IF NOT EXISTS predictions (
-                                    date DATE,
-                                    symbol VARCHAR,
-                                    predicted_price DOUBLE,
-                                    model_name VARCHAR,
-                                    PRIMARY KEY (date, symbol, model_name)
-                                )
-                            """)
-                            
-                            self.logger.info("Database setup completed successfully after force unlock")
-                            break
-                        except Exception as force_error:
-                            self.logger.error(f"Force unlock didn't help: {force_error}")
-                            
-                    # If force unlock failed or connecting after force unlock failed, try read-only
-                    try:
-                        self.logger.info("Attempting read-only database connection")
-                        self.connection = duckdb.connect(self.db_path, read_only=True)
-                        self.logger.info("Connected to database in read-only mode")
-                    except Exception as read_only_error:
-                        self.logger.error(f"Error setting up database: {e}")
-                        self.logger.error(f"Read-only fallback also failed: {read_only_error}")
-                        raise
-                else:
-                    # Wait before retrying
-                    time.sleep(retry_delay)
-                    
-    def save_prediction(self, date: datetime, symbol: str, predicted_price: float, model_name: str):
-        """Save a prediction to the database."""
-        try:
-            self.connection.execute("""
-                INSERT OR REPLACE INTO predictions 
-                VALUES (?, ?, ?, ?)
-            """, [date, symbol, predicted_price, model_name])
-            
+            self.conn.commit()
             self.logger.info(f"Saved prediction for {symbol} using {model_name}")
+            return True
             
-        except Exception as e:
+        except sqlite3.Error as e:
             self.logger.error(f"Error saving prediction: {e}")
-            raise
+            self.conn.rollback()
+            return False
+    
+    def get_predictions(self, symbol: Optional[str] = None, model_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get predictions from the database.
+        
+        Args:
+            symbol: Optional filter by stock symbol
+            model_name: Optional filter by model name
             
-    def get_predictions(self, symbol: str, model_name=None, start_date=None, end_date=None):
-        """Retrieve predictions from the database."""
+        Returns:
+            List of dictionaries containing predictions
+        """
         try:
-            query = "SELECT * FROM predictions WHERE symbol = ?"
-            params = [symbol]
+            conditions = []
+            params = []
+            
+            if symbol:
+                conditions.append("symbol = ?")
+                params.append(symbol)
             
             if model_name:
-                query += " AND model_name = ?"
+                conditions.append("model_name = ?")
                 params.append(model_name)
-            if start_date:
-                query += " AND date >= ?"
-                params.append(start_date)
-            if end_date:
-                query += " AND date <= ?"
-                params.append(end_date)
-                
-            query += " ORDER BY date"
             
-            return self.connection.execute(query, params).fetchdf()
+            query = "SELECT * FROM predictions"
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            query += " ORDER BY timestamp DESC"
             
-        except Exception as e:
+            self.cursor.execute(query, params)
+            columns = [description[0] for description in self.cursor.description]
+            results = []
+            
+            for row in self.cursor.fetchall():
+                results.append(dict(zip(columns, row)))
+            
+            return results
+            
+        except sqlite3.Error as e:
             self.logger.error(f"Error retrieving predictions: {e}")
-            return None 
+            return []
+    
+    def close(self):
+        """Close the database connection."""
+        self.disconnect()
+        
+    def __del__(self):
+        """Ensure the database connection is closed when the object is destroyed."""
+        self.disconnect() 

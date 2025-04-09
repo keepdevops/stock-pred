@@ -214,6 +214,54 @@ class DataStock:
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
+    def process_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process and validate the DataFrame."""
+        try:
+            # Standardize column names
+            df = df.rename(columns={
+                'Date': 'date',
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume',
+                'Adj Close': 'adj_close'
+            })
+
+            # Set date as index if it's not already
+            if 'date' in df.columns:
+                df.set_index('date', inplace=True)
+
+            # Sort by date
+            df.sort_index(inplace=True)
+
+            # Check for required columns
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
+
+            # Handle missing adj_close column
+            if 'adj_close' not in df.columns:
+                self.logger.warning("DataFrame is missing 'adj_close' column. Using 'close' as fallback.")
+                df['adj_close'] = df['close']
+
+            # Validate data types
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'adj_close']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # Remove any rows with NaN values
+            df = df.dropna()
+
+            return df
+
+        except Exception as e:
+            self.logger.error(f"Error processing data: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            raise
+
 def main():
     """Main function for command-line interface."""
     parser = argparse.ArgumentParser(description='Stock Data Fetcher')

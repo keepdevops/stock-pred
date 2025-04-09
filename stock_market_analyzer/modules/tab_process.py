@@ -1,135 +1,203 @@
 import sys
 import os
 import logging
-from PyQt6.QtCore import QObject, QProcess, pyqtSignal, QProcessEnvironment
-from PyQt6.QtWidgets import QApplication, QWidget
+import traceback
 from typing import Any, Optional
-from .message_bus import MessageBus
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PyQt6.QtCore import QProcess, QSharedMemory, QTimer, Qt, QProcessEnvironment
+from PyQt6.QtGui import QFont
+
+# Add the project root to the Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from modules.message_bus import MessageBus
 
 class TabProcess(QWidget):
-    """Base class for tab processes with inter-tab communication."""
+    """Class to manage a tab process."""
     
-    def __init__(self, tab_name: str, parent: Optional[QWidget] = None):
-        super().__init__(parent)
+    def __init__(self, tab_name: str):
+        super().__init__()
         self.tab_name = tab_name
-        self.logger = logging.getLogger(__name__)
+        self.process: Optional[QProcess] = None
         self.message_bus = MessageBus()
-        self.process = QProcess()
-        self.process.readyReadStandardOutput.connect(self.handle_stdout)
-        self.process.readyReadStandardError.connect(self.handle_stderr)
-        self.process.finished.connect(self.handle_finished)
+        self.logger = logging.getLogger(__name__)
+        self.cleanup_timer = QTimer()
+        self.cleanup_timer.timeout.connect(self.check_process)
+        self.cleanup_timer.start(1000)  # Check process every second
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Setup the UI for the tab process."""
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+        
+        # Loading label
+        self.loading_label = QLabel(f"Loading {self.tab_name}...")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setFont(QFont("Arial", 12))
+        layout.addWidget(self.loading_label)
         
     def start_process(self):
         """Start the tab process."""
         try:
-            tab_name_lower = self.tab_name.lower()
-            # Define the module name to execute
-            module_name = f"stock_market_analyzer.modules.tabs.{tab_name_lower}_tab"
-            
-            # Get the project root directory (Corrected: go up two levels)
-            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-            # Check if the tab module file exists (optional but good practice)
-            # Construct path relative to project root
-            tab_file_path = os.path.join(project_root, "stock_market_analyzer", "modules", "tabs", f"{tab_name_lower}_tab.py")
-            # *Alternative using module name split (should also work now)*:
-            # tab_file_path = os.path.join(project_root, *module_name.split('.')) + ".py" 
-            
-            if not os.path.exists(tab_file_path):
-                 # Log the corrected path for verification
-                 self.logger.error(f"Tab module file not found: {tab_file_path}")
-                 return
-
-            # Set up environment for the child process
-            env = QProcessEnvironment.systemEnvironment()
-            # Add project root to PYTHONPATH for the child process
-            env.insert("PYTHONPATH", project_root + os.pathsep + env.value("PYTHONPATH", ""))
-            self.process.setProcessEnvironment(env)
-
-            # Start the process using python -m module.name
-            self.process.start(sys.executable, ['-m', module_name])
-            
-            if not self.process.waitForStarted():
-                self.logger.error(f"Failed to start {self.tab_name} tab process using 'python -m'")
+            if self.process is not None:
+                self.logger.warning(f"Process for {self.tab_name} is already running")
                 return
                 
-            # Subscribe to message bus after process is started
+            self.process = QProcess()
+            self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            
+            # Set up environment
+            env = QProcessEnvironment.systemEnvironment()
+            env.insert("PYTHONPATH", os.pathsep.join(sys.path))
+            self.process.setProcessEnvironment(env)
+            
+            # Determine the bootstrap script path
+            bootstrap_script = os.path.join(
+                os.path.dirname(__file__),
+                "tabs",
+                f"{self.tab_name.lower()}_bootstrap.py"
+            )
+            
+            if not os.path.exists(bootstrap_script):
+                raise FileNotFoundError(f"Bootstrap script not found: {bootstrap_script}")
+                
+            # Start the process
+            self.process.start(sys.executable, [bootstrap_script])
+            
+            if not self.process.waitForStarted(5000):
+                raise RuntimeError(f"Failed to start {self.tab_name} process")
+                
+            self.logger.info(f"Started {self.tab_name} process with PID {self.process.processId()}")
+            
+            # Subscribe to message bus
             self.message_bus.subscribe(self.tab_name, self.handle_message)
-            self.logger.info(f"{self.tab_name} tab process started (PID: {self.process.processId()}) via 'python -m'")
+            
+            # Connect process signals
+            self.process.finished.connect(self.handle_process_finished)
+            self.process.errorOccurred.connect(self.handle_process_error)
+            self.process.readyReadStandardOutput.connect(self.handle_process_output)
             
         except Exception as e:
-            self.logger.error(f"Error starting {self.tab_name} tab process: {str(e)}")
-            import traceback
+            self.logger.error(f"Error starting {self.tab_name} process: {str(e)}")
             self.logger.error(traceback.format_exc())
-        
-    def handle_stdout(self):
-        """Handle standard output from the process."""
-        data = self.process.readAllStandardOutput().data().decode()
-        self.logger.info(f"{self.tab_name} tab output: {data}")
-        
-    def handle_stderr(self):
-        """Handle standard error from the process."""
-        data = self.process.readAllStandardError().data().decode()
-        self.logger.error(f"{self.tab_name} tab error: {data}")
-        
-    def handle_finished(self, exit_code: int, exit_status: QProcess.ExitStatus):
-        """Handle process completion."""
-        self.logger.info(f"{self.tab_name} tab process finished with exit code: {exit_code}")
-        
-    def handle_message(self, sender: str, message_type: str, data: Any):
-        """Handle incoming messages from other tabs."""
-        try:
-            self.logger.info(f"{self.tab_name} tab received message from {sender}: {message_type}")
+            if self.process:
+                self.process.kill()
+                self.process = None
+            raise
             
-            # Process message based on type
-            if message_type == "data_updated":
-                self.on_data_updated(sender, data)
-            elif message_type == "analysis_requested":
-                self.on_analysis_requested(sender, data)
-            elif message_type == "analysis_completed":
-                self.on_analysis_completed(sender, data[0], data[1])
-            elif message_type == "chart_update":
-                self.on_chart_update(sender, data[0], data[1])
-            elif message_type == "trading_signal":
-                self.on_trading_signal(sender, data[0], data[1])
-            elif message_type == "error":
-                self.on_error(sender, data)
+    def stop_process(self):
+        """Stop the process."""
+        try:
+            if self.process is None:
+                self.logger.warning(f"Process {self.tab_name} is already stopped or not initialized")
+                return
+                
+            self.logger.info(f"Stopping {self.tab_name} process...")
+            
+            # First try to send shutdown message
+            self.message_bus.publish(self.tab_name, "shutdown", {})
+            
+            # Wait a bit for graceful shutdown
+            if not self.process.waitForFinished(2000):
+                # If graceful shutdown fails, try terminate
+                self.process.terminate()
+                if not self.process.waitForFinished(2000):
+                    # If terminate fails, force kill
+                    self.logger.warning(f"Process {self.tab_name} did not terminate gracefully, forcing kill")
+                    self.process.kill()
+                    self.process.waitForFinished(1000)
+                
+            # Set process to None after successful shutdown
+            self.process = None
+            self.logger.info(f"{self.tab_name} process stopped")
+            
+        except Exception as e:
+            self.logger.error(f"Error stopping {self.tab_name} process: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            # Ensure process is set to None even if there's an error
+            self.process = None
+            
+    def check_process(self):
+        """Check if the process is still running and handle any issues."""
+        if self.process is None:
+            return
+            
+        if self.process.state() == QProcess.ProcessState.NotRunning:
+            self.logger.warning(f"Process for {self.tab_name} is not running")
+            self.process = None
+            
+    def handle_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus):
+        """Handle process finished signal."""
+        try:
+            self.logger.info(f"Process for {self.tab_name} finished with exit code {exit_code}")
+            # Don't set process to None here, let stop_process handle it
+            self.stop_process()
+        except Exception as e:
+            self.logger.error(f"Error handling process finished: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            
+    def handle_process_error(self, error: QProcess.ProcessError):
+        """Handle process error signal."""
+        try:
+            error_msg = f"Process error for {self.tab_name}: {error}"
+            self.logger.error(error_msg)
+            # Only publish to message bus if it's not already an error message
+            if not isinstance(error, str):
+                self.message_bus.publish(self.tab_name, "error", error_msg)
+            # Stop the process on error
+            self.stop_process()
+        except Exception as e:
+            self.logger.error(f"Error handling process error: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            
+    def handle_process_output(self):
+        """Handle process output."""
+        if self.process:
+            try:
+                output = self.process.readAllStandardOutput().data().decode()
+                if output.strip():
+                    print(f"{self.tab_name} process output: {output}")
+            except Exception as e:
+                print(f"Error handling process output: {str(e)}")
+            
+    def handle_message(self, sender: str, message_type: str, data: Any):
+        """Handle incoming messages."""
+        try:
+            if message_type == "error":
+                self.logger.error(f"Received error from {sender}: {data}")
+            elif message_type == "heartbeat":
+                self.loading_label.setText(f"{self.tab_name} is running...")
+            elif message_type == "shutdown":
+                self.logger.info(f"Received shutdown request from {sender}")
+                self.stop_process()
                 
         except Exception as e:
-            self.logger.error(f"Error handling message in {self.tab_name} tab: {str(e)}")
+            self.logger.error(f"Error handling message: {str(e)}")
             
     def publish_message(self, message_type: str, data: Any):
         """Publish a message to the message bus."""
-        self.message_bus.publish(self.tab_name, message_type, data)
-        
-    # Message handlers - to be overridden by subclasses
-    def on_data_updated(self, sender: str, data: Any):
-        """Handle data update messages."""
-        pass
-        
-    def on_analysis_requested(self, sender: str, analysis_type: str):
-        """Handle analysis request messages."""
-        pass
-        
-    def on_analysis_completed(self, sender: str, analysis_type: str, results: Any):
-        """Handle analysis completion messages."""
-        pass
-        
-    def on_chart_update(self, sender: str, chart_type: str, data: Any):
-        """Handle chart update messages."""
-        pass
-        
-    def on_trading_signal(self, sender: str, signal_type: str, data: Any):
-        """Handle trading signal messages."""
-        pass
-        
-    def on_error(self, sender: str, error_message: str):
-        """Handle error messages."""
-        self.logger.error(f"Error from {sender}: {error_message}")
-        
-    def stop_process(self):
-        """Stop the tab process."""
-        if self.process.state() == QProcess.ProcessState.Running:
-            self.process.terminate()
-            self.process.waitForFinished()
-            self.logger.info(f"{self.tab_name} tab process stopped") 
+        try:
+            self.message_bus.publish(self.tab_name, message_type, data)
+        except Exception as e:
+            self.logger.error(f"Error publishing message: {str(e)}")
+            
+    def closeEvent(self, event):
+        """Handle the close event."""
+        try:
+            # Stop cleanup timer
+            self.cleanup_timer.stop()
+            
+            # Stop the process
+            self.stop_process()
+            
+            # Unsubscribe from message bus
+            self.message_bus.unsubscribe(self.tab_name, self.handle_message)
+            
+            super().closeEvent(event)
+            
+        except Exception as e:
+            self.logger.error(f"Error in close event: {str(e)}")
+            self.logger.error(traceback.format_exc()) 
