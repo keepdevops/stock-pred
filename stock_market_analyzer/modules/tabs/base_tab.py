@@ -4,7 +4,7 @@ import signal
 import logging
 import traceback
 from typing import Any, Optional
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTextEdit
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QFont
 from ..message_bus import MessageBus
@@ -18,18 +18,20 @@ class BaseTab(QWidget):
         self.logger = logging.getLogger(__name__)
         self.message_bus = MessageBus()
         self.heartbeat_timer = None
+        self.log_text = QTextEdit()  # Initialize log text widget
+        self.log_text.setReadOnly(True)
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        self.status_label = QLabel("Ready")
+        self.main_layout.addWidget(self.status_label)
+        self.main_layout.addWidget(self.log_text)
         self.setup_ui()
         self.setup_message_bus()
         self.setup_heartbeat()
         
     def setup_ui(self):
-        """Set up the user interface."""
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
-        
-        # Status label
-        self.status_label = QLabel("Ready")
-        self.layout.addWidget(self.status_label)
+        """Set up the user interface. Override in subclasses."""
+        pass
         
     def setup_message_bus(self):
         """Setup message bus subscriptions."""

@@ -27,34 +27,58 @@ class HelpTab(BaseTab):
     """Help tab for the stock market analyzer."""
     
     def __init__(self, parent=None):
+        """Initialize the Help tab."""
         super().__init__(parent)
-        self.help_cache = {}
-        self.pending_requests = {}  # Track pending help requests
+        self.message_bus = MessageBus()
+        self.logger = logging.getLogger(__name__)
         self.setup_ui()
         
     def setup_ui(self):
         """Setup the help tab UI."""
-        # Create main layout
-        self.main_layout = QVBoxLayout()
-        self.setLayout(self.main_layout)
-        
         # Create tab widget
-        tab_widget = QTabWidget()
+        self.tab_widget = QTabWidget()
         
         # Create scroll area for each tab
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         
+        # Help tab
+        help_tab = QWidget()
+        help_layout = QVBoxLayout()
+        
+        # Add help UI elements
+        self.help_text = QTextEdit()
+        self.help_text.setReadOnly(True)
+        self.help_text.setHtml("""
+            <h1>Stock Market Analyzer Help</h1>
+            <p>Welcome to the Stock Market Analyzer application. This tool helps you analyze stock market data and make informed trading decisions.</p>
+            <h2>Features</h2>
+            <ul>
+                <li>Data Import: Import data from various sources including CSV, Excel, JSON, and databases</li>
+                <li>Analysis: Perform technical and fundamental analysis on stock data</li>
+                <li>Charts: Visualize stock data and analysis results</li>
+                <li>Models: Train and use machine learning models for predictions</li>
+                <li>Trading: Execute trades based on analysis and predictions</li>
+            </ul>
+            <h2>Getting Started</h2>
+            <ol>
+                <li>Import your stock data using the Import tab</li>
+                <li>Analyze the data using the Analysis tab</li>
+                <li>View the results in the Charts tab</li>
+                <li>Use the Models tab to make predictions</li>
+                <li>Execute trades using the Trading tab</li>
+            </ol>
+        """)
+        help_layout.addWidget(self.help_text)
+        
+        help_tab.setLayout(help_layout)
+        
         # Add tabs to tab widget
-        tab_widget.addTab(self.create_general_help_tab(), "General")
-        tab_widget.addTab(self.create_data_help_tab(), "Data")
-        tab_widget.addTab(self.create_analysis_help_tab(), "Analysis")
-        tab_widget.addTab(self.create_charts_help_tab(), "Charts")
-        tab_widget.addTab(self.create_trading_help_tab(), "Trading")
+        self.tab_widget.addTab(help_tab, "Help")
         
         # Add tab widget to main layout
-        self.main_layout.addWidget(tab_widget)
+        self.main_layout.addWidget(self.tab_widget)
         
         # Subscribe to message bus
         self.message_bus.subscribe("Help", self.handle_message)

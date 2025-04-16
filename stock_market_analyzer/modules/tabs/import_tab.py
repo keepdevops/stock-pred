@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QPushButton, QLabel, QSplitter, QApplication, QSpinBox,
     QDoubleSpinBox, QGroupBox, QCheckBox, QHeaderView, QMessageBox, QDateEdit,
-    QTabWidget, QScrollArea, QFrame
+    QTabWidget, QScrollArea, QFrame, QFileDialog, QTextEdit
 )
 from PyQt6.QtCore import Qt, QTimer, QDate
 from PyQt6.QtGui import QFont, QTextCursor
@@ -31,13 +31,14 @@ class ImportTab(BaseTab):
     """Tab for importing data from various sources."""
     
     def __init__(self, parent=None):
+        """Initialize the Import tab."""
         super().__init__(parent)
         self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
         self.import_cache = {}
         self.pending_requests = {}  # Track pending import requests
         self.setup_ui()
-
+        
     def setup_ui(self):
         """Setup the import tab UI."""
         # Create tab widget
@@ -64,9 +65,10 @@ class ImportTab(BaseTab):
         self.file_type_combo.addItems(["CSV", "Excel", "JSON", "Parquet", "DuckDB"])
         file_import_layout.addWidget(self.file_type_combo)
         
-        import_button = QPushButton("Import")
-        import_button.clicked.connect(self.import_file)
-        file_import_layout.addWidget(import_button)
+        self.import_button = QPushButton("Import")
+        self.import_button.clicked.connect(self.import_file)
+        self.import_button.setEnabled(False)  # Disable until file is selected
+        file_import_layout.addWidget(self.import_button)
         
         file_import_tab.setLayout(file_import_layout)
         
@@ -86,9 +88,10 @@ class ImportTab(BaseTab):
         db_browse_button.clicked.connect(self.browse_database)
         db_import_layout.addWidget(db_browse_button)
         
-        db_import_button = QPushButton("Import")
-        db_import_button.clicked.connect(self.import_database)
-        db_import_layout.addWidget(db_import_button)
+        self.db_import_button = QPushButton("Import")
+        self.db_import_button.clicked.connect(self.import_database)
+        self.db_import_button.setEnabled(False)  # Disable until database is selected
+        db_import_layout.addWidget(self.db_import_button)
         
         db_import_tab.setLayout(db_import_layout)
         
@@ -96,8 +99,8 @@ class ImportTab(BaseTab):
         self.tab_widget.addTab(file_import_tab, "File Import")
         self.tab_widget.addTab(db_import_tab, "Database Import")
         
-        # Add tab widget to layout
-        self.layout.addWidget(self.tab_widget)
+        # Add tab widget to main layout
+        self.main_layout.addWidget(self.tab_widget)
         
         # Subscribe to message bus
         self.message_bus.subscribe("Import", self.handle_message)

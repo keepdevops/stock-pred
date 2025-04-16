@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from .base_tab import BaseTab
+from ..message_bus import MessageBus
 
 class ModelsTab(BaseTab):
     """Tab for managing and training machine learning models."""
@@ -19,49 +20,34 @@ class ModelsTab(BaseTab):
     def __init__(self, parent=None):
         """Initialize the Models tab."""
         super().__init__(parent)
+        self.message_bus = MessageBus()
+        self.logger = logging.getLogger(__name__)
         self.model_manager = None  # Will be initialized in setup_ui
+        self.status_label = QLabel("Ready")
         self.setup_ui()
         
     def setup_ui(self):
         """Setup the models tab UI."""
-        # Create main layout
-        self.main_layout = QVBoxLayout()
-        self.setLayout(self.main_layout)
+        # Create main layout if it doesn't exist
+        if not hasattr(self, 'main_layout'):
+            self.main_layout = QVBoxLayout()
+            self.setLayout(self.main_layout)
+            
+        # Initialize model manager
+        try:
+            from ..model_manager import ModelManager
+            self.model_manager = ModelManager()
+            self.logger.info("Model manager initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize model manager: {e}")
+            self.model_manager = None
+            
+        # Create models list
+        self.models_list = QListWidget()
+        self.main_layout.addWidget(self.models_list)
         
-        # Create tab widget
-        self.tab_widget = QTabWidget()
-        
-        # Create scroll area for each tab
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        
-        # Models List tab
-        models_list_tab = QWidget()
-        models_list_layout = QVBoxLayout()
-        
-        # Add models list UI elements
-        self.models_table = QTableWidget()
-        self.models_table.setColumnCount(4)
-        self.models_table.setHorizontalHeaderLabels([
-            "Model Name", "Type", "Status", "Last Updated"
-        ])
-        self.models_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
-        )
-        models_list_layout.addWidget(self.models_table)
-        
-        refresh_button = QPushButton("Refresh")
-        refresh_button.clicked.connect(self.update_model_list)
-        models_list_layout.addWidget(refresh_button)
-        
-        models_list_tab.setLayout(models_list_layout)
-        
-        # Add tabs to tab widget
-        self.tab_widget.addTab(models_list_tab, "Models List")
-        
-        # Add tab widget to main layout
-        self.main_layout.addWidget(self.tab_widget)
+        # Add status label
+        self.main_layout.addWidget(self.status_label)
         
         # Subscribe to message bus
         self.message_bus.subscribe("Models", self.handle_message)
@@ -79,14 +65,9 @@ class ModelsTab(BaseTab):
                 return
                 
             models = self.model_manager.get_trained_models()
-            self.models_table.setRowCount(len(models))
+            self.models_list.clear()
+            self.models_list.addItems([model.get('name', '') for model in models])
             
-            for row, model in enumerate(models):
-                self.models_table.setItem(row, 0, QTableWidgetItem(model.get('name', '')))
-                self.models_table.setItem(row, 1, QTableWidgetItem(model.get('type', '')))
-                self.models_table.setItem(row, 2, QTableWidgetItem(model.get('status', '')))
-                self.models_table.setItem(row, 3, QTableWidgetItem(model.get('last_updated', '')))
-                
         except Exception as e:
             self.logger.error(f"Error updating model list: {e}")
             self.status_label.setText(f"Error: {str(e)}")

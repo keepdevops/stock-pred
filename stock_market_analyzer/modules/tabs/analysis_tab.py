@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QPushButton, QLabel, QFileDialog, QMessageBox, QListWidget,
     QListWidgetItem, QSplitter, QApplication, QSpinBox, QCheckBox,
-    QGroupBox, QRadioButton
+    QGroupBox, QRadioButton, QTabWidget, QScrollArea, QLineEdit, QTextEdit, QFrame
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
@@ -19,166 +19,64 @@ from scipy import stats
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.seasonal import seasonal_decompose
 import uuid
+from modules.message_bus import MessageBus
 
 class AnalysisTab(BaseTab):
     """Analysis tab for processing and analyzing stock data."""
     
     def __init__(self, parent=None):
+        """Initialize the Analysis tab."""
         super().__init__(parent)
+        self.message_bus = MessageBus()
+        self.logger = logging.getLogger(__name__)
         self.setup_ui()
-        self.data_cache = {}  # Cache for processed data
         self.analysis_cache = {}
-        self.pending_requests = {}  # Track pending data requests
+        self.pending_requests = {}
+        self.data_cache = {}  # Cache for processed data
         
     def setup_ui(self):
-        """Set up the user interface."""
-        main_layout = QVBoxLayout(self)
+        """Setup the analysis tab UI."""
+        # Create tab widget
+        self.tab_widget = QTabWidget()
         
-        # Top controls
-        controls_layout = QHBoxLayout()
+        # Create scroll area for each tab
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         
-        # Analysis type selection
+        # Analysis tab
+        analysis_tab = QWidget()
+        analysis_layout = QVBoxLayout()
+        
+        # Add analysis UI elements
+        self.ticker_input = QLineEdit()
+        self.ticker_input.setPlaceholderText("Enter ticker symbol")
+        analysis_layout.addWidget(self.ticker_input)
+        
         self.analysis_type_combo = QComboBox()
-        self.analysis_type_combo.addItems([
-            "Technical Analysis",
-            "Fundamental Analysis",
-            "Correlation Analysis",
-            "Volatility Analysis"
-        ])
-        self.analysis_type_combo.currentTextChanged.connect(self.update_analysis_options)
-        controls_layout.addWidget(QLabel("Analysis Type:"))
-        controls_layout.addWidget(self.analysis_type_combo)
+        self.analysis_type_combo.addItems(["Technical", "Fundamental", "Sentiment"])
+        analysis_layout.addWidget(self.analysis_type_combo)
         
-        # Ticker selection
-        self.ticker_combo = QComboBox()
-        self.ticker_combo.addItems([
-            "1D", "1W", "1M", "3M", "6M", "1Y", "5Y", "MAX"
-        ])
-        controls_layout.addWidget(QLabel("Ticker:"))
-        controls_layout.addWidget(self.ticker_combo)
+        analyze_button = QPushButton("Analyze")
+        analyze_button.clicked.connect(self.analyze)
+        analysis_layout.addWidget(analyze_button)
         
-        # Time period selection
-        period_layout = QHBoxLayout()
-        self.period_combo = QComboBox()
-        self.period_combo.addItems([
-            "1D", "1W", "1M", "3M", "6M", "1Y", "5Y", "MAX"
-        ])
-        period_layout.addWidget(QLabel("Time Period:"))
-        period_layout.addWidget(self.period_combo)
-        controls_layout.addLayout(period_layout)
+        self.result_text = QTextEdit()
+        self.result_text.setReadOnly(True)
+        analysis_layout.addWidget(self.result_text)
         
-        # Analysis options group
-        options_group = QGroupBox("Analysis Options")
-        options_layout = QVBoxLayout()
+        analysis_tab.setLayout(analysis_layout)
         
-        # Technical indicators
-        self.technical_options = QWidget()
-        technical_layout = QVBoxLayout(self.technical_options)
-        self.ma_check = QCheckBox("Moving Averages")
-        self.rsi_check = QCheckBox("RSI")
-        self.macd_check = QCheckBox("MACD")
-        self.bollinger_check = QCheckBox("Bollinger Bands")
-        technical_layout.addWidget(self.ma_check)
-        technical_layout.addWidget(self.rsi_check)
-        technical_layout.addWidget(self.macd_check)
-        technical_layout.addWidget(self.bollinger_check)
+        # Add tabs to tab widget
+        self.tab_widget.addTab(analysis_tab, "Analysis")
         
-        # Statistical analysis
-        self.statistical_options = QWidget()
-        statistical_layout = QVBoxLayout(self.statistical_options)
-        self.descriptive_check = QCheckBox("Descriptive Statistics")
-        self.normality_check = QCheckBox("Normality Test")
-        self.stationarity_check = QCheckBox("Stationarity Test")
-        statistical_layout.addWidget(self.descriptive_check)
-        statistical_layout.addWidget(self.normality_check)
-        statistical_layout.addWidget(self.stationarity_check)
+        # Add tab widget to main layout
+        self.main_layout.addWidget(self.tab_widget)
         
-        # Time series analysis
-        self.timeseries_options = QWidget()
-        timeseries_layout = QVBoxLayout(self.timeseries_options)
-        self.trend_check = QCheckBox("Trend Analysis")
-        self.seasonality_check = QCheckBox("Seasonality Analysis")
-        self.decomposition_check = QCheckBox("Time Series Decomposition")
-        timeseries_layout.addWidget(self.trend_check)
-        timeseries_layout.addWidget(self.seasonality_check)
-        timeseries_layout.addWidget(self.decomposition_check)
+        # Subscribe to message bus
+        self.message_bus.subscribe("Analysis", self.handle_message)
         
-        # Correlation analysis
-        self.correlation_options = QWidget()
-        correlation_layout = QVBoxLayout(self.correlation_options)
-        self.pearson_check = QCheckBox("Pearson Correlation")
-        self.spearman_check = QCheckBox("Spearman Correlation")
-        correlation_layout.addWidget(self.pearson_check)
-        correlation_layout.addWidget(self.spearman_check)
-        
-        # Add all option widgets to the options layout
-        options_layout.addWidget(self.technical_options)
-        options_layout.addWidget(self.statistical_options)
-        options_layout.addWidget(self.timeseries_options)
-        options_layout.addWidget(self.correlation_options)
-        options_group.setLayout(options_layout)
-        
-        # Hide all option widgets initially
-        self.hide_all_options()
-        
-        controls_layout.addWidget(options_group)
-        
-        # Run analysis button
-        run_button = QPushButton("Run Analysis")
-        run_button.clicked.connect(self.run_analysis)
-        controls_layout.addWidget(run_button)
-        
-        # Add request data button
-        request_button = QPushButton("Request Data")
-        request_button.clicked.connect(self.request_data)
-        controls_layout.addWidget(request_button)
-        
-        # Add refresh button
-        refresh_button = QPushButton("Refresh Analysis")
-        refresh_button.clicked.connect(self.refresh_analysis)
-        controls_layout.addWidget(refresh_button)
-        
-        main_layout.addLayout(controls_layout)
-        
-        # Splitter for results
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # Results table
-        results_widget = QWidget()
-        results_layout = QVBoxLayout(results_widget)
-        
-        self.results_table = QTableWidget()
-        self.results_table.setColumnCount(3)
-        self.results_table.setHorizontalHeaderLabels([
-            "Metric", "Value", "Description"
-        ])
-        results_layout.addWidget(self.results_table)
-        
-        splitter.addWidget(results_widget)
-        
-        # Analysis summary
-        summary_widget = QWidget()
-        summary_layout = QVBoxLayout(summary_widget)
-        
-        self.summary_text = QLabel("Analysis results will appear here")
-        self.summary_text.setWordWrap(True)
-        summary_layout.addWidget(self.summary_text)
-        
-        # Send to charts button
-        send_button = QPushButton("Send to Charts")
-        send_button.clicked.connect(self.send_to_charts)
-        summary_layout.addWidget(send_button)
-        
-        splitter.addWidget(summary_widget)
-        
-        # Set initial sizes
-        splitter.setSizes([400, 400])
-        
-        main_layout.addWidget(splitter)
-        
-        # Status label
-        self.status_label = QLabel("Ready")
-        main_layout.addWidget(self.status_label)
+        self.logger.info("Analysis tab initialized")
         
     def hide_all_options(self):
         """Hide all analysis option widgets."""
@@ -679,6 +577,41 @@ class AnalysisTab(BaseTab):
         self.data_cache.clear()
         self.analysis_cache.clear()
         self.pending_requests.clear()
+
+    def analyze(self):
+        """Run analysis on the selected data."""
+        try:
+            ticker = self.ticker_input.text()
+            if not ticker:
+                self.status_label.setText("Please enter a ticker symbol")
+                return
+                
+            analysis_type = self.analysis_type_combo.currentText()
+            self.logger.info(f"Running {analysis_type} analysis for {ticker}")
+            
+            # Request data from Data tab
+            request_id = str(uuid.uuid4())
+            self.pending_requests[request_id] = {
+                'ticker': ticker,
+                'analysis_type': analysis_type,
+                'timestamp': datetime.now()
+            }
+            
+            self.message_bus.publish(
+                "Analysis",
+                "data_request",
+                {
+                    'request_id': request_id,
+                    'ticker': ticker
+                }
+            )
+            
+            self.status_label.setText(f"Requesting data for {ticker}")
+            
+        except Exception as e:
+            error_msg = f"Error starting analysis: {str(e)}"
+            self.logger.error(error_msg)
+            self.status_label.setText(error_msg)
 
 def main():
     """Main function for the analysis tab process."""

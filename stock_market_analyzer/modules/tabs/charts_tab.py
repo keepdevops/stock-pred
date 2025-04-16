@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton,
     QLabel, QSplitter, QApplication, QCheckBox, QGroupBox,
-    QSpinBox, QDoubleSpinBox, QTabWidget
+    QSpinBox, QDoubleSpinBox, QTabWidget, QScrollArea, QLineEdit, QFrame
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
@@ -21,6 +21,7 @@ import seaborn as sns
 from mplfinance.original_flavor import candlestick_ohlc
 import matplotlib.dates as mdates
 import uuid
+from modules.message_bus import MessageBus
 
 # Add the project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
@@ -31,97 +32,56 @@ class ChartsTab(BaseTab):
     """Charts tab for visualizing stock data, predictions, and analysis results."""
     
     def __init__(self, parent=None):
+        """Initialize the Charts tab."""
         super().__init__(parent)
+        self.message_bus = MessageBus()
+        self.logger = logging.getLogger(__name__)
         self.setup_ui()
         self.chart_cache = {}
         self.pending_requests = {}
         
     def setup_ui(self):
         """Setup the charts tab UI."""
-        main_layout = QVBoxLayout(self)
+        # Create tab widget
+        self.tab_widget = QTabWidget()
         
-        # Top controls
-        controls_layout = QHBoxLayout()
+        # Create scroll area for each tab
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         
-        # Chart type selection
-        controls_layout.addWidget(QLabel("Chart Type:"))
+        # Charts tab
+        charts_tab = QWidget()
+        charts_layout = QVBoxLayout()
+        
+        # Add charts UI elements
+        self.ticker_input = QLineEdit()
+        self.ticker_input.setPlaceholderText("Enter ticker symbol")
+        charts_layout.addWidget(self.ticker_input)
+        
         self.chart_type_combo = QComboBox()
-        self.chart_type_combo.addItems([
-            "Price Chart",
-            "Technical Indicators",
-            "Model Predictions",
-            "Analysis Results",
-            "Correlation Matrix"
-        ])
-        self.chart_type_combo.currentIndexChanged.connect(self.on_chart_type_changed)
-        controls_layout.addWidget(self.chart_type_combo)
+        self.chart_type_combo.addItems(["Candlestick", "Line", "Bar", "Area"])
+        charts_layout.addWidget(self.chart_type_combo)
         
-        # Ticker selection
-        controls_layout.addWidget(QLabel("Ticker:"))
-        self.ticker_combo = QComboBox()
-        controls_layout.addWidget(self.ticker_combo)
+        plot_button = QPushButton("Plot")
+        plot_button.clicked.connect(self.plot_chart)
+        charts_layout.addWidget(plot_button)
         
-        # Model selection (for predictions)
-        self.model_label = QLabel("Model:")
-        self.model_combo = QComboBox()
-        controls_layout.addWidget(self.model_label)
-        controls_layout.addWidget(self.model_combo)
+        self.chart_widget = QWidget()
+        charts_layout.addWidget(self.chart_widget)
         
-        # Time period selection
-        controls_layout.addWidget(QLabel("Period:"))
-        self.period_combo = QComboBox()
-        self.period_combo.addItems(["1D", "1W", "1M", "3M", "6M", "1Y", "5Y", "MAX"])
-        controls_layout.addWidget(self.period_combo)
+        charts_tab.setLayout(charts_layout)
         
-        # Update button
-        update_button = QPushButton("Update Chart")
-        update_button.clicked.connect(self.update_chart)
-        controls_layout.addWidget(update_button)
+        # Add tabs to tab widget
+        self.tab_widget.addTab(charts_tab, "Charts")
         
-        main_layout.addLayout(controls_layout)
+        # Add tab widget to main layout
+        self.main_layout.addWidget(self.tab_widget)
         
-        # Chart options
-        options_layout = QHBoxLayout()
+        # Subscribe to message bus
+        self.message_bus.subscribe("Charts", self.handle_message)
         
-        # Technical indicators
-        self.indicators_group = QGroupBox("Technical Indicators")
-        indicators_layout = QVBoxLayout()
-        self.ma_check = QCheckBox("Moving Averages")
-        self.rsi_check = QCheckBox("RSI")
-        self.macd_check = QCheckBox("MACD")
-        self.bb_check = QCheckBox("Bollinger Bands")
-        indicators_layout.addWidget(self.ma_check)
-        indicators_layout.addWidget(self.rsi_check)
-        indicators_layout.addWidget(self.macd_check)
-        indicators_layout.addWidget(self.bb_check)
-        self.indicators_group.setLayout(indicators_layout)
-        options_layout.addWidget(self.indicators_group)
-        
-        # Analysis options
-        self.analysis_group = QGroupBox("Analysis Options")
-        analysis_layout = QVBoxLayout()
-        self.trend_check = QCheckBox("Trend Analysis")
-        self.seasonality_check = QCheckBox("Seasonality")
-        self.volatility_check = QCheckBox("Volatility")
-        analysis_layout.addWidget(self.trend_check)
-        analysis_layout.addWidget(self.seasonality_check)
-        analysis_layout.addWidget(self.volatility_check)
-        self.analysis_group.setLayout(analysis_layout)
-        options_layout.addWidget(self.analysis_group)
-        
-        main_layout.addLayout(options_layout)
-        
-        # Chart area
-        self.figure = plt.figure(figsize=(10, 6))
-        self.canvas = FigureCanvas(self.figure)
-        main_layout.addWidget(self.canvas)
-        
-        # Status label
-        self.status_label = QLabel("Ready")
-        main_layout.addWidget(self.status_label)
-        
-        # Initialize visibility
-        self.update_controls_visibility()
+        self.logger.info("Charts tab initialized")
         
     def on_chart_type_changed(self):
         """Handle chart type change."""
@@ -460,6 +420,41 @@ class ChartsTab(BaseTab):
         self.chart_cache.clear()
         self.pending_requests.clear()
         plt.close('all')
+
+    def plot_chart(self):
+        """Plot the selected chart type."""
+        try:
+            ticker = self.ticker_input.text()
+            if not ticker:
+                self.status_label.setText("Please enter a ticker symbol")
+                return
+                
+            chart_type = self.chart_type_combo.currentText()
+            self.logger.info(f"Plotting {chart_type} chart for {ticker}")
+            
+            # Request data from Data tab
+            request_id = str(uuid.uuid4())
+            self.pending_requests[request_id] = {
+                'ticker': ticker,
+                'chart_type': chart_type,
+                'timestamp': datetime.now()
+            }
+            
+            self.message_bus.publish(
+                "Charts",
+                "data_request",
+                {
+                    'request_id': request_id,
+                    'ticker': ticker
+                }
+            )
+            
+            self.status_label.setText(f"Requesting data for {ticker}")
+            
+        except Exception as e:
+            error_msg = f"Error plotting chart: {str(e)}"
+            self.logger.error(error_msg)
+            self.status_label.setText(error_msg)
 
 def main():
     """Main function for the charts tab process."""

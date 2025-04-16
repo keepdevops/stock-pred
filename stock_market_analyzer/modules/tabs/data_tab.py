@@ -32,18 +32,76 @@ class DataTab(BaseTab):
     """Data tab for managing stock data."""
     
     def __init__(self, parent=None):
+        """Initialize the Data tab."""
         super().__init__(parent)
         self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
         self.data_stock = DataStock()
         self.db_connector = DatabaseConnector()
+        self.current_color_scheme = "default"  # Add default color scheme
+        self.setup_theme()  # Initialize theme
         self.setup_ui()
         self.ticker_list = []
         self.data_cache = {}
         self.pending_requests = {}
-        self.current_color_scheme = "default"  # Add default color scheme
-        self.setup_theme()  # Initialize theme
         
+    def setup_theme(self):
+        """Setup the theme for the data tab."""
+        try:
+            # Load theme settings from config
+            theme_config = self.load_theme_config()
+            self.current_color_scheme = theme_config.get("color_scheme", "default")
+            
+            # Apply theme colors
+            self.apply_theme_colors()
+            
+        except Exception as e:
+            self.logger.error(f"Error setting up theme: {e}")
+            self.current_color_scheme = "default"
+            
+    def load_theme_config(self):
+        """Load theme configuration from settings."""
+        try:
+            # TODO: Load from actual config file
+            return {
+                "color_scheme": "default",
+                "font_size": 12,
+                "font_family": "Arial"
+            }
+        except Exception as e:
+            self.logger.error(f"Error loading theme config: {e}")
+            return {}
+            
+    def apply_theme_colors(self):
+        """Apply theme colors to UI elements."""
+        try:
+            if self.current_color_scheme == "dark":
+                # Dark theme colors
+                self.setStyleSheet("""
+                    QWidget {
+                        background-color: #2b2b2b;
+                        color: #ffffff;
+                    }
+                    QTableWidget {
+                        background-color: #3c3f41;
+                        color: #ffffff;
+                    }
+                """)
+            else:
+                # Default theme colors
+                self.setStyleSheet("""
+                    QWidget {
+                        background-color: #ffffff;
+                        color: #000000;
+                    }
+                    QTableWidget {
+                        background-color: #ffffff;
+                        color: #000000;
+                    }
+                """)
+        except Exception as e:
+            self.logger.error(f"Error applying theme colors: {e}")
+            
     def setup_ui(self):
         """Setup the data tab UI."""
         # Market type selection
@@ -339,6 +397,19 @@ class DataTab(BaseTab):
             
         # Schedule next update
         QTimer.singleShot(10000, self.update_live_data)  # 10 seconds
+
+    def closeEvent(self, event):
+        """Handle the close event."""
+        try:
+            self.message_bus.publish(
+                "Data",
+                "shutdown",
+                {"source": "Data", "message": "Shutting down"}
+            )
+            super().closeEvent(event)
+        except Exception as e:
+            self.logger.error(f"Error in closeEvent: {e}")
+            event.ignore()
 
 def main():
     """Main function for the data tab process."""

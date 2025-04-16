@@ -26,9 +26,11 @@ class TradingTab(BaseTab):
     """Tab for managing trading strategies and executing trades."""
     
     def __init__(self, parent=None):
+        """Initialize the Trading tab."""
         super().__init__(parent)
         self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
+        self.main_layout = QVBoxLayout()
         self.trading_cache = {}
         self.pending_requests = {}  # Track pending trading requests
         self.positions = {}
@@ -36,9 +38,10 @@ class TradingTab(BaseTab):
         
     def setup_ui(self):
         """Setup the trading tab UI."""
-        # Create main layout
-        self.main_layout = QVBoxLayout()
-        self.setLayout(self.main_layout)
+        # Create main layout if it doesn't exist
+        if not hasattr(self, 'main_layout'):
+            self.main_layout = QVBoxLayout()
+            self.setLayout(self.main_layout)
         
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -61,6 +64,14 @@ class TradingTab(BaseTab):
             "Bollinger Bands"
         ])
         strategies_layout.addWidget(self.strategy_combo)
+        
+        # Add symbol input
+        symbol_layout = QHBoxLayout()
+        symbol_layout.addWidget(QLabel("Symbol:"))
+        self.symbol_input = QLineEdit()
+        self.symbol_input.setPlaceholderText("Enter symbol (e.g., AAPL)")
+        symbol_layout.addWidget(self.symbol_input)
+        strategies_layout.addLayout(symbol_layout)
         
         self.ticker_input = QLineEdit()
         self.ticker_input.setPlaceholderText("Enter ticker symbol")

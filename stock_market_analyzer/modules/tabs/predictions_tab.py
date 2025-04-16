@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QPushButton, QLabel, QSplitter, QApplication, QSpinBox,
-    QDoubleSpinBox, QGroupBox, QCheckBox, QHeaderView, QMessageBox, QDateEdit
+    QDoubleSpinBox, QGroupBox, QCheckBox, QHeaderView, QMessageBox, QDateEdit,
+    QListWidget
 )
 from PyQt6.QtCore import Qt, QTimer, QDate
 from PyQt6.QtGui import QFont
@@ -27,16 +28,30 @@ class PredictionsTab(BaseTab):
     """Tab for making and viewing stock predictions."""
     
     def __init__(self, parent=None):
+        """Initialize the Predictions tab."""
         super().__init__(parent)
         self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
         self.setup_ui()
         self.prediction_cache = {}
         self.pending_requests = {}  # Track pending prediction requests
         
     def setup_ui(self):
         """Setup the predictions tab UI."""
-        main_layout = QVBoxLayout(self)
+        # Create predictions list
+        self.predictions_list = QListWidget()
+        self.main_layout.addWidget(self.predictions_list)
+        
+        # Add status label
+        self.status_label = QLabel("Ready")
+        self.main_layout.addWidget(self.status_label)
+        
+        # Subscribe to message bus
+        self.message_bus.subscribe("Predictions", self.handle_message)
+        
+        self.logger.info("Predictions tab initialized")
         
         # Top controls
         controls_layout = QHBoxLayout()
@@ -68,7 +83,7 @@ class PredictionsTab(BaseTab):
         refresh_button.clicked.connect(self.refresh_prediction)
         controls_layout.addWidget(refresh_button)
         
-        main_layout.addLayout(controls_layout)
+        self.main_layout.addLayout(controls_layout)
         
         # Splitter for results
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -99,11 +114,7 @@ class PredictionsTab(BaseTab):
         # Set initial sizes
         splitter.setSizes([400, 400])
         
-        main_layout.addWidget(splitter)
-        
-        # Status label
-        self.status_label = QLabel("Ready")
-        main_layout.addWidget(self.status_label)
+        self.main_layout.addWidget(splitter)
         
     def make_prediction(self):
         """Make a prediction using the selected model."""
