@@ -1,58 +1,104 @@
-from PyQt6.QtCore import QObject, pyqtSignal
 import logging
-from typing import Any, Dict, Optional
+from typing import Dict, List, Callable, Any
+from dataclasses import dataclass
+from datetime import datetime
 
-class MessageBus(QObject):
-    """Central message bus for inter-tab communication."""
-    
-    # Define signals for different types of messages
-    data_updated = pyqtSignal(str, object)  # symbol, data
-    analysis_requested = pyqtSignal(str, str)  # symbol, analysis_type
-    analysis_completed = pyqtSignal(str, str, object)  # symbol, analysis_type, results
-    chart_update_requested = pyqtSignal(str, str, object)  # symbol, chart_type, data
-    trading_signal = pyqtSignal(str, str, object)  # symbol, signal_type, data
-    error_occurred = pyqtSignal(str)  # error_message
+@dataclass
+class Message:
+    """Represents a message in the message bus system."""
+    type: str
+    data: Any
+    timestamp: datetime
+    source: str
+
+class MessageBus:
+    """Message bus for handling communication between different components."""
     
     def __init__(self):
-        super().__init__()
+        """Initialize the message bus."""
         self.logger = logging.getLogger(__name__)
-        self._subscribers: Dict[str, list] = {}
+        self.subscribers: Dict[str, List[Callable]] = {}
+        self.message_history: List[Message] = []
         
-    def subscribe(self, tab_name: str, callback: callable):
-        """Subscribe a tab to receive messages."""
-        if tab_name not in self._subscribers:
-            self._subscribers[tab_name] = []
-        self._subscribers[tab_name].append(callback)
-        self.logger.info(f"Tab '{tab_name}' subscribed to message bus")
+    def subscribe(self, message_type: str, callback: Callable):
+        """
+        Subscribe to messages of a specific type.
         
-    def unsubscribe(self, tab_name: str, callback: callable):
-        """Unsubscribe a tab from receiving messages."""
-        if tab_name in self._subscribers:
-            self._subscribers[tab_name].remove(callback)
-            self.logger.info(f"Tab '{tab_name}' unsubscribed from message bus")
+        Args:
+            message_type: Type of messages to subscribe to
+            callback: Function to call when a message of the specified type is received
+        """
+        if message_type not in self.subscribers:
+            self.subscribers[message_type] = []
+        self.subscribers[message_type].append(callback)
+        self.logger.debug(f"New subscriber for message type: {message_type}")
+        
+    def unsubscribe(self, message_type: str, callback: Callable):
+        """
+        Unsubscribe from messages of a specific type.
+        
+        Args:
+            message_type: Type of messages to unsubscribe from
+            callback: Function to remove from subscribers
+        """
+        if message_type in self.subscribers:
+            self.subscribers[message_type].remove(callback)
+            self.logger.debug(f"Removed subscriber for message type: {message_type}")
             
-    def publish(self, tab_name: str, message_type: str, data: Any):
-        """Publish a message to all subscribers."""
-        self.logger.info(f"Publishing message from '{tab_name}': {message_type}")
+    def publish(self, message_type: str, data: Any, source: str = "unknown"):
+        """
+        Publish a message to all subscribers.
         
-        # Emit appropriate signal based on message type
-        if message_type == "data_updated":
-            self.data_updated.emit(tab_name, data)
-        elif message_type == "analysis_requested":
-            self.analysis_requested.emit(tab_name, data)
-        elif message_type == "analysis_completed":
-            self.analysis_completed.emit(tab_name, data[0], data[1])
-        elif message_type == "chart_update":
-            self.chart_update_requested.emit(tab_name, data[0], data[1])
-        elif message_type == "trading_signal":
-            self.trading_signal.emit(tab_name, data[0], data[1])
-        elif message_type == "error":
-            self.error_occurred.emit(data)
-            
-        # Notify subscribers
-        for subscribers in self._subscribers.values():
-            for callback in subscribers:
+        Args:
+            message_type: Type of the message
+            data: Message data
+            source: Source of the message
+        """
+        message = Message(
+            type=message_type,
+            data=data,
+            timestamp=datetime.now(),
+            source=source
+        )
+        
+        self.message_history.append(message)
+        
+        if message_type in self.subscribers:
+            for callback in self.subscribers[message_type]:
                 try:
-                    callback(tab_name, message_type, data)
+                    callback(source, message_type, data)
                 except Exception as e:
-                    self.logger.error(f"Error in subscriber callback: {str(e)}") 
+                    self.logger.error(f"Error in subscriber callback: {e}")
+                    
+    def get_message_history(self, message_type: str = None) -> List[Message]:
+        """
+        Get message history, optionally filtered by message type.
+        
+        Args:
+            message_type: Optional message type to filter by
+            
+        Returns:
+            List of messages matching the criteria
+        """
+        if message_type:
+            return [msg for msg in self.message_history if msg.type == message_type]
+        return self.message_history
+        
+    def clear_history(self):
+        """Clear the message history."""
+        self.message_history.clear()
+        self.logger.debug("Message history cleared")
+        
+    def get_subscribers(self, message_type: str = None) -> Dict[str, List[Callable]]:
+        """
+        Get subscribers, optionally filtered by message type.
+        
+        Args:
+            message_type: Optional message type to filter by
+            
+        Returns:
+            Dictionary of subscribers
+        """
+        if message_type:
+            return {message_type: self.subscribers.get(message_type, [])}
+        return self.subscribers 

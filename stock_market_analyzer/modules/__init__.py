@@ -7,10 +7,32 @@
 # from .trading.real_trading_agent import RealTradingAgent
 # from .gui import StockGUI
 
+# Import message bus
+from .message_bus import MessageBus
+
+# Import tabs module
+from .tabs import (
+    BaseTab, MonitorTab, DataTab, AnalysisTab, ChartsTab,
+    ModelsTab, PredictionsTab, SettingsTab, TradingTab,
+    ImportTab, HelpTab
+)
+
 __all__ = [
+    'MessageBus',
     'DatabaseConnector',
     'DataLoader',
     'StockAIAgent',
     'RealTradingAgent',
-    'StockGUI'
+    'StockGUI',
+    'BaseTab',
+    'MonitorTab',
+    'DataTab',
+    'AnalysisTab',
+    'ChartsTab',
+    'ModelsTab',
+    'PredictionsTab',
+    'SettingsTab',
+    'TradingTab',
+    'ImportTab',
+    'HelpTab'
 ] 

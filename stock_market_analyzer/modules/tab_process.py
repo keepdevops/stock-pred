@@ -173,9 +173,12 @@ class TabProcess(QWidget):
             elif message_type == "shutdown":
                 self.logger.info(f"Received shutdown request from {sender}")
                 self.stop_process()
+            else:
+                self.logger.debug(f"Received message from {sender}: {message_type} - {data}")
                 
         except Exception as e:
             self.logger.error(f"Error handling message: {str(e)}")
+            self.logger.error(traceback.format_exc())
             
     def publish_message(self, message_type: str, data: Any):
         """Publish a message to the message bus."""
