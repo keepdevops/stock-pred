@@ -30,7 +30,6 @@ class TradingTab(BaseTab):
         super().__init__(parent)
         self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
-        self.main_layout = QVBoxLayout()
         self.trading_cache = {}
         self.pending_requests = {}  # Track pending trading requests
         self.positions = {}
@@ -38,15 +37,14 @@ class TradingTab(BaseTab):
         
     def setup_ui(self):
         """Setup the trading tab UI."""
-        # Create main layout if it doesn't exist
-        if not hasattr(self, 'main_layout'):
-            self.main_layout = QVBoxLayout()
-            self.setLayout(self.main_layout)
+        # Create main layout
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
         
         # Create tab widget
         self.tab_widget = QTabWidget()
         
-        # Create scroll area for each tab
+        # Create scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
@@ -56,6 +54,9 @@ class TradingTab(BaseTab):
         strategies_layout = QVBoxLayout()
         
         # Add trading strategies UI elements
+        strategy_group = QGroupBox("Trading Strategy")
+        strategy_layout = QVBoxLayout()
+        
         self.strategy_combo = QComboBox()
         self.strategy_combo.addItems([
             "Moving Average Crossover",
@@ -63,33 +64,119 @@ class TradingTab(BaseTab):
             "MACD Strategy",
             "Bollinger Bands"
         ])
-        strategies_layout.addWidget(self.strategy_combo)
+        strategy_layout.addWidget(self.strategy_combo)
+        strategy_group.setLayout(strategy_layout)
+        strategies_layout.addWidget(strategy_group)
         
-        # Add symbol input
+        # Trading Controls group
+        controls_group = QGroupBox("Trading Controls")
+        controls_layout = QVBoxLayout()
+        
+        # Symbol input
         symbol_layout = QHBoxLayout()
-        symbol_layout.addWidget(QLabel("Symbol:"))
+        symbol_label = QLabel("Symbol:")
         self.symbol_input = QLineEdit()
         self.symbol_input.setPlaceholderText("Enter symbol (e.g., AAPL)")
+        symbol_layout.addWidget(symbol_label)
         symbol_layout.addWidget(self.symbol_input)
-        strategies_layout.addLayout(symbol_layout)
+        controls_layout.addLayout(symbol_layout)
         
-        self.ticker_input = QLineEdit()
-        self.ticker_input.setPlaceholderText("Enter ticker symbol")
-        strategies_layout.addWidget(self.ticker_input)
+        # Order type
+        order_layout = QHBoxLayout()
+        order_label = QLabel("Order Type:")
+        self.order_type = QComboBox()
+        self.order_type.addItems(["Market", "Limit", "Stop", "Stop Limit"])
+        order_layout.addWidget(order_label)
+        order_layout.addWidget(self.order_type)
+        controls_layout.addLayout(order_layout)
         
-        self.quantity = QLineEdit()
-        self.quantity.setPlaceholderText("Enter quantity")
-        self.quantity.setValidator(QIntValidator(1, 10000))
-        strategies_layout.addWidget(self.quantity)
+        # Quantity input
+        quantity_layout = QHBoxLayout()
+        quantity_label = QLabel("Quantity:")
+        self.quantity_input = QSpinBox()
+        self.quantity_input.setRange(1, 10000)
+        self.quantity_input.setValue(100)
+        quantity_layout.addWidget(quantity_label)
+        quantity_layout.addWidget(self.quantity_input)
+        controls_layout.addLayout(quantity_layout)
         
-        execute_button = QPushButton("Execute Trade")
-        execute_button.clicked.connect(self.execute_trade)
-        strategies_layout.addWidget(execute_button)
+        # Price input
+        price_layout = QHBoxLayout()
+        price_label = QLabel("Price:")
+        self.price_input = QDoubleSpinBox()
+        self.price_input.setRange(0.01, 1000000.00)
+        self.price_input.setDecimals(2)
+        self.price_input.setValue(0.00)
+        price_layout.addWidget(price_label)
+        price_layout.addWidget(self.price_input)
+        controls_layout.addLayout(price_layout)
+        
+        # Buy/Sell buttons
+        button_layout = QHBoxLayout()
+        buy_button = QPushButton("Buy")
+        buy_button.clicked.connect(lambda: self.place_order("buy"))
+        sell_button = QPushButton("Sell")
+        sell_button.clicked.connect(lambda: self.place_order("sell"))
+        button_layout.addWidget(buy_button)
+        button_layout.addWidget(sell_button)
+        controls_layout.addLayout(button_layout)
+        
+        controls_group.setLayout(controls_layout)
+        strategies_layout.addWidget(controls_group)
+        
+        # Order Book
+        order_book_group = QGroupBox("Order Book")
+        order_book_layout = QVBoxLayout()
+        self.order_book = QTableWidget()
+        self.order_book.setColumnCount(7)
+        self.order_book.setHorizontalHeaderLabels([
+            "Time", "Symbol", "Type", "Side", "Quantity", "Price", "Status"
+        ])
+        self.order_book.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        order_book_layout.addWidget(self.order_book)
+        order_book_group.setLayout(order_book_layout)
+        strategies_layout.addWidget(order_book_group)
+        
+        # Positions
+        positions_group = QGroupBox("Positions")
+        positions_layout = QVBoxLayout()
+        self.position_table = QTableWidget()
+        self.position_table.setColumnCount(5)
+        self.position_table.setHorizontalHeaderLabels([
+            "Symbol", "Quantity", "Avg Price", "Current Price", "P/L"
+        ])
+        self.position_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        positions_layout.addWidget(self.position_table)
+        positions_group.setLayout(positions_layout)
+        strategies_layout.addWidget(positions_group)
+        
+        # Trade History
+        history_group = QGroupBox("Trade History")
+        history_layout = QVBoxLayout()
+        self.trade_history = QTableWidget()
+        self.trade_history.setColumnCount(6)
+        self.trade_history.setHorizontalHeaderLabels([
+            "Time", "Symbol", "Side", "Quantity", "Price", "Total"
+        ])
+        self.trade_history.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        history_layout.addWidget(self.trade_history)
+        history_group.setLayout(history_layout)
+        strategies_layout.addWidget(history_group)
         
         strategies_tab.setLayout(strategies_layout)
         
+        # Add status label
+        self.status_label = QLabel("Ready")
+        strategies_layout.addWidget(self.status_label)
+        
         # Add tabs to tab widget
-        self.tab_widget.addTab(strategies_tab, "Trading Strategies")
+        self.tab_widget.addTab(strategies_tab, "Trading")
         
         # Add tab widget to main layout
         self.main_layout.addWidget(self.tab_widget)

@@ -7,16 +7,32 @@ from typing import Any, Optional
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTextEdit
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QFont
-from ..message_bus import MessageBus
+from modules.message_bus import MessageBus
 
 class BaseTab(QWidget):
     """Base class for all tabs in the application."""
     
+    _shared_message_bus = None  # Class variable for shared message bus
+    
+    @classmethod
+    def get_message_bus(cls):
+        """Get the shared message bus instance."""
+        if cls._shared_message_bus is None:
+            cls._shared_message_bus = MessageBus()
+        return cls._shared_message_bus
+    
+    @classmethod
+    def set_message_bus(cls, message_bus):
+        """Set the shared message bus instance."""
+        cls._shared_message_bus = message_bus
+    
     def __init__(self, parent=None):
         """Initialize the base tab."""
         super().__init__(parent)
-        self.logger = logging.getLogger(__name__)
-        self.message_bus = MessageBus()
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.message_bus = self.get_message_bus()
+        self._ui_setup_done = False
+        self._message_bus_setup_done = False
         self.heartbeat_timer = None
         self.log_text = QTextEdit()  # Initialize log text widget
         self.log_text.setReadOnly(True)
@@ -30,11 +46,23 @@ class BaseTab(QWidget):
         self.setup_heartbeat()
         
     def setup_ui(self):
-        """Set up the user interface. Override in subclasses."""
-        pass
+        """Setup the UI components."""
+        if not self._ui_setup_done:
+            self._setup_ui_impl()
+            self._ui_setup_done = True
         
     def setup_message_bus(self):
         """Setup message bus subscriptions."""
+        if not self._message_bus_setup_done:
+            self._setup_message_bus_impl()
+            self._message_bus_setup_done = True
+        
+    def _setup_ui_impl(self):
+        """Implementation of UI setup. To be overridden by subclasses."""
+        pass
+    
+    def _setup_message_bus_impl(self):
+        """Implementation of message bus setup. To be overridden by subclasses."""
         # Subscribe to general messages
         self.message_bus.subscribe("general", lambda sender, msg_type, msg_data: self.handle_message(sender, msg_type, msg_data))
         

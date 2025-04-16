@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QPushButton, QLabel, QSplitter, QApplication, QSpinBox,
     QDoubleSpinBox, QGroupBox, QCheckBox, QHeaderView, QMessageBox, QDateEdit,
-    QTabWidget, QScrollArea, QFrame, QFileDialog, QTextEdit
+    QTabWidget, QScrollArea, QFrame, QFileDialog, QTextEdit, QFormLayout, QLineEdit
 )
 from PyQt6.QtCore import Qt, QTimer, QDate
 from PyQt6.QtGui import QFont, QTextCursor
@@ -41,6 +41,10 @@ class ImportTab(BaseTab):
         
     def setup_ui(self):
         """Setup the import tab UI."""
+        # Create main layout
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        
         # Create tab widget
         self.tab_widget = QTabWidget()
         
@@ -54,21 +58,53 @@ class ImportTab(BaseTab):
         file_import_layout = QVBoxLayout()
         
         # Add file import UI elements
-        self.file_path_label = QLabel("No file selected")
-        file_import_layout.addWidget(self.file_path_label)
+        file_group = QGroupBox("File Import")
+        file_group_layout = QVBoxLayout()
         
+        # File selection
+        file_select_layout = QHBoxLayout()
+        self.file_path_label = QLabel("No file selected")
         browse_button = QPushButton("Browse")
         browse_button.clicked.connect(self.browse_file)
-        file_import_layout.addWidget(browse_button)
+        file_select_layout.addWidget(self.file_path_label)
+        file_select_layout.addWidget(browse_button)
+        file_group_layout.addLayout(file_select_layout)
         
+        # File type selection
+        type_layout = QHBoxLayout()
+        type_label = QLabel("File Type:")
         self.file_type_combo = QComboBox()
         self.file_type_combo.addItems(["CSV", "Excel", "JSON", "Parquet", "DuckDB"])
-        file_import_layout.addWidget(self.file_type_combo)
+        type_layout.addWidget(type_label)
+        type_layout.addWidget(self.file_type_combo)
+        file_group_layout.addLayout(type_layout)
         
+        # Import button
         self.import_button = QPushButton("Import")
         self.import_button.clicked.connect(self.import_file)
-        self.import_button.setEnabled(False)  # Disable until file is selected
-        file_import_layout.addWidget(self.import_button)
+        self.import_button.setEnabled(False)
+        file_group_layout.addWidget(self.import_button)
+        
+        file_group.setLayout(file_group_layout)
+        file_import_layout.addWidget(file_group)
+        
+        # Preview group
+        preview_group = QGroupBox("Data Preview")
+        preview_layout = QVBoxLayout()
+        
+        # Preview table
+        self.preview_table = QTableWidget()
+        self.preview_table.setColumnCount(0)
+        self.preview_table.setRowCount(0)
+        self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        preview_layout.addWidget(self.preview_table)
+        
+        # Row count label
+        self.row_count_label = QLabel("Rows: 0")
+        preview_layout.addWidget(self.row_count_label)
+        
+        preview_group.setLayout(preview_layout)
+        file_import_layout.addWidget(preview_group)
         
         file_import_tab.setLayout(file_import_layout)
         
@@ -76,36 +112,118 @@ class ImportTab(BaseTab):
         db_import_tab = QWidget()
         db_import_layout = QVBoxLayout()
         
-        # Add database import UI elements
+        # Database connection group
+        db_group = QGroupBox("Database Connection")
+        db_group_layout = QVBoxLayout()
+        
+        # Database type
+        db_type_layout = QHBoxLayout()
+        db_type_label = QLabel("Database Type:")
         self.db_type_combo = QComboBox()
         self.db_type_combo.addItems(["SQLite", "PostgreSQL", "MySQL", "DuckDB"])
-        db_import_layout.addWidget(self.db_type_combo)
+        self.db_type_combo.currentTextChanged.connect(self.update_connection_form)
+        db_type_layout.addWidget(db_type_label)
+        db_type_layout.addWidget(self.db_type_combo)
+        db_group_layout.addLayout(db_type_layout)
         
+        # Connection form
+        self.connection_form = QWidget()
+        self.connection_layout = QFormLayout()
+        self.connection_form.setLayout(self.connection_layout)
+        db_group_layout.addWidget(self.connection_form)
+        
+        # Database file selection (for file-based databases)
+        self.db_file_group = QWidget()
+        db_file_layout = QHBoxLayout()
         self.db_path_label = QLabel("No database selected")
-        db_import_layout.addWidget(self.db_path_label)
-        
         db_browse_button = QPushButton("Browse")
         db_browse_button.clicked.connect(self.browse_database)
-        db_import_layout.addWidget(db_browse_button)
+        db_file_layout.addWidget(self.db_path_label)
+        db_file_layout.addWidget(db_browse_button)
+        self.db_file_group.setLayout(db_file_layout)
+        db_group_layout.addWidget(self.db_file_group)
+        
+        db_group.setLayout(db_group_layout)
+        db_import_layout.addWidget(db_group)
+        
+        # Query group
+        query_group = QGroupBox("SQL Query")
+        query_layout = QVBoxLayout()
+        
+        self.query_edit = QTextEdit()
+        self.query_edit.setPlaceholderText("Enter SQL query...")
+        query_layout.addWidget(self.query_edit)
         
         self.db_import_button = QPushButton("Import")
         self.db_import_button.clicked.connect(self.import_database)
-        self.db_import_button.setEnabled(False)  # Disable until database is selected
-        db_import_layout.addWidget(self.db_import_button)
+        self.db_import_button.setEnabled(False)
+        query_layout.addWidget(self.db_import_button)
+        
+        query_group.setLayout(query_layout)
+        db_import_layout.addWidget(query_group)
         
         db_import_tab.setLayout(db_import_layout)
+        
+        # Log group
+        log_group = QGroupBox("Import Log")
+        log_layout = QVBoxLayout()
+        
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        log_layout.addWidget(self.log_text)
+        
+        log_group.setLayout(log_layout)
         
         # Add tabs to tab widget
         self.tab_widget.addTab(file_import_tab, "File Import")
         self.tab_widget.addTab(db_import_tab, "Database Import")
         
-        # Add tab widget to main layout
+        # Add components to main layout
         self.main_layout.addWidget(self.tab_widget)
+        self.main_layout.addWidget(log_group)
+        
+        # Status label
+        self.status_label = QLabel("Ready")
+        self.main_layout.addWidget(self.status_label)
         
         # Subscribe to message bus
         self.message_bus.subscribe("Import", self.handle_message)
         
         self.logger.info("Import tab initialized")
+        
+        # Initialize the first database connection form
+        self.update_connection_form(self.db_type_combo.currentText())
+
+    def update_connection_form(self, db_type: str):
+        """Update the connection form based on the selected database type."""
+        # Clear existing form
+        while self.connection_layout.count():
+            item = self.connection_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Show/hide database file selection based on database type
+        self.db_file_group.setVisible(db_type in ["SQLite", "DuckDB"])
+        
+        if db_type in ["PostgreSQL", "MySQL"]:
+            # Add connection fields for server-based databases
+            fields = [
+                ("Host:", QLineEdit()),
+                ("Port:", QLineEdit()),
+                ("Database:", QLineEdit()),
+                ("Username:", QLineEdit()),
+                ("Password:", QLineEdit())
+            ]
+            for label, widget in fields:
+                if "Password" in label:
+                    widget.setEchoMode(QLineEdit.EchoMode.Password)
+                self.connection_layout.addRow(label, widget)
+        
+        # Enable the import button if it's a file-based database and a file is selected
+        if db_type in ["SQLite", "DuckDB"]:
+            self.db_import_button.setEnabled(bool(self.db_path_label.text() != "No database selected"))
+        else:
+            self.db_import_button.setEnabled(True)
 
     def browse_file(self):
         """Opens a file dialog to select a data file."""
@@ -395,44 +513,75 @@ class ImportTab(BaseTab):
 
     def process_and_publish_data(self, df):
         """Process the DataFrame and publish it to the message bus."""
-        # Convert date strings to datetime if present
-        date_columns = [col for col in df.columns if 'date' in col.lower()]
-        for col in date_columns:
-            df[col] = pd.to_datetime(df[col])
+        try:
+            # Convert date strings to datetime if present
+            date_columns = [col for col in df.columns if 'date' in col.lower()]
+            for col in date_columns:
+                df[col] = pd.to_datetime(df[col])
 
-        # Validate required columns
-        required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
+            # Validate required columns
+            required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
 
-        # Standardize column names
-        df = df.rename(columns={
-            'Date': 'date',
-            'Open': 'open',
-            'High': 'high',
-            'Low': 'low',
-            'Close': 'close',
-            'Volume': 'volume',
-            'Adj Close': 'adj_close'
-        })
+            # Standardize column names
+            df = df.rename(columns={
+                'Date': 'date',
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume',
+                'Adj Close': 'adj_close'
+            })
 
-        # Set date as index if it's not already
-        if 'date' in df.columns:
-            df.set_index('date', inplace=True)
+            # Set date as index if it's not already
+            if 'date' in df.columns:
+                df.set_index('date', inplace=True)
 
-        # Sort by date
-        df.sort_index(inplace=True)
+            # Sort by date
+            df.sort_index(inplace=True)
 
-        # Update preview table
-        self.update_preview_table(df)
+            # Generate a unique request ID
+            request_id = str(uuid.uuid4())
 
-        # Publish the imported data
-        source = "file" if self.tab_widget.currentIndex() == 0 else "database"
-        self.message_bus.publish("Import", "data_imported", (source, df))
-        self.log_message(f"Successfully imported data from {source}")
-        self.log_message(f"Data shape: {df.shape}")
-        self.log_message(f"Date range: {df.index.min()} to {df.index.max()}")
+            # Cache the data
+            self.import_cache[request_id] = df.copy()
+
+            # Update preview table
+            self.update_preview_table(df)
+
+            # Publish the imported data to various tabs
+            data_message = {
+                'request_id': request_id,
+                'data': df.to_dict('records'),
+                'metadata': {
+                    'columns': list(df.columns),
+                    'index': list(df.index.astype(str)),
+                    'shape': df.shape
+                }
+            }
+
+            # Publish to different tabs
+            self.message_bus.publish("Import", "data_imported", data_message)
+            self.message_bus.publish("Data", "new_data_available", data_message)
+            self.message_bus.publish("Analysis", "data_update", data_message)
+            self.message_bus.publish("Charts", "data_update", data_message)
+            self.message_bus.publish("Models", "data_update", data_message)
+            self.message_bus.publish("Trading", "data_update", data_message)
+
+            self.log_message(f"Successfully processed and published data")
+            self.log_message(f"Data shape: {df.shape}")
+            self.log_message(f"Date range: {df.index.min()} to {df.index.max()}")
+            self.status_label.setText("Data successfully imported and published")
+
+        except Exception as e:
+            error_msg = f"Error processing data: {str(e)}"
+            self.logger.error(error_msg)
+            self.logger.error(traceback.format_exc())
+            self.status_label.setText(error_msg)
+            self.message_bus.publish("Import", "error", error_msg)
 
     def log_message(self, message: str):
         """Appends a message to the log area."""
@@ -446,10 +595,26 @@ class ImportTab(BaseTab):
             if message_type == "error":
                 error_msg = f"Received error from {sender}: {data}"
                 self.log_message(error_msg)
+                self.status_label.setText(error_msg)
+            elif message_type == "data_request":
+                request_id = data.get('request_id')
+                if request_id in self.import_cache:
+                    self.message_bus.publish("Import", "data_response", {
+                        'request_id': request_id,
+                        'data': self.import_cache[request_id]
+                    })
+                else:
+                    self.message_bus.publish("Import", "error", f"Data not found for request {request_id}")
+            elif message_type == "clear_cache":
+                self.import_cache.clear()
+                self.log_message("Cache cleared")
+                self.status_label.setText("Cache cleared")
         except Exception as e:
             error_log = f"Error handling message in ImportTab: {str(e)}"
             self.logger.error(error_log)
-            self.log_message(error_log)
+            self.logger.error(traceback.format_exc())
+            self.status_label.setText(error_log)
+            self.message_bus.publish("Import", "error", error_log)
 
     def browse_database(self):
         """Opens a file dialog to select a database file."""

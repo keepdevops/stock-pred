@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from .base_tab import BaseTab
 from ..message_bus import MessageBus
+import uuid
 
 class ModelsTab(BaseTab):
     """Tab for managing and training machine learning models."""
@@ -20,19 +21,24 @@ class ModelsTab(BaseTab):
     def __init__(self, parent=None):
         """Initialize the Models tab."""
         super().__init__(parent)
-        self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
-        self.model_manager = None  # Will be initialized in setup_ui
-        self.status_label = QLabel("Ready")
-        self.setup_ui()
+        self.model_manager = None
+        self.status_label = None
+        self.models_list = None
+        self.setup_ui()  # Call setup_ui after initializing instance variables
+        self.setup_message_bus()
+        
+    def setup_message_bus(self):
+        """Setup message bus subscriptions."""
+        self.message_bus.subscribe("Models", self.handle_message)
+        self.logger.debug("Subscribed to Models topic")
         
     def setup_ui(self):
         """Setup the models tab UI."""
-        # Create main layout if it doesn't exist
-        if not hasattr(self, 'main_layout'):
-            self.main_layout = QVBoxLayout()
-            self.setLayout(self.main_layout)
-            
+        # Create main layout
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        
         # Initialize model manager
         try:
             from ..model_manager import ModelManager
@@ -47,10 +53,8 @@ class ModelsTab(BaseTab):
         self.main_layout.addWidget(self.models_list)
         
         # Add status label
+        self.status_label = QLabel("Ready")
         self.main_layout.addWidget(self.status_label)
-        
-        # Subscribe to message bus
-        self.message_bus.subscribe("Models", self.handle_message)
         
         self.logger.info("Models tab initialized")
         
@@ -58,48 +62,69 @@ class ModelsTab(BaseTab):
         self.update_model_list()
         
     def update_model_list(self):
-        """Update the list of trained models."""
+        """Update the list of models."""
         try:
-            if self.model_manager is None:
-                self.logger.warning("Model manager not initialized")
-                return
+            if self.model_manager:
+                models = self.model_manager.get_trained_models()
                 
-            models = self.model_manager.get_trained_models()
-            self.models_list.clear()
-            self.models_list.addItems([model.get('name', '') for model in models])
-            
+                # Clear and update the list widget
+                self.models_list.clear()
+                model_names = []
+                for model in models:
+                    if isinstance(model, dict):
+                        model_name = model.get('name', 'Unknown Model')
+                    else:
+                        model_name = str(model)
+                    self.models_list.addItem(model_name)
+                    model_names.append(model_name)
+                
+                # Publish model list update
+                self.logger.debug(f"Publishing model list update with models: {model_names}")
+                self.message_bus.publish("Models", "model_list", {
+                    "models": model_names,
+                    "source": "ModelsTab"
+                })
+                
+                # Also publish individual model added events
+                for model_name in model_names:
+                    self.message_bus.publish("Models", "model_added", {
+                        "model_name": model_name,
+                        "model_type": "LSTM"
+                    })
         except Exception as e:
             self.logger.error(f"Error updating model list: {e}")
-            self.status_label.setText(f"Error: {str(e)}")
             
-    def handle_message(self, sender: str, message_type: str, data: Any):
+    def handle_message(self, topic: str, message_type: str, data: dict):
         """Handle incoming messages."""
         try:
             if message_type == "error":
-                error_msg = f"Received error from {sender}: {data}"
-                self.logger.error(error_msg)
-                self.status_label.setText(error_msg)
-            elif message_type == "model_updated":
+                error_message = data.get('error', 'Unknown error')
+                self.status_label.setText(f"Error: {error_message}")
+                self.logger.error(f"Received error: {error_message}")
+            elif message_type in ["model_updated", "model_added", "model_deleted"]:
                 self.update_model_list()
+                self.status_label.setText("Model list updated")
         except Exception as e:
-            self.logger.error(f"Error handling message in Models tab: {str(e)}")
+            self.logger.error(f"Error handling message: {e}")
+            self.status_label.setText(f"Error handling message: {str(e)}")
+
+    def cleanup(self):
+        """Clean up resources before destruction."""
+        if hasattr(self, 'message_bus'):
+            self.message_bus.unsubscribe("Models", self.handle_message)
+        super().cleanup()
+
+    def closeEvent(self, event):
+        """Handle the widget close event."""
+        self.cleanup()
+        super().closeEvent(event)
 
 def main():
-    """Main function for the models tab process."""
+    """Main function for running the Models tab."""
     app = QApplication(sys.argv)
-    
-    # Setup logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    logger.info("Starting models tab process")
-    
-    # Create and show the models tab
     window = ModelsTab()
-    window.setWindowTitle("Models Tab")
     window.show()
-    
-    # Start the application event loop
     sys.exit(app.exec())
 
 if __name__ == "__main__":
-    main() 
+    main()
