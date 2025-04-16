@@ -3,6 +3,26 @@ from datetime import datetime
 import pandas as pd
 from typing import Dict, List
 import traceback
+import os
+import time
+from PyQt6.QtCore import QTimer
+import subprocess
+from stock_market_analyzer.process_manager import ProcessManager
+from ..tabs.monitor_tab import MonitorTab
+from ..message_bus import MessageBus
+
+def setup_logging(tab_name):
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"{tab_name.lower()}_tab.log")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
 
 class RealTradingAgent:
     """Real trading agent for executing trades."""
@@ -11,6 +31,7 @@ class RealTradingAgent:
         """Initialize the trading agent with a data loader."""
         self.logger = logging.getLogger(__name__)
         self.data_loader = data_loader
+        self.message_bus = MessageBus()
         
         # Default configuration
         self.mode = 'simulation'
@@ -21,6 +42,10 @@ class RealTradingAgent:
         self.order_history = []
         
         self.logger.info("Trading agent initialized in simulation mode")
+        
+        self.heartbeat_timer = QTimer()
+        self.heartbeat_timer.timeout.connect(self.send_heartbeat)
+        self.heartbeat_timer.start(5000)  # every 5 seconds
     
     async def buy(self, symbol: str, amount: float, price: float = None) -> Dict:
         """Execute a buy order."""
@@ -170,4 +195,12 @@ class RealTradingAgent:
             'current_balance': self.current_balance,
             'open_positions': len(self.positions),
             'total_trades': len(self.order_history)
-        } 
+        }
+
+    def send_heartbeat(self):
+        """Send heartbeat message to monitor."""
+        self.message_bus.publish("ProcessMonitor", "heartbeat", {
+            "tab": self.__class__.__name__.replace("Tab", ""),
+            "pid": os.getpid(),
+            "timestamp": time.time()
+        }) 
