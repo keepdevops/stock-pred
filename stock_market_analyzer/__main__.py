@@ -1,7 +1,8 @@
 import logging
 import sys
+import os
 from pathlib import Path
-from PyQt5.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication
 
 # Add the current directory to the Python path
 current_dir = str(Path(__file__).resolve().parent)
@@ -12,7 +13,7 @@ from modules.database import DatabaseConnector
 from modules.data_loader import DataLoader
 from modules.stock_ai_agent import StockAIAgent
 from modules.trading.real_trading_agent import RealTradingAgent
-from modules.gui import StockGUI
+from modules.gui import MainWindow
 
 def setup_logging():
     """Set up logging configuration."""
@@ -50,11 +51,11 @@ def main():
         trading_agent = RealTradingAgent()
         
         # Create and show main window
-        window = StockGUI(db, data_loader, ai_agent, trading_agent)
+        window = MainWindow(db, data_loader, ai_agent, trading_agent)
         window.show()
         
         # Start the event loop
-        sys.exit(app.exec_())
+        sys.exit(app.exec())
         
     except Exception as e:
         logger.error(f"Application error: {e}")
