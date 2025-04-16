@@ -1,188 +1,81 @@
-import torch
-import torch.nn as nn
 import numpy as np
-from typing import Tuple, Optional
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
 import logging
 
-class LSTMStockPredictor(nn.Module):
-    def __init__(self, input_dim: int = 5, hidden_dim: int = 64, num_layers: int = 2, dropout: float = 0.2):
-        """
-        Initialize LSTM model for stock prediction.
-        
-        Args:
-            input_dim: Number of input features (OHLCV = 5)
-            hidden_dim: Number of hidden units in LSTM layers
-            num_layers: Number of LSTM layers
-            dropout: Dropout rate for regularization
-        """
-        super(LSTMStockPredictor, self).__init__()
-        
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
+class LSTMModel:
+    """LSTM model for stock price prediction."""
+    
+    def __init__(self, input_shape=(60, 5), units=50, dropout=0.2, learning_rate=0.001):
+        """Initialize the LSTM model."""
         self.logger = logging.getLogger(__name__)
+        self.input_shape = input_shape
+        self.units = units
+        self.dropout = dropout
+        self.learning_rate = learning_rate
+        self.model = self._build_model()
         
-        # LSTM layers
-        self.lstm = nn.LSTM(
-            input_size=input_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0,
-            batch_first=True
+    def _build_model(self):
+        """Build the LSTM model."""
+        model = Sequential([
+            LSTM(units=self.units, return_sequences=True, input_shape=self.input_shape),
+            Dropout(self.dropout),
+            LSTM(units=self.units, return_sequences=False),
+            Dropout(self.dropout),
+            Dense(units=1)
+        ])
+        
+        model.compile(
+            optimizer=Adam(learning_rate=self.learning_rate),
+            loss='mean_squared_error',
+            metrics=['mae']
         )
         
-        # Fully connected layer for prediction
-        self.fc = nn.Linear(hidden_dim, 1)
+        return model
         
-    def forward(self, x: torch.Tensor, hidden: Optional[Tuple[torch.Tensor, torch.Tensor]] = None) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Forward pass of the model.
-        
-        Args:
-            x: Input tensor of shape (batch_size, sequence_length, input_dim)
-            hidden: Optional initial hidden state
-            
-        Returns:
-            Tuple of (predictions, hidden_state)
-        """
-        # Initialize hidden state if not provided
-        if hidden is None:
-            h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-            c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-            hidden = (h0, c0)
-            
-        # Forward pass through LSTM
-        lstm_out, hidden = self.lstm(x, hidden)
-        
-        # Get predictions from last time step
-        predictions = self.fc(lstm_out[:, -1, :])
-        
-        return predictions, hidden
-        
-    def predict(self, x: np.ndarray) -> np.ndarray:
-        """
-        Make predictions on numpy array input.
-        
-        Args:
-            x: Input array of shape (sequence_length, input_dim)
-            
-        Returns:
-            Numpy array of predictions
-        """
-        self.eval()  # Set model to evaluation mode
-        
+    def train(self, X_train, y_train, epochs=50, batch_size=32, validation_split=0.1):
+        """Train the LSTM model."""
         try:
-            with torch.no_grad():
-                # Convert input to tensor and add batch dimension
-                x = torch.FloatTensor(x).unsqueeze(0)
-                
-                # Make prediction
-                predictions, _ = self.forward(x)
-                
-                # Convert to numpy array and remove batch dimension
-                return predictions.numpy().squeeze()
-                
-        except Exception as e:
-            self.logger.error(f"Error making prediction: {str(e)}")
-            return np.array([])
+            history = self.model.fit(
+                X_train, y_train,
+                epochs=epochs,
+                batch_size=batch_size,
+                validation_split=validation_split,
+                verbose=1
+            )
+            return history
             
-    def save(self, path: str):
-        """Save model state to file."""
+        except Exception as e:
+            self.logger.error(f"Error training LSTM model: {str(e)}")
+            raise
+            
+    def predict(self, X):
+        """Make predictions using the trained model."""
         try:
-            torch.save(self.state_dict(), path)
-            self.logger.info(f"Model saved to {path}")
-        except Exception as e:
-            self.logger.error(f"Error saving model: {str(e)}")
+            return self.model.predict(X)
             
-    def load(self, path: str):
-        """Load model state from file."""
+        except Exception as e:
+            self.logger.error(f"Error making predictions with LSTM model: {str(e)}")
+            raise
+            
+    def save(self, filepath):
+        """Save the model to a file."""
         try:
-            self.load_state_dict(torch.load(path))
-            self.logger.info(f"Model loaded from {path}")
+            self.model.save(filepath)
+            self.logger.info(f"Model saved to {filepath}")
+            
         except Exception as e:
-            self.logger.error(f"Error loading model: {str(e)}")
+            self.logger.error(f"Error saving LSTM model: {str(e)}")
+            raise
             
-class LSTMTrainer:
-    def __init__(self, model: LSTMStockPredictor, learning_rate: float = 0.001):
-        """
-        Initialize trainer for LSTM model.
-        
-        Args:
-            model: LSTMStockPredictor instance
-            learning_rate: Learning rate for optimization
-        """
-        self.model = model
-        self.criterion = nn.MSELoss()
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-        self.logger = logging.getLogger(__name__)
-        
-    def train_step(self, x: torch.Tensor, y: torch.Tensor) -> float:
-        """
-        Perform single training step.
-        
-        Args:
-            x: Input tensor of shape (batch_size, sequence_length, input_dim)
-            y: Target tensor of shape (batch_size, 1)
+    def load(self, filepath):
+        """Load the model from a file."""
+        try:
+            self.model = tf.keras.models.load_model(filepath)
+            self.logger.info(f"Model loaded from {filepath}")
             
-        Returns:
-            Loss value for this step
-        """
-        # Set model to training mode
-        self.model.train()
-        
-        # Zero gradients
-        self.optimizer.zero_grad()
-        
-        # Forward pass
-        predictions, _ = self.model(x)
-        
-        # Calculate loss
-        loss = self.criterion(predictions, y)
-        
-        # Backward pass
-        loss.backward()
-        
-        # Update weights
-        self.optimizer.step()
-        
-        return loss.item()
-        
-    def train_epoch(self, train_loader: torch.utils.data.DataLoader) -> float:
-        """
-        Train for one epoch.
-        
-        Args:
-            train_loader: DataLoader for training data
-            
-        Returns:
-            Average loss for this epoch
-        """
-        total_loss = 0
-        num_batches = len(train_loader)
-        
-        for x_batch, y_batch in train_loader:
-            loss = self.train_step(x_batch, y_batch)
-            total_loss += loss
-            
-        return total_loss / num_batches
-        
-    def evaluate(self, val_loader: torch.utils.data.DataLoader) -> float:
-        """
-        Evaluate model on validation data.
-        
-        Args:
-            val_loader: DataLoader for validation data
-            
-        Returns:
-            Average validation loss
-        """
-        self.model.eval()
-        total_loss = 0
-        num_batches = len(val_loader)
-        
-        with torch.no_grad():
-            for x_batch, y_batch in val_loader:
-                predictions, _ = self.model(x_batch)
-                loss = self.criterion(predictions, y_batch)
-                total_loss += loss.item()
-                
-        return total_loss / num_batches 
+        except Exception as e:
+            self.logger.error(f"Error loading LSTM model: {str(e)}")
+            raise 

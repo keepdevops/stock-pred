@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 import logging
 import joblib
 
-class XGBoostStockPredictor:
+class XGBoostModel:
     def __init__(self, **kwargs):
         """
         Initialize XGBoost model for stock prediction.
@@ -109,12 +109,12 @@ class XGBoostStockPredictor:
             self.logger.error(f"Error loading model: {str(e)}")
             
 class XGBoostTrainer:
-    def __init__(self, model: XGBoostStockPredictor):
+    def __init__(self, model: XGBoostModel):
         """
-        Initialize trainer for XGBoost model.
+        Initialize XGBoost trainer.
         
         Args:
-            model: XGBoostStockPredictor instance
+            model: XGBoostModel instance
         """
         self.model = model
         self.logger = logging.getLogger(__name__)
@@ -128,7 +128,7 @@ class XGBoostTrainer:
         early_stopping_rounds: Optional[int] = None
     ) -> Dict[str, list]:
         """
-        Train the model.
+        Train the model with optional validation and early stopping.
         
         Args:
             X_train: Training features
@@ -141,20 +141,14 @@ class XGBoostTrainer:
             Dictionary containing training history
         """
         try:
-            # Prepare evaluation set for early stopping
             eval_set = [(X_train, y_train)]
             if X_val is not None and y_val is not None:
                 eval_set.append((X_val, y_val))
                 
-            # Train model
-            history = self.model.fit(
-                X_train,
-                y_train,
-                eval_set=eval_set if early_stopping_rounds else None
+            return self.model.fit(
+                X_train, y_train,
+                eval_set=eval_set if len(eval_set) > 1 else None
             )
-            
-            self.logger.info("Training completed successfully")
-            return history
             
         except Exception as e:
             self.logger.error(f"Error during training: {str(e)}")
@@ -162,19 +156,18 @@ class XGBoostTrainer:
             
     def evaluate(self, X: np.ndarray, y: np.ndarray) -> float:
         """
-        Evaluate model performance.
+        Evaluate the model on test data.
         
         Args:
-            X: Input features
-            y: True targets
+            X: Test features
+            y: Test targets
             
         Returns:
             RMSE score
         """
         try:
-            predictions = self.model.predict(X)
-            rmse = np.sqrt(np.mean((predictions - y) ** 2))
-            return float(rmse)
+            y_pred = self.model.predict(X)
+            return np.sqrt(np.mean((y - y_pred) ** 2))
         except Exception as e:
             self.logger.error(f"Error during evaluation: {str(e)}")
             return float('inf') 

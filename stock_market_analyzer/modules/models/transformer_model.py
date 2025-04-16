@@ -2,8 +2,11 @@ import torch
 import torch.nn as nn
 import numpy as np
 import math
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 import logging
+import tensorflow as tf
+from tensorflow.keras import layers, Model
+import joblib
 
 class StockTransformer(nn.Module):
     def __init__(
@@ -197,4 +200,169 @@ class TransformerStockPredictor:
         """Load the model from disk."""
         checkpoint = torch.load(path)
         self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict']) 
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+class TransformerModel:
+    def __init__(self, 
+                 input_shape: Tuple[int, int],
+                 num_heads: int = 4,
+                 ff_dim: int = 32,
+                 num_transformer_blocks: int = 2,
+                 dropout_rate: float = 0.1,
+                 **kwargs):
+        """
+        Initialize Transformer model for stock prediction.
+        
+        Args:
+            input_shape: Shape of input data (sequence_length, num_features)
+            num_heads: Number of attention heads
+            ff_dim: Dimension of feed-forward network
+            num_transformer_blocks: Number of transformer blocks
+            dropout_rate: Dropout rate
+            **kwargs: Additional model parameters
+        """
+        self.input_shape = input_shape
+        self.num_heads = num_heads
+        self.ff_dim = ff_dim
+        self.num_transformer_blocks = num_transformer_blocks
+        self.dropout_rate = dropout_rate
+        self.logger = logging.getLogger(__name__)
+        
+        # Build model
+        self.model = self._build_model()
+        
+    def _transformer_encoder(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Create a transformer encoder block."""
+        # Multi-head attention
+        attention_output = layers.MultiHeadAttention(
+            num_heads=self.num_heads,
+            key_dim=self.input_shape[1]
+        )(inputs, inputs)
+        
+        # Add & normalize
+        attention_output = layers.Dropout(self.dropout_rate)(attention_output)
+        attention_output = layers.LayerNormalization(
+            epsilon=1e-6
+        )(inputs + attention_output)
+        
+        # Feed-forward network
+        ffn_output = layers.Dense(self.ff_dim, activation='relu')(attention_output)
+        ffn_output = layers.Dense(self.input_shape[1])(ffn_output)
+        ffn_output = layers.Dropout(self.dropout_rate)(ffn_output)
+        
+        # Add & normalize
+        return layers.LayerNormalization(
+            epsilon=1e-6
+        )(attention_output + ffn_output)
+        
+    def _build_model(self) -> Model:
+        """Build the transformer model."""
+        inputs = layers.Input(shape=self.input_shape)
+        
+        # Positional encoding
+        x = layers.Dense(self.input_shape[1])(inputs)
+        
+        # Transformer blocks
+        for _ in range(self.num_transformer_blocks):
+            x = self._transformer_encoder(x)
+            
+        # Global average pooling
+        x = layers.GlobalAveragePooling1D()(x)
+        
+        # Output layer
+        outputs = layers.Dense(1)(x)
+        
+        return Model(inputs=inputs, outputs=outputs)
+        
+    def compile(self, learning_rate: float = 0.001):
+        """Compile the model."""
+        self.model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+            loss='mse',
+            metrics=['mae']
+        )
+        
+    def fit(self, 
+            X: np.ndarray, 
+            y: np.ndarray,
+            validation_data: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+            epochs: int = 100,
+            batch_size: int = 32,
+            callbacks: Optional[list] = None) -> Dict[str, list]:
+        """
+        Train the model.
+        
+        Args:
+            X: Training features
+            y: Training targets
+            validation_data: Optional validation data
+            epochs: Number of epochs
+            batch_size: Batch size
+            callbacks: Optional callbacks
+            
+        Returns:
+            Dictionary containing training history
+        """
+        try:
+            history = self.model.fit(
+                X, y,
+                validation_data=validation_data,
+                epochs=epochs,
+                batch_size=batch_size,
+                callbacks=callbacks,
+                verbose=1
+            )
+            
+            self.logger.info("Model training completed successfully")
+            return {
+                'train_loss': history.history['loss'],
+                'val_loss': history.history.get('val_loss', []),
+                'train_mae': history.history['mae'],
+                'val_mae': history.history.get('val_mae', [])
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error during training: {str(e)}")
+            return {'train_loss': [], 'val_loss': [], 'train_mae': [], 'val_mae': []}
+            
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """
+        Make predictions.
+        
+        Args:
+            X: Input features
+            
+        Returns:
+            Array of predictions
+        """
+        try:
+            return self.model.predict(X)
+        except Exception as e:
+            self.logger.error(f"Error making prediction: {str(e)}")
+            return np.array([])
+            
+    def save(self, path: str):
+        """Save model to file."""
+        try:
+            self.model.save(path)
+            self.logger.info(f"Model saved to {path}")
+        except Exception as e:
+            self.logger.error(f"Error saving model: {str(e)}")
+            
+    def load(self, path: str):
+        """Load model from file."""
+        try:
+            self.model = tf.keras.models.load_model(path)
+            self.logger.info(f"Model loaded from {path}")
+        except Exception as e:
+            self.logger.error(f"Error loading model: {str(e)}")
+            
+    def get_config(self) -> Dict[str, Any]:
+        """Get model configuration."""
+        return {
+            'input_shape': self.input_shape,
+            'num_heads': self.num_heads,
+            'ff_dim': self.ff_dim,
+            'num_transformer_blocks': self.num_transformer_blocks,
+            'dropout_rate': self.dropout_rate
+        } 

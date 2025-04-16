@@ -1,8 +1,8 @@
 from typing import Dict, Any, Optional
 import logging
 from .transformer_model import TransformerStockPredictor
-from .lstm_model import LSTMStockPredictor
-from .xgboost_model import XGBoostStockPredictor
+from .lstm_model import LSTMModel
+from .xgboost_model import XGBoostModel
 
 class ModelFactory:
     """Factory class for creating and managing different types of stock prediction models."""
@@ -32,9 +32,9 @@ class ModelFactory:
         if model_type.lower() == 'transformer':
             return TransformerStockPredictor(**model_params)
         elif model_type.lower() == 'lstm':
-            return LSTMStockPredictor(**model_params)
+            return LSTMModel(**model_params)
         elif model_type.lower() == 'xgboost':
-            return XGBoostStockPredictor(**model_params)
+            return XGBoostModel(**model_params)
         else:
             raise ValueError(f"Unsupported model type: {model_type}")
             
