@@ -1,22 +1,24 @@
 import sys
 import os
+import json
 import logging
 from typing import Any, Dict, Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QLineEdit, QGroupBox, QMessageBox
+    QCheckBox, QLineEdit, QGroupBox, QMessageBox,
+    QFileDialog
 )
 from PyQt6.QtCore import Qt, QTimer
+from modules.tabs.base_tab import BaseTab
+from ..message_bus import MessageBus
 
 # Add the project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from stock_market_analyzer.modules.message_bus import MessageBus
-
-class SettingsTab(QWidget):
+class SettingsTab(BaseTab):
     """Settings tab for the stock market analyzer."""
     
     def __init__(self, parent=None):
@@ -24,6 +26,8 @@ class SettingsTab(QWidget):
         self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
         self.unsaved_changes = False
+        self.settings_file = os.path.join(os.path.dirname(__file__), "..", "..", "data", "settings.json")
+        self.settings = self.load_settings()
         self.setup_ui()
         
         # Set up auto-save timer
@@ -35,6 +39,24 @@ class SettingsTab(QWidget):
         """Setup the settings tab UI."""
         layout = QVBoxLayout()
         self.setLayout(layout)
+        
+        # Data directory settings
+        data_group = QGroupBox("Data Directory Settings")
+        data_layout = QVBoxLayout()
+        
+        # Data directory path
+        path_layout = QHBoxLayout()
+        self.data_dir_edit = QLineEdit()
+        self.data_dir_edit.setReadOnly(True)
+        path_layout.addWidget(self.data_dir_edit)
+        
+        browse_button = QPushButton("Browse...")
+        browse_button.clicked.connect(self.browse_data_directory)
+        path_layout.addWidget(browse_button)
+        
+        data_layout.addLayout(path_layout)
+        data_group.setLayout(data_layout)
+        layout.addWidget(data_group)
         
         # Database settings
         db_group = QGroupBox("Database Settings")
@@ -304,6 +326,50 @@ class SettingsTab(QWidget):
             error_log = f"Error publishing message from Settings tab: {str(e)}"
             self.logger.error(error_log)
 
+    def browse_data_directory(self):
+        """Open file dialog to select data directory."""
+        try:
+            directory = QFileDialog.getExistingDirectory(
+                self,
+                "Select Data Directory",
+                os.path.expanduser("~"),
+                QFileDialog.Option.ShowDirsOnly
+            )
+            
+            if directory:
+                self.data_dir_edit.setText(directory)
+                self.status_label.setText(f"Selected directory: {directory}")
+                
+        except Exception as e:
+            self.logger.error(f"Error browsing directory: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
+            
+    def load_settings(self):
+        """Load settings from configuration file."""
+        try:
+            # TODO: Implement settings loading from config file
+            # For now, set some default values
+            self.data_dir_edit.setText(os.path.expanduser("~/stock_data"))
+            self.db_path_edit.setText("localhost")
+            self.db_port_spin.setValue(5432)
+            self.db_user_edit.setText("postgres")
+            
+            self.status_label.setText("Settings loaded")
+            
+        except Exception as e:
+            self.logger.error(f"Error loading settings: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
+            
+    def save_settings(self):
+        """Save settings to configuration file."""
+        try:
+            # TODO: Implement settings saving to config file
+            self.status_label.setText("Settings saved")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving settings: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
+            
 def main():
     """Main function for the settings tab process."""
     # Ensure QApplication instance exists

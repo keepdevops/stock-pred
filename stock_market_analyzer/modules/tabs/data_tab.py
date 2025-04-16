@@ -2,27 +2,34 @@ import sys
 import os
 import logging
 import traceback
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timedelta
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QCheckBox, QMessageBox,
-    QFileDialog, QComboBox, QProgressBar
+    QFileDialog, QComboBox, QProgressBar, QListWidget,
+    QListWidgetItem, QSplitter, QDateEdit
 )
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, QTimer, QDate
+from PyQt6.QtGui import QFont
 import pandas as pd
+import yfinance as yf
+import json
+import time
 
 # Add the project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from stock_market_analyzer.modules.message_bus import MessageBus
-from stock_market_analyzer.modules.data_stock import DataStock
-from stock_market_analyzer.modules.database import DatabaseConnector
+from ..message_bus import MessageBus
+from ..data_stock import DataStock
+from ..database import DatabaseConnector
+from .base_tab import BaseTab
 
-class DataTab(QWidget):
-    """Data tab for displaying and managing stock data."""
+class DataTab(BaseTab):
+    """Data tab for managing stock data."""
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,379 +37,308 @@ class DataTab(QWidget):
         self.logger = logging.getLogger(__name__)
         self.data_stock = DataStock()
         self.db_connector = DatabaseConnector()
-        
-        # Set up the UI
         self.setup_ui()
-        
-        # Subscribe to message bus
-        self.message_bus.subscribe("Data", self.handle_message)
-        
-        self.logger.info("Data tab initialized")
+        self.ticker_list = []
+        self.data_cache = {}
+        self.pending_requests = {}
+        self.current_color_scheme = "default"  # Add default color scheme
+        self.setup_theme()  # Initialize theme
         
     def setup_ui(self):
-        """Set up the user interface."""
+        """Setup the data tab UI."""
+        # Market type selection
+        market_layout = QHBoxLayout()
+        market_layout.addWidget(QLabel("Market Type:"))
+        self.market_combo = QComboBox()
+        self.market_combo.addItems(["US", "HK", "CN"])
+        market_layout.addWidget(self.market_combo)
+        self.layout.addLayout(market_layout)
+        
+        # Date range selection
+        date_layout = QHBoxLayout()
+        date_layout.addWidget(QLabel("Date Range:"))
+        
+        # Start date
+        date_layout.addWidget(QLabel("From:"))
+        self.start_date = QDateEdit()
+        self.start_date.setCalendarPopup(True)
+        self.start_date.setDate(QDate.currentDate().addYears(-1))  # Default to 1 year ago
+        date_layout.addWidget(self.start_date)
+        
+        # End date
+        date_layout.addWidget(QLabel("To:"))
+        self.end_date = QDateEdit()
+        self.end_date.setCalendarPopup(True)
+        self.end_date.setDate(QDate.currentDate())  # Default to today
+        date_layout.addWidget(self.end_date)
+        
+        self.layout.addLayout(date_layout)
+        
+        # Ticker input
+        ticker_layout = QHBoxLayout()
+        ticker_layout.addWidget(QLabel("Ticker:"))
+        self.ticker_edit = QLineEdit()
+        ticker_layout.addWidget(self.ticker_edit)
+        
+        add_button = QPushButton("Add")
+        add_button.clicked.connect(self.add_ticker)
+        ticker_layout.addWidget(add_button)
+        
+        self.layout.addLayout(ticker_layout)
+        
+        # Data table
+        self.table = QTableWidget()
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels([
+            "Ticker", "Market", "Open", "High", "Low", "Close", "Volume"
+        ])
+        self.layout.addWidget(self.table)
+        
+    def handle_message(self, sender: str, message_type: str, data: dict):
+        """Handle incoming messages from the message bus.
+        
+        Args:
+            sender: The sender of the message
+            message_type: The type of message
+            data: The message data
+        """
         try:
-            # Create main layout
-            main_layout = QVBoxLayout()
-            self.setLayout(main_layout)
-            
-            # Market type selection
-            market_layout = QHBoxLayout()
-            market_label = QLabel("Market Type:")
-            self.market_type_combo = QComboBox()
-            self.market_type_combo.addItems(["Stocks", "Forex", "Cryptocurrency"])
-            self.market_type_combo.currentTextChanged.connect(self.update_ticker_table)
-            market_layout.addWidget(market_label)
-            market_layout.addWidget(self.market_type_combo)
-            main_layout.addLayout(market_layout)
-            
-            # Ticker selection
-            ticker_layout = QHBoxLayout()
-            ticker_label = QLabel("Ticker:")
-            self.ticker_combo = QComboBox()
-            self.ticker_combo.currentTextChanged.connect(self.update_ticker_data)
-            ticker_layout.addWidget(ticker_label)
-            ticker_layout.addWidget(self.ticker_combo)
-            main_layout.addLayout(ticker_layout)
-            
-            # Progress bar for loading
-            self.progress_bar = QProgressBar()
-            self.progress_bar.setVisible(False)
-            main_layout.addWidget(self.progress_bar)
-            
-            # Ticker table
-            self.ticker_table = QTableWidget()
-            self.ticker_table.setColumnCount(5)
-            self.ticker_table.setHorizontalHeaderLabels(["Symbol", "Open", "High", "Low", "Close"])
-            self.ticker_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-            main_layout.addWidget(self.ticker_table)
-            
-            # Buttons layout
-            buttons_layout = QHBoxLayout()
-            
-            # Export buttons
-            self.export_csv_btn = QPushButton("Export to CSV")
-            self.export_csv_btn.clicked.connect(self.export_to_csv)
-            buttons_layout.addWidget(self.export_csv_btn)
-            
-            self.export_json_btn = QPushButton("Export to JSON")
-            self.export_json_btn.clicked.connect(self.export_to_json)
-            buttons_layout.addWidget(self.export_json_btn)
-            
-            # Share button
-            self.share_btn = QPushButton("Share Data")
-            self.share_btn.clicked.connect(self.share_data)
-            buttons_layout.addWidget(self.share_btn)
-            
-            main_layout.addLayout(buttons_layout)
-            
-            # Realtime updates checkbox
-            self.realtime_checkbox = QCheckBox("Enable real-time updates")
-            self.realtime_checkbox.stateChanged.connect(self.toggle_realtime)
-            main_layout.addWidget(self.realtime_checkbox)
-            
-            # Status label
-            self.status_label = QLabel("Ready")
-            main_layout.addWidget(self.status_label)
-            
+            if message_type == "heartbeat":
+                self.status_label.setText("Connected")
+            elif message_type == "data_request":
+                self.handle_data_request(sender, data)
         except Exception as e:
-            self.logger.error(f"Error setting up Data tab UI: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            raise
+            logging.error(f"Error handling message in DataTab: {str(e)}")
+            self.status_label.setText(f"Error: {str(e)}")
             
-    def load_data(self):
-        """Load data for the entered ticker."""
+    def handle_data_request(self, sender: str, data: Any):
+        """Handle data request from another tab."""
         try:
-            ticker = self.ticker_input.text().strip().upper()
-            if not ticker:
-                self.status_label.setText("Please enter a ticker symbol")
-                return
-                
-            # Add ticker to list if not already present
-            if ticker not in [self.ticker_list.item(row, 0).text() 
-                            for row in range(self.ticker_list.rowCount())]:
-                row = self.ticker_list.rowCount()
-                self.ticker_list.insertRow(row)
-                self.ticker_list.setItem(row, 0, QTableWidgetItem(ticker))
-                
-            # Load historical data
-            data = self.data_stock.get_historical_data(
-                symbol=ticker,
-                start_date="2020-01-01",
-                end_date="2023-12-31",
-                interval="1d"
-            )
-            
-            # Update data table
-            self.update_data(data)
-            
-            # Publish data update message
-            self.message_bus.publish("Data", "data_updated", (ticker, data))
-            
-            self.status_label.setText(f"Loaded data for {ticker}")
-            
-        except Exception as e:
-            self.logger.error(f"Error loading data: {str(e)}")
-            self.message_bus.publish("Data", "error", str(e))
-            
-    def update_data(self, data):
-        """Update the data table with new data."""
-        try:
-            if not data or not isinstance(data, pd.DataFrame):
-                return
-                
-            # Clear existing data
-            self.data_table.clear()
-            
-            # Set up table dimensions
-            self.data_table.setRowCount(min(100, len(data)))
-            self.data_table.setColumnCount(len(data.columns))
-            
-            # Set headers
-            self.data_table.setHorizontalHeaderLabels(data.columns)
-            
-            # Populate table
-            for i in range(min(100, len(data))):
-                for j, col in enumerate(data.columns):
-                    value = data.iloc[i, j]
-                    item = QTableWidgetItem(str(value))
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    self.data_table.setItem(i, j, item)
-                    
-            self.status_label.setText(f"Displaying {len(data)} rows of data")
-            
-        except Exception as e:
-            self.logger.error(f"Error updating data table: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            
-    def toggle_realtime(self, state: int):
-        """Toggle real-time updates."""
-        try:
-            ticker = self.ticker_combo.currentText()
-            if not ticker:
-                self.status_label.setText("Please enter a ticker symbol")
-                self.realtime_checkbox.setChecked(False)
-                return
-                
-            if state == Qt.CheckState.Checked.value:
-                # Start real-time updates
-                self.data_stock.get_realtime_data(ticker)
-                self.status_label.setText(f"Real-time updates enabled for {ticker}")
+            ticker = data.get("ticker")
+            if ticker in self.data_cache:
+                self.message_bus.publish(
+                    self.__class__.__name__,
+                    "data_response",
+                    {
+                        "ticker": ticker,
+                        "data": self.data_cache[ticker]
+                    }
+                )
             else:
-                # Stop real-time updates
-                self.data_stock.stop_realtime_updates()
-                self.status_label.setText(f"Real-time updates disabled for {ticker}")
-                
+                self.message_bus.publish(
+                    self.__class__.__name__,
+                    "error",
+                    f"Data not found for ticker: {ticker}"
+                )
         except Exception as e:
-            self.logger.error(f"Error toggling real-time updates: {str(e)}")
-            self.message_bus.publish("Data", "error", str(e))
+            self.logger.error(f"Error handling data request: {e}")
             
-    def handle_message(self, sender: str, message_type: str, data: Any):
-        """Handle incoming messages from the message bus."""
+    def handle_analysis_request(self, sender: str, data: Any):
+        """Handle analysis request from another tab."""
         try:
-            if message_type == "error":
-                error_msg = f"Received error from {sender}: {data}"
-                self.logger.error(error_msg)
-                self.status_label.setText(f"Error: {data}")
-                
-            elif message_type == "heartbeat":
-                self.logger.debug(f"Received heartbeat from {sender}")
-                
-            elif message_type == "data_updated":
-                # Handle data updates from other tabs
-                ticker, new_data = data
-                self.update_data(new_data)
-                self.status_label.setText(f"Received updated data for {ticker}")
-                
-        except Exception as e:
-            error_log = f"Error handling message in Data tab: {str(e)}"
-            self.logger.error(error_log)
-            self.logger.error(traceback.format_exc())
+            ticker = data.get("ticker")
+            analysis_type = data.get("analysis_type")
             
-    def show_error(self, error_msg):
-        """Show an error message."""
-        try:
-            QMessageBox.critical(self, "Error", str(error_msg))
-            self.status_label.setText(f"Error: {error_msg}")
-        except Exception as e:
-            self.logger.error(f"Error showing error message: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            
-    def closeEvent(self, event):
-        """Handle window close event."""
-        try:
-            self.message_bus.unsubscribe("Data", self.handle_message)
-            event.accept()
-        except Exception as e:
-            self.logger.error(f"Error in Data tab close event: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            event.accept()
-
-    def update_ticker_table(self):
-        """Update the ticker table based on selected market type."""
-        try:
-            market_type = self.market_type_combo.currentText()
-            self.status_label.setText(f"Loading {market_type} data...")
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            
-            # Get data from database
-            data = self.db_connector.get_stock_data(market_type=market_type)
-            
-            # Update ticker combo box
-            self.ticker_combo.clear()
-            if not data.empty:
-                unique_symbols = data['symbol'].unique()
-                self.ticker_combo.addItems(unique_symbols)
-                self.progress_bar.setValue(50)
-                
-                # Clear existing table
-                self.ticker_table.setRowCount(0)
-                
-                # Get unique symbols and their latest data
-                latest_data = data.sort_values('date').groupby('symbol').last().reset_index()
-                
-                # Populate table
-                self.ticker_table.setRowCount(len(latest_data))
-                for row, (_, row_data) in enumerate(latest_data.iterrows()):
-                    self.ticker_table.setItem(row, 0, QTableWidgetItem(row_data['symbol']))
-                    self.ticker_table.setItem(row, 1, QTableWidgetItem(str(row_data['open'])))
-                    self.ticker_table.setItem(row, 2, QTableWidgetItem(str(row_data['high'])))
-                    self.ticker_table.setItem(row, 3, QTableWidgetItem(str(row_data['low'])))
-                    self.ticker_table.setItem(row, 4, QTableWidgetItem(str(row_data['close'])))
-                
-                self.status_label.setText(f"Loaded {len(latest_data)} {market_type} symbols")
-            else:
-                self.status_label.setText(f"No data found for {market_type}")
-                
-            self.progress_bar.setValue(100)
-            QTimer.singleShot(1000, lambda: self.progress_bar.setVisible(False))
-            
-        except Exception as e:
-            self.status_label.setText(f"Error loading data: {str(e)}")
-            self.logger.error(f"Error updating ticker table: {e}")
-            self.progress_bar.setVisible(False)
-            
-    def update_ticker_data(self):
-        """Update the table to show data for the selected ticker."""
-        try:
-            ticker = self.ticker_combo.currentText()
-            if not ticker:
-                return
-                
-            self.status_label.setText(f"Loading data for {ticker}...")
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            
-            # Get data from database
-            data = self.db_connector.get_stock_data()
-            ticker_data = data[data['symbol'] == ticker]
-            
-            if not ticker_data.empty:
-                # Sort by date
-                ticker_data = ticker_data.sort_values('date', ascending=False)
-                
-                # Clear existing table
-                self.ticker_table.setRowCount(0)
-                
-                # Populate table with historical data
-                self.ticker_table.setRowCount(len(ticker_data))
-                for row, (_, row_data) in enumerate(ticker_data.iterrows()):
-                    self.ticker_table.setItem(row, 0, QTableWidgetItem(row_data['symbol']))
-                    self.ticker_table.setItem(row, 1, QTableWidgetItem(str(row_data['open'])))
-                    self.ticker_table.setItem(row, 2, QTableWidgetItem(str(row_data['high'])))
-                    self.ticker_table.setItem(row, 3, QTableWidgetItem(str(row_data['low'])))
-                    self.ticker_table.setItem(row, 4, QTableWidgetItem(str(row_data['close'])))
-                
-                self.status_label.setText(f"Loaded {len(ticker_data)} records for {ticker}")
-            else:
-                self.status_label.setText(f"No data found for {ticker}")
-                
-            self.progress_bar.setValue(100)
-            QTimer.singleShot(1000, lambda: self.progress_bar.setVisible(False))
-            
-        except Exception as e:
-            self.status_label.setText(f"Error loading ticker data: {str(e)}")
-            self.logger.error(f"Error updating ticker data: {e}")
-            self.progress_bar.setVisible(False)
-            
-    def export_to_csv(self):
-        """Export current table data to CSV."""
-        try:
-            market_type = self.market_type_combo.currentText()
-            ticker = self.ticker_combo.currentText()
-            
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "Save CSV File", "", "CSV Files (*.csv)"
-            )
-            
-            if file_path:
-                data = self.db_connector.get_stock_data(market_type=market_type)
-                if ticker:
-                    data = data[data['symbol'] == ticker]
-                    
-                if not data.empty:
-                    data.to_csv(file_path, index=False)
-                    self.status_label.setText(f"Data exported to {file_path}")
+            if ticker in self.data_cache:
+                # Perform analysis based on type
+                if analysis_type == "technical":
+                    result = self.perform_technical_analysis(ticker)
+                elif analysis_type == "fundamental":
+                    result = self.perform_fundamental_analysis(ticker)
                 else:
-                    self.status_label.setText("No data to export")
+                    result = None
                     
+                if result:
+                    self.message_bus.publish(
+                        self.__class__.__name__,
+                        "analysis_response",
+                        {
+                            "ticker": ticker,
+                            "analysis_type": analysis_type,
+                            "result": result
+                        }
+                    )
+            else:
+                self.message_bus.publish(
+                    self.__class__.__name__,
+                    "error",
+                    f"Data not found for ticker: {ticker}"
+                )
         except Exception as e:
-            self.status_label.setText(f"Error exporting to CSV: {str(e)}")
-            self.logger.error(f"Error exporting to CSV: {e}")
+            self.logger.error(f"Error handling analysis request: {e}")
             
-    def export_to_json(self):
-        """Export current table data to JSON."""
+    def add_ticker(self):
+        """Add a new ticker and fetch its data."""
         try:
-            market_type = self.market_type_combo.currentText()
-            ticker = self.ticker_combo.currentText()
+            ticker = self.ticker_edit.text().strip().upper()
+            market = self.market_combo.currentText()
             
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "Save JSON File", "", "JSON Files (*.json)"
-            )
-            
-            if file_path:
-                data = self.db_connector.get_stock_data(market_type=market_type)
-                if ticker:
-                    data = data[data['symbol'] == ticker]
-                    
-                if not data.empty:
-                    data.to_json(file_path, orient='records')
-                    self.status_label.setText(f"Data exported to {file_path}")
-                else:
-                    self.status_label.setText("No data to export")
-                    
-        except Exception as e:
-            self.status_label.setText(f"Error exporting to JSON: {str(e)}")
-            self.logger.error(f"Error exporting to JSON: {e}")
-            
-    def share_data(self):
-        """Share current data with other tabs."""
-        try:
-            market_type = self.market_type_combo.currentText()
-            ticker = self.ticker_combo.currentText()
-            
-            data = self.db_connector.get_stock_data(market_type=market_type)
-            if ticker:
-                data = data[data['symbol'] == ticker]
+            if not ticker:
+                QMessageBox.warning(self, "Error", "Please enter a ticker symbol")
+                return
                 
-            if not data.empty:
-                # Convert data to dictionary for message bus
-                data_dict = {
-                    'market_type': market_type,
-                    'ticker': ticker,
-                    'data': data.to_dict(orient='records')
+            # Get selected date range
+            start_date = self.start_date.date().toPyDate()
+            end_date = self.end_date.date().toPyDate()
+            
+            # Validate date range
+            if start_date > end_date:
+                QMessageBox.warning(self, "Error", "Start date cannot be after end date")
+                return
+                
+            # Fetch data using yfinance with date range
+            data = self.fetch_ticker_data(ticker, start_date, end_date)
+            if data is None or data.empty:
+                QMessageBox.warning(self, "Error", f"Could not fetch data for {ticker}")
+                return
+                
+            # Cache the data
+            self.data_cache[ticker] = {
+                "market": market,
+                "data": data,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+            
+            # Update table
+            self.update_table()
+            
+            # Notify other tabs
+            self.message_bus.publish(
+                self.__class__.__name__,
+                "data_updated",
+                {
+                    "ticker": ticker,
+                    "market": market,
+                    "data": data,
+                    "start_date": start_date,
+                    "end_date": end_date
                 }
-                
-                # Publish data to message bus
-                self.message_bus.publish('data_update', data_dict)
-                self.status_label.setText(f"Shared {len(data)} records with other tabs")
-            else:
-                self.status_label.setText("No data to share")
-                
+            )
+            
+            self.status_label.setText(f"Added {ticker} ({market})")
+            
         except Exception as e:
-            self.status_label.setText(f"Error sharing data: {str(e)}")
-            self.logger.error(f"Error sharing data: {e}")
+            self.logger.error(f"Error adding ticker: {e}")
+            QMessageBox.critical(self, "Error", str(e))
+            
+    def update_table(self):
+        """Update the data table."""
+        self.table.setRowCount(0)
+        for ticker, cache in self.data_cache.items():
+            data = cache["data"]
+            market = cache["market"]
+            
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            
+            self.table.setItem(row, 0, QTableWidgetItem(ticker))
+            self.table.setItem(row, 1, QTableWidgetItem(market))
+            self.table.setItem(row, 2, QTableWidgetItem(f"{data['Open'].iloc[-1]:.2f}"))
+            self.table.setItem(row, 3, QTableWidgetItem(f"{data['High'].iloc[-1]:.2f}"))
+            self.table.setItem(row, 4, QTableWidgetItem(f"{data['Low'].iloc[-1]:.2f}"))
+            self.table.setItem(row, 5, QTableWidgetItem(f"{data['Close'].iloc[-1]:.2f}"))
+            self.table.setItem(row, 6, QTableWidgetItem(f"{data['Volume'].iloc[-1]:,.0f}"))
+            
+            # Add date range information
+            start_date = cache.get("start_date", "")
+            end_date = cache.get("end_date", "")
+            if start_date and end_date:
+                self.table.setItem(row, 7, QTableWidgetItem(f"{start_date} to {end_date}"))
+            
+    def perform_technical_analysis(self, ticker: str) -> dict:
+        """Perform technical analysis on the given ticker."""
+        data = self.data_cache[ticker]["data"]
+        
+        # Calculate technical indicators
+        sma_20 = data['Close'].rolling(window=20).mean()
+        sma_50 = data['Close'].rolling(window=50).mean()
+        rsi = self.calculate_rsi(data['Close'])
+        
+        return {
+            "sma_20": sma_20.iloc[-1],
+            "sma_50": sma_50.iloc[-1],
+            "rsi": rsi.iloc[-1]
+        }
+        
+    def perform_fundamental_analysis(self, ticker: str) -> dict:
+        """Perform fundamental analysis on the given ticker."""
+        # Implement fundamental analysis here
+        return {}
+        
+    def calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
+        """Calculate Relative Strength Index."""
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+        
+    def cleanup(self):
+        """Cleanup resources."""
+        super().cleanup()
+        self.data_cache.clear()
+
+    def fetch_ticker_data(self, ticker: str, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> Optional[pd.DataFrame]:
+        """Fetch ticker data with retry logic."""
+        max_retries = 3
+        retry_delay = 2  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                # Set default dates if not provided
+                if start_date is None:
+                    start_date = datetime.now() - timedelta(days=365)
+                if end_date is None:
+                    end_date = datetime.now()
+                    
+                # Fetch data
+                data = yf.download(
+                    ticker,
+                    start=start_date,
+                    end=end_date,
+                    progress=False
+                )
+                
+                if data.empty:
+                    self.logger.warning(f"No data found for {ticker}")
+                    return None
+                    
+                return data
+                
+            except Exception as e:
+                self.logger.error(f"Attempt {attempt + 1} failed for {ticker}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                self.logger.error(f"Failed to fetch data for {ticker} after {max_retries} attempts")
+                return None
+
+    def update_live_data(self):
+        """Update live data for all tickers with error handling."""
+        try:
+            for ticker in self.ticker_list:
+                try:
+                    # Get live data
+                    ticker_obj = yf.Ticker(ticker)
+                    info = ticker_obj.info
+                    
+                    if not info:
+                        self.logger.error(f"No live data available for {ticker}")
+                        continue
+                        
+                    # Update table
+                    self.update_ticker_table(ticker, info)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error updating live data for {ticker}: {str(e)}")
+                    continue
+                    
+        except Exception as e:
+            self.logger.error(f"Error in update_live_data: {str(e)}")
+            
+        # Schedule next update
+        QTimer.singleShot(10000, self.update_live_data)  # 10 seconds
 
 def main():
     """Main function for the data tab process."""

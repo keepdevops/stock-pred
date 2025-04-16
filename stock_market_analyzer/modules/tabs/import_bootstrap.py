@@ -3,7 +3,9 @@ import os
 import logging
 import traceback
 from PyQt6.QtCore import QProcess, QSharedMemory
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QPushButton
+from PyQt6.QtCore import Qt
+from typing import Any
 
 # Add the project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))

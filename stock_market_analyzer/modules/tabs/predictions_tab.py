@@ -1,237 +1,285 @@
 import sys
 import os
 import logging
-from typing import Any
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTextEdit, QComboBox,
-    QSpinBox, QProgressBar
-)
-import pandas as pd
+import traceback
 import numpy as np
+import pandas as pd
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
+    QComboBox, QPushButton, QLabel, QSplitter, QApplication, QSpinBox,
+    QDoubleSpinBox, QGroupBox, QCheckBox, QHeaderView, QMessageBox, QDateEdit
+)
+from PyQt6.QtCore import Qt, QTimer, QDate
+from PyQt6.QtGui import QFont
+from modules.tabs.base_tab import BaseTab
+import uuid
 
 # Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-    
-from stock_market_analyzer.modules.message_bus import MessageBus
 
-class PredictionsTab(QWidget):
-    """Predictions tab for the stock market analyzer."""
+from modules.message_bus import MessageBus
+
+class PredictionsTab(BaseTab):
+    """Tab for making and viewing stock predictions."""
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
-        self.available_data = {}  # Store available data by ticker
         self.setup_ui()
+        self.prediction_cache = {}
+        self.pending_requests = {}  # Track pending prediction requests
         
     def setup_ui(self):
         """Setup the predictions tab UI."""
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-
-        # --- Data Selection ---
-        data_layout = QHBoxLayout()
-        data_layout.addWidget(QLabel("Select Data:"))
-        self.data_combo = QComboBox()
-        self.data_combo.currentIndexChanged.connect(self.on_data_selected)
-        data_layout.addWidget(self.data_combo)
-        layout.addLayout(data_layout)
-
-        # --- Prediction Parameters ---
-        params_layout = QHBoxLayout()
-        params_layout.addWidget(QLabel("Days to Predict:"))
-        self.days_spinbox = QSpinBox()
-        self.days_spinbox.setRange(1, 30)
-        self.days_spinbox.setValue(7)
-        params_layout.addWidget(self.days_spinbox)
-
-        params_layout.addWidget(QLabel("Model:"))
+        main_layout = QVBoxLayout(self)
+        
+        # Top controls
+        controls_layout = QHBoxLayout()
+        
+        # Ticker selection
+        controls_layout.addWidget(QLabel("Ticker:"))
+        self.ticker_combo = QComboBox()
+        controls_layout.addWidget(self.ticker_combo)
+        
+        # Model selection
+        controls_layout.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["LSTM", "Linear Regression", "Random Forest"])
-        params_layout.addWidget(self.model_combo)
-        layout.addLayout(params_layout)
-
-        # --- Prediction Button ---
-        self.predict_button = QPushButton("Generate Predictions")
-        self.predict_button.clicked.connect(self.generate_predictions)
-        self.predict_button.setEnabled(False)  # Disabled until data is selected
-        layout.addWidget(self.predict_button)
-
-        # --- Progress Bar ---
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
-
-        # --- Results Display ---
-        layout.addWidget(QLabel("Prediction Results:"))
-        self.results_text = QTextEdit()
-        self.results_text.setReadOnly(True)
-        layout.addWidget(self.results_text)
+        controls_layout.addWidget(self.model_combo)
+        
+        # Prediction horizon
+        controls_layout.addWidget(QLabel("Horizon (days):"))
+        self.horizon_spin = QSpinBox()
+        self.horizon_spin.setRange(1, 365)
+        self.horizon_spin.setValue(30)
+        controls_layout.addWidget(self.horizon_spin)
+        
+        # Make prediction button
+        predict_button = QPushButton("Make Prediction")
+        predict_button.clicked.connect(self.make_prediction)
+        controls_layout.addWidget(predict_button)
+        
+        # Refresh button
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(self.refresh_prediction)
+        controls_layout.addWidget(refresh_button)
+        
+        main_layout.addLayout(controls_layout)
+        
+        # Splitter for results
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Predictions table
+        predictions_widget = QWidget()
+        predictions_layout = QVBoxLayout(predictions_widget)
+        
+        self.predictions_table = QTableWidget()
+        self.predictions_table.setColumnCount(3)
+        self.predictions_table.setHorizontalHeaderLabels([
+            "Date", "Predicted Price", "Confidence"
+        ])
+        predictions_layout.addWidget(self.predictions_table)
+        
+        splitter.addWidget(predictions_widget)
+        
+        # Prediction details
+        details_widget = QWidget()
+        details_layout = QVBoxLayout(details_widget)
+        
+        self.details_text = QLabel("Prediction details will appear here")
+        self.details_text.setWordWrap(True)
+        details_layout.addWidget(self.details_text)
+        
+        splitter.addWidget(details_widget)
+        
+        # Set initial sizes
+        splitter.setSizes([400, 400])
+        
+        main_layout.addWidget(splitter)
         
         # Status label
-        self.status_label = QLabel("Select data and parameters to generate predictions.")
-        layout.addWidget(self.status_label)
+        self.status_label = QLabel("Ready")
+        main_layout.addWidget(self.status_label)
         
-        # Subscribe to message bus
-        self.message_bus.subscribe("Predictions", self.handle_message)
-        self.logger.info("Predictions tab initialized")
-
-    def log_message(self, message: str):
-        """Appends a message to the results area."""
-        self.logger.info(message)
-        self.results_text.append(message)
-        QApplication.processEvents()  # Update UI
-
-    def handle_message(self, sender: str, message_type: str, data: Any):
-        """Handle incoming messages."""
+    def make_prediction(self):
+        """Make a prediction using the selected model."""
         try:
-            if message_type == "data_updated":
-                # Update available data
-                ticker, df = data
-                self.available_data[ticker] = df
-                self.update_data_combo()
-                self.log_message(f"Received data update for {ticker}")
-                
-            elif message_type == "error":
-                error_msg = f"Received error from {sender}: {data}"
-                self.log_message(error_msg)
-                self.status_label.setText("Error occurred. Check log for details.")
-                
-        except Exception as e:
-            error_log = f"Error handling message in Predictions tab: {str(e)}"
-            self.logger.error(error_log)
-            self.log_message(error_log)
-
-    def update_data_combo(self):
-        """Update the data combo box with available data sources."""
-        current_text = self.data_combo.currentText()
-        self.data_combo.clear()
-        self.data_combo.addItems(self.available_data.keys())
-        
-        # Try to restore previous selection
-        index = self.data_combo.findText(current_text)
-        if index >= 0:
-            self.data_combo.setCurrentIndex(index)
+            ticker = self.ticker_combo.currentText()
+            model = self.model_combo.currentText()
+            horizon = self.horizon_spin.value()
             
-        self.predict_button.setEnabled(self.data_combo.count() > 0)
-
-    def on_data_selected(self):
-        """Handle data selection change."""
-        if self.data_combo.currentText():
-            self.predict_button.setEnabled(True)
-            self.status_label.setText("Ready to generate predictions.")
-        else:
-            self.predict_button.setEnabled(False)
-            self.status_label.setText("No data selected.")
-
-    def generate_predictions(self):
-        """Generate predictions based on selected data and parameters."""
-        try:
-            selected_ticker = self.data_combo.currentText()
-            days_to_predict = self.days_spinbox.value()
-            model_type = self.model_combo.currentText()
-            
-            if not selected_ticker or selected_ticker not in self.available_data:
-                self.log_message("Error: No valid data selected.")
+            if not all([ticker, model]):
+                self.status_label.setText("Please select a ticker and model")
                 return
-
-            self.log_message(f"=== Generating Predictions ===")
-            self.log_message(f"Ticker: {selected_ticker}")
-            self.log_message(f"Days to predict: {days_to_predict}")
-            self.log_message(f"Model: {model_type}")
+                
+            # Generate unique request ID
+            request_id = str(uuid.uuid4())
+            self.pending_requests[request_id] = {
+                'ticker': ticker,
+                'model': model,
+                'horizon': horizon,
+                'timestamp': datetime.now(),
+                'status': 'pending'
+            }
             
-            # Get the data
-            df = self.available_data[selected_ticker]
+            # Request prediction from Model tab
+            self.message_bus.publish(
+                "Predictions",
+                "prediction_request",
+                {
+                    'request_id': request_id,
+                    'ticker': ticker,
+                    'model': model,
+                    'horizon': horizon
+                }
+            )
             
-            # Show progress
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(0)
-            
-            # Simulate prediction process
-            self.progress_bar.setValue(20)
-            self.log_message("Preprocessing data...")
-            QApplication.processEvents()
-            
-            self.progress_bar.setValue(40)
-            self.log_message("Training model...")
-            QApplication.processEvents()
-            
-            self.progress_bar.setValue(60)
-            self.log_message("Generating predictions...")
-            QApplication.processEvents()
-            
-            # Generate sample predictions
-            last_date = df.index[-1]
-            predictions = []
-            for i in range(1, days_to_predict + 1):
-                pred_date = last_date + timedelta(days=i)
-                pred_price = df['Close'].iloc[-1] * (1 + np.random.normal(0, 0.01))
-                predictions.append((pred_date, pred_price))
-            
-            self.progress_bar.setValue(80)
-            
-            # Display predictions
-            self.log_message("\nPredicted Prices:")
-            for date, price in predictions:
-                self.log_message(f"{date.strftime('%Y-%m-%d')}: ${price:.2f}")
-            
-            self.progress_bar.setValue(100)
-            self.status_label.setText("Predictions generated successfully.")
-            
-            # Publish predictions
-            self.message_bus.publish("Predictions", "predictions_generated", 
-                                   (selected_ticker, predictions))
+            self.status_label.setText(f"Requested prediction for {ticker}")
             
         except Exception as e:
-            error_msg = f"Error generating predictions: {str(e)}"
-            self.logger.error(error_msg)
-            self.logger.error(traceback.format_exc())
-            self.log_message(error_msg)
-            self.status_label.setText("Error generating predictions.")
-            self.message_bus.publish("Predictions", "error", error_msg)
+            self.logger.error(f"Error making prediction: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
             
-        finally:
-            self.progress_bar.setVisible(False)
-            self.log_message("=== Prediction Process Complete ===")
-
-    def publish_message(self, message_type: str, data: Any):
-        """Publish a message to the message bus."""
+    def refresh_prediction(self):
+        """Refresh the current prediction."""
         try:
-            self.message_bus.publish("Predictions", message_type, data)
+            ticker = self.ticker_combo.currentText()
+            if not ticker or ticker not in self.prediction_cache:
+                self.status_label.setText("No prediction to refresh")
+                return
+                
+            # Make new prediction
+            self.make_prediction()
+            
         except Exception as e:
-            error_log = f"Error publishing message from Predictions tab: {str(e)}"
-            self.logger.error(error_log)
+            self.logger.error(f"Error refreshing prediction: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
+            
+    def process_message(self, sender: str, message_type: str, data: Any):
+        """Process incoming messages."""
+        try:
+            if message_type == "prediction_response":
+                self.handle_prediction_response(sender, data)
+            elif message_type == "model_list":
+                self.handle_model_list(sender, data)
+            elif message_type == "data_updated":
+                self.handle_data_update(sender, data)
+            elif message_type == "error":
+                self.handle_error(sender, data)
+                
+        except Exception as e:
+            self.logger.error(f"Error processing message: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
+            
+    def handle_prediction_response(self, sender: str, data: Any):
+        """Handle prediction response from Model tab."""
+        try:
+            request_id = data.get('request_id')
+            if request_id in self.pending_requests:
+                # Update pending request
+                self.pending_requests[request_id]['status'] = 'completed'
+                self.pending_requests[request_id]['results'] = data.get('results')
+                
+                # Update predictions table
+                self.update_predictions_table(data.get('results'))
+                
+                # Update details
+                self.update_prediction_details(data.get('details'))
+                
+        except Exception as e:
+            self.logger.error(f"Error handling prediction response: {e}")
+            
+    def handle_model_list(self, sender: str, data: Any):
+        """Handle model list update from Model tab."""
+        try:
+            models = data.get('models', [])
+            self.model_combo.clear()
+            self.model_combo.addItems(models)
+            
+        except Exception as e:
+            self.logger.error(f"Error handling model list: {e}")
+            
+    def handle_data_update(self, sender: str, data: Any):
+        """Handle data updates from Data tab."""
+        try:
+            ticker = data.get("ticker")
+            if ticker and ticker not in [self.ticker_combo.itemText(i) for i in range(self.ticker_combo.count())]:
+                self.ticker_combo.addItem(ticker)
+                
+        except Exception as e:
+            self.logger.error(f"Error handling data update: {e}")
+            
+    def handle_error(self, sender: str, data: Any):
+        """Handle error messages."""
+        try:
+            request_id = data.get('request_id')
+            error_message = data.get('error')
+            
+            if request_id in self.pending_requests:
+                self.pending_requests[request_id]['status'] = 'error'
+                self.pending_requests[request_id]['error'] = error_message
+                
+            self.status_label.setText(f"Error: {error_message}")
+            
+        except Exception as e:
+            self.logger.error(f"Error handling error message: {e}")
+            
+    def update_predictions_table(self, results: Dict[str, Any]):
+        """Update the predictions table with results."""
+        try:
+            self.predictions_table.setRowCount(0)
+            
+            predictions = results.get('predictions', [])
+            for i, pred in enumerate(predictions):
+                self.predictions_table.insertRow(i)
+                self.predictions_table.setItem(i, 0, QTableWidgetItem(str(pred['date'])))
+                self.predictions_table.setItem(i, 1, QTableWidgetItem(f"{pred['price']:.2f}"))
+                self.predictions_table.setItem(i, 2, QTableWidgetItem(f"{pred['confidence']:.2%}"))
+                
+        except Exception as e:
+            self.logger.error(f"Error updating predictions table: {e}")
+            
+    def update_prediction_details(self, details: Dict[str, Any]):
+        """Update the prediction details text."""
+        try:
+            text = []
+            text.append(f"Model: {details.get('model', 'N/A')}")
+            text.append(f"Horizon: {details.get('horizon', 'N/A')} days")
+            text.append(f"Accuracy: {details.get('accuracy', 'N/A')}")
+            text.append(f"Last Training: {details.get('last_training', 'N/A')}")
+            text.append(f"Features Used: {', '.join(details.get('features', []))}")
+            
+            self.details_text.setText("\n".join(text))
+            
+        except Exception as e:
+            self.logger.error(f"Error updating prediction details: {e}")
+            
+    def cleanup(self):
+        """Cleanup resources."""
+        super().cleanup()
+        self.prediction_cache.clear()
+        self.pending_requests.clear()
 
 def main():
     """Main function for the predictions tab process."""
-    # Ensure QApplication instance exists
-    app = QApplication.instance() 
-    if not app: 
-        app = QApplication(sys.argv)
-
+    app = QApplication(sys.argv)
+    
     # Setup logging
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     logger.info("Starting predictions tab process")
     
     # Create and show the predictions tab
-    try:
-        window = PredictionsTab()
-        window.setWindowTitle("Predictions Tab")
-        window.show()
-    except Exception as e:
-         logger.error(f"Failed to create or show PredictionsTab window: {e}")
-         logger.error(traceback.format_exc())
-         sys.exit(1)
-
-    if __name__ == "__main__":
-        sys.exit(app.exec())
+    window = PredictionsTab()
+    window.setWindowTitle("Predictions Tab")
+    window.show()
+    
+    # Start the application event loop
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
-    import traceback
     main() 

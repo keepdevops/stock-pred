@@ -1,429 +1,684 @@
 import sys
 import os
 import logging
-from typing import Any, Dict, Optional
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTextEdit, QComboBox,
-    QGroupBox, QSpinBox, QDoubleSpinBox, QCheckBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QFileDialog
-)
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont
-import pandas as pd
+import traceback
 import numpy as np
-import talib
-from stock_market_analyzer.modules.message_bus import MessageBus
+import pandas as pd
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
+    QComboBox, QPushButton, QLabel, QFileDialog, QMessageBox, QListWidget,
+    QListWidgetItem, QSplitter, QApplication, QSpinBox, QCheckBox,
+    QGroupBox, QRadioButton
+)
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QFont
+from modules.tabs.base_tab import BaseTab
+from scipy import stats
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.seasonal import seasonal_decompose
+import uuid
 
-# Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-class AnalysisTab(QWidget):
-    """Analysis tab for the stock market analyzer."""
+class AnalysisTab(BaseTab):
+    """Analysis tab for processing and analyzing stock data."""
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.message_bus = MessageBus()
-        self.logger = logging.getLogger(__name__)
-        self.current_data = None
-        self.analysis_results = {}
         self.setup_ui()
-        
-        # Subscribe to message bus
-        self.message_bus.subscribe("Analysis", self.handle_message)
-        
-        # Set up heartbeat timer
-        self.heartbeat_timer = QTimer()
-        self.heartbeat_timer.timeout.connect(self.send_heartbeat)
-        self.heartbeat_timer.start(5000)  # Send heartbeat every 5 seconds
+        self.data_cache = {}  # Cache for processed data
+        self.analysis_cache = {}
+        self.pending_requests = {}  # Track pending data requests
         
     def setup_ui(self):
-        """Setup the UI for the analysis tab."""
-        layout = QVBoxLayout()
-        self.setLayout(layout)
+        """Set up the user interface."""
+        main_layout = QVBoxLayout(self)
+        
+        # Top controls
+        controls_layout = QHBoxLayout()
         
         # Analysis type selection
-        analysis_type_group = QGroupBox("Analysis Type")
-        analysis_type_layout = QVBoxLayout()
-        
         self.analysis_type_combo = QComboBox()
         self.analysis_type_combo.addItems([
-            "Technical Indicators",
-            "Pattern Recognition",
-            "Volatility Analysis",
-            "Trend Analysis",
-            "Volume Analysis"
+            "Technical Analysis",
+            "Fundamental Analysis",
+            "Correlation Analysis",
+            "Volatility Analysis"
         ])
         self.analysis_type_combo.currentTextChanged.connect(self.update_analysis_options)
-        analysis_type_layout.addWidget(self.analysis_type_combo)
+        controls_layout.addWidget(QLabel("Analysis Type:"))
+        controls_layout.addWidget(self.analysis_type_combo)
         
-        analysis_type_group.setLayout(analysis_type_layout)
-        layout.addWidget(analysis_type_group)
+        # Ticker selection
+        self.ticker_combo = QComboBox()
+        self.ticker_combo.addItems([
+            "1D", "1W", "1M", "3M", "6M", "1Y", "5Y", "MAX"
+        ])
+        controls_layout.addWidget(QLabel("Ticker:"))
+        controls_layout.addWidget(self.ticker_combo)
         
-        # Analysis parameters
-        self.parameters_group = QGroupBox("Analysis Parameters")
-        self.parameters_layout = QVBoxLayout()
-        self.parameters_group.setLayout(self.parameters_layout)
-        layout.addWidget(self.parameters_group)
+        # Time period selection
+        period_layout = QHBoxLayout()
+        self.period_combo = QComboBox()
+        self.period_combo.addItems([
+            "1D", "1W", "1M", "3M", "6M", "1Y", "5Y", "MAX"
+        ])
+        period_layout.addWidget(QLabel("Time Period:"))
+        period_layout.addWidget(self.period_combo)
+        controls_layout.addLayout(period_layout)
         
-        # Results display
-        results_group = QGroupBox("Analysis Results")
-        results_layout = QVBoxLayout()
+        # Analysis options group
+        options_group = QGroupBox("Analysis Options")
+        options_layout = QVBoxLayout()
+        
+        # Technical indicators
+        self.technical_options = QWidget()
+        technical_layout = QVBoxLayout(self.technical_options)
+        self.ma_check = QCheckBox("Moving Averages")
+        self.rsi_check = QCheckBox("RSI")
+        self.macd_check = QCheckBox("MACD")
+        self.bollinger_check = QCheckBox("Bollinger Bands")
+        technical_layout.addWidget(self.ma_check)
+        technical_layout.addWidget(self.rsi_check)
+        technical_layout.addWidget(self.macd_check)
+        technical_layout.addWidget(self.bollinger_check)
+        
+        # Statistical analysis
+        self.statistical_options = QWidget()
+        statistical_layout = QVBoxLayout(self.statistical_options)
+        self.descriptive_check = QCheckBox("Descriptive Statistics")
+        self.normality_check = QCheckBox("Normality Test")
+        self.stationarity_check = QCheckBox("Stationarity Test")
+        statistical_layout.addWidget(self.descriptive_check)
+        statistical_layout.addWidget(self.normality_check)
+        statistical_layout.addWidget(self.stationarity_check)
+        
+        # Time series analysis
+        self.timeseries_options = QWidget()
+        timeseries_layout = QVBoxLayout(self.timeseries_options)
+        self.trend_check = QCheckBox("Trend Analysis")
+        self.seasonality_check = QCheckBox("Seasonality Analysis")
+        self.decomposition_check = QCheckBox("Time Series Decomposition")
+        timeseries_layout.addWidget(self.trend_check)
+        timeseries_layout.addWidget(self.seasonality_check)
+        timeseries_layout.addWidget(self.decomposition_check)
+        
+        # Correlation analysis
+        self.correlation_options = QWidget()
+        correlation_layout = QVBoxLayout(self.correlation_options)
+        self.pearson_check = QCheckBox("Pearson Correlation")
+        self.spearman_check = QCheckBox("Spearman Correlation")
+        correlation_layout.addWidget(self.pearson_check)
+        correlation_layout.addWidget(self.spearman_check)
+        
+        # Add all option widgets to the options layout
+        options_layout.addWidget(self.technical_options)
+        options_layout.addWidget(self.statistical_options)
+        options_layout.addWidget(self.timeseries_options)
+        options_layout.addWidget(self.correlation_options)
+        options_group.setLayout(options_layout)
+        
+        # Hide all option widgets initially
+        self.hide_all_options()
+        
+        controls_layout.addWidget(options_group)
+        
+        # Run analysis button
+        run_button = QPushButton("Run Analysis")
+        run_button.clicked.connect(self.run_analysis)
+        controls_layout.addWidget(run_button)
+        
+        # Add request data button
+        request_button = QPushButton("Request Data")
+        request_button.clicked.connect(self.request_data)
+        controls_layout.addWidget(request_button)
+        
+        # Add refresh button
+        refresh_button = QPushButton("Refresh Analysis")
+        refresh_button.clicked.connect(self.refresh_analysis)
+        controls_layout.addWidget(refresh_button)
+        
+        main_layout.addLayout(controls_layout)
+        
+        # Splitter for results
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Results table
+        results_widget = QWidget()
+        results_layout = QVBoxLayout(results_widget)
         
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(3)
-        self.results_table.setHorizontalHeaderLabels(["Indicator", "Value", "Signal"])
-        self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.results_table.setHorizontalHeaderLabels([
+            "Metric", "Value", "Description"
+        ])
         results_layout.addWidget(self.results_table)
         
-        self.analysis_text = QTextEdit()
-        self.analysis_text.setReadOnly(True)
-        results_layout.addWidget(self.analysis_text)
+        splitter.addWidget(results_widget)
         
-        results_group.setLayout(results_layout)
-        layout.addWidget(results_group)
+        # Analysis summary
+        summary_widget = QWidget()
+        summary_layout = QVBoxLayout(summary_widget)
         
-        # Buttons
-        buttons_layout = QHBoxLayout()
+        self.summary_text = QLabel("Analysis results will appear here")
+        self.summary_text.setWordWrap(True)
+        summary_layout.addWidget(self.summary_text)
         
-        self.analyze_button = QPushButton("Run Analysis")
-        self.analyze_button.clicked.connect(self.run_analysis)
-        buttons_layout.addWidget(self.analyze_button)
+        # Send to charts button
+        send_button = QPushButton("Send to Charts")
+        send_button.clicked.connect(self.send_to_charts)
+        summary_layout.addWidget(send_button)
         
-        self.export_button = QPushButton("Export Results")
-        self.export_button.clicked.connect(self.export_results)
-        buttons_layout.addWidget(self.export_button)
+        splitter.addWidget(summary_widget)
         
-        layout.addLayout(buttons_layout)
+        # Set initial sizes
+        splitter.setSizes([400, 400])
+        
+        main_layout.addWidget(splitter)
         
         # Status label
         self.status_label = QLabel("Ready")
-        layout.addWidget(self.status_label)
+        main_layout.addWidget(self.status_label)
         
-        self.logger.info("Analysis tab initialized")
+    def hide_all_options(self):
+        """Hide all analysis option widgets."""
+        self.technical_options.hide()
+        self.statistical_options.hide()
+        self.timeseries_options.hide()
+        self.correlation_options.hide()
         
     def update_analysis_options(self):
-        """Update analysis options based on selected type."""
-        # Clear existing parameters
-        while self.parameters_layout.count():
-            child = self.parameters_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-                
-        analysis_type = self.analysis_type_combo.currentText()
+        """Update visible analysis options based on selected type."""
+        self.hide_all_options()
         
-        if analysis_type == "Technical Indicators":
-            # Add RSI parameters
-            rsi_layout = QHBoxLayout()
-            rsi_layout.addWidget(QLabel("RSI Period:"))
-            rsi_period = QSpinBox()
-            rsi_period.setRange(2, 30)
-            rsi_period.setValue(14)
-            rsi_layout.addWidget(rsi_period)
-            self.parameters_layout.addLayout(rsi_layout)
-            
-            # Add MACD parameters
-            macd_layout = QHBoxLayout()
-            macd_layout.addWidget(QLabel("MACD Fast:"))
-            macd_fast = QSpinBox()
-            macd_fast.setRange(2, 30)
-            macd_fast.setValue(12)
-            macd_layout.addWidget(macd_fast)
-            
-            macd_layout.addWidget(QLabel("MACD Slow:"))
-            macd_slow = QSpinBox()
-            macd_slow.setRange(2, 30)
-            macd_slow.setValue(26)
-            macd_layout.addWidget(macd_slow)
-            self.parameters_layout.addLayout(macd_layout)
-            
-        elif analysis_type == "Pattern Recognition":
-            # Add pattern selection
-            pattern_layout = QHBoxLayout()
-            pattern_layout.addWidget(QLabel("Pattern:"))
-            pattern_combo = QComboBox()
-            pattern_combo.addItems([
-                "Doji",
-                "Hammer",
-                "Engulfing",
-                "Morning Star",
-                "Evening Star"
-            ])
-            pattern_layout.addWidget(pattern_combo)
-            self.parameters_layout.addLayout(pattern_layout)
-            
+        analysis_type = self.analysis_type_combo.currentText()
+        if analysis_type == "Technical Analysis":
+            self.technical_options.show()
+        elif analysis_type == "Fundamental Analysis":
+            self.statistical_options.show()
+        elif analysis_type == "Correlation Analysis":
+            self.correlation_options.show()
         elif analysis_type == "Volatility Analysis":
-            # Add Bollinger Bands parameters
-            bb_layout = QHBoxLayout()
-            bb_layout.addWidget(QLabel("BB Period:"))
-            bb_period = QSpinBox()
-            bb_period.setRange(2, 30)
-            bb_period.setValue(20)
-            bb_layout.addWidget(bb_period)
-            
-            bb_layout.addWidget(QLabel("BB Std Dev:"))
-            bb_std = QDoubleSpinBox()
-            bb_std.setRange(1.0, 3.0)
-            bb_std.setValue(2.0)
-            bb_std.setSingleStep(0.1)
-            bb_layout.addWidget(bb_std)
-            self.parameters_layout.addLayout(bb_layout)
-            
-        elif analysis_type == "Trend Analysis":
-            # Add moving average parameters
-            ma_layout = QHBoxLayout()
-            ma_layout.addWidget(QLabel("MA Period:"))
-            ma_period = QSpinBox()
-            ma_period.setRange(2, 200)
-            ma_period.setValue(50)
-            ma_layout.addWidget(ma_period)
-            self.parameters_layout.addLayout(ma_layout)
-            
-        elif analysis_type == "Volume Analysis":
-            # Add volume parameters
-            volume_layout = QHBoxLayout()
-            volume_layout.addWidget(QLabel("Volume MA Period:"))
-            volume_ma = QSpinBox()
-            volume_ma.setRange(2, 30)
-            volume_ma.setValue(20)
-            volume_layout.addWidget(volume_ma)
-            self.parameters_layout.addLayout(volume_layout)
+            self.timeseries_options.show()
             
     def run_analysis(self):
-        """Run the selected analysis."""
+        """Run the selected analysis on the data."""
         try:
-            if self.current_data is None:
+            # Get data from message bus
+            data = self.get_data_from_bus()
+            if data is None:
                 self.status_label.setText("No data available for analysis")
                 return
                 
             analysis_type = self.analysis_type_combo.currentText()
-            self.analysis_results = {}
+            results = {}
             
-            if analysis_type == "Technical Indicators":
-                self.run_technical_indicators()
-            elif analysis_type == "Pattern Recognition":
-                self.run_pattern_recognition()
+            if analysis_type == "Technical Analysis":
+                results = self.run_technical_analysis(data)
+            elif analysis_type == "Fundamental Analysis":
+                results = self.run_statistical_analysis(data)
+            elif analysis_type == "Correlation Analysis":
+                results = self.run_correlation_analysis(data)
             elif analysis_type == "Volatility Analysis":
-                self.run_volatility_analysis()
-            elif analysis_type == "Trend Analysis":
-                self.run_trend_analysis()
-            elif analysis_type == "Volume Analysis":
-                self.run_volume_analysis()
+                results = self.run_timeseries_analysis(data)
                 
-            self.update_results_display()
+            # Update results table
+            self.update_results_table(results)
+            
+            # Generate summary
+            summary = self.generate_summary(results)
+            self.summary_text.setText(summary)
+            
+            # Cache results
+            self.data_cache[analysis_type] = results
+            
             self.status_label.setText("Analysis completed")
             
-            # Publish results to message bus
-            self.message_bus.publish("Analysis", "analysis_completed", {
-                "type": analysis_type,
-                "results": self.analysis_results
-            })
-            
         except Exception as e:
-            error_msg = f"Error running analysis: {str(e)}"
-            self.logger.error(error_msg)
-            self.status_label.setText(error_msg)
-            self.message_bus.publish("Analysis", "error", error_msg)
+            self.logger.error(f"Error running analysis: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
             
-    def run_technical_indicators(self):
-        """Run technical indicators analysis."""
-        try:
-            # Get RSI
-            rsi_period = self.findChild(QSpinBox, "RSI Period").value()
-            rsi = talib.RSI(self.current_data['Close'], timeperiod=rsi_period)
-            self.analysis_results['RSI'] = {
-                'value': rsi.iloc[-1],
-                'signal': 'Overbought' if rsi.iloc[-1] > 70 else 'Oversold' if rsi.iloc[-1] < 30 else 'Neutral'
+    def run_technical_analysis(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Run technical analysis on the data."""
+        results = {}
+        
+        if self.ma_check.isChecked():
+            # Calculate moving averages
+            data['MA20'] = data['Close'].rolling(window=20).mean()
+            data['MA50'] = data['Close'].rolling(window=50).mean()
+            data['MA200'] = data['Close'].rolling(window=200).mean()
+            results['Moving Averages'] = {
+                'MA20': data['MA20'].iloc[-1],
+                'MA50': data['MA50'].iloc[-1],
+                'MA200': data['MA200'].iloc[-1]
             }
             
-            # Get MACD
-            macd_fast = self.findChild(QSpinBox, "MACD Fast").value()
-            macd_slow = self.findChild(QSpinBox, "MACD Slow").value()
-            macd, signal, hist = talib.MACD(
-                self.current_data['Close'],
-                fastperiod=macd_fast,
-                slowperiod=macd_slow,
-                signalperiod=9
-            )
-            self.analysis_results['MACD'] = {
-                'value': macd.iloc[-1],
-                'signal': 'Bullish' if macd.iloc[-1] > signal.iloc[-1] else 'Bearish'
+        if self.rsi_check.isChecked():
+            # Calculate RSI
+            delta = data['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            data['RSI'] = 100 - (100 / (1 + rs))
+            results['RSI'] = {
+                'Current': data['RSI'].iloc[-1],
+                'Overbought': data['RSI'] > 70,
+                'Oversold': data['RSI'] < 30
             }
             
-        except Exception as e:
-            raise Exception(f"Error in technical indicators: {str(e)}")
-            
-    def run_pattern_recognition(self):
-        """Run pattern recognition analysis."""
-        try:
-            pattern = self.findChild(QComboBox, "Pattern").currentText()
-            # Implement pattern recognition logic
-            # This is a placeholder - actual implementation would use TA-Lib or custom pattern recognition
-            self.analysis_results['Pattern'] = {
-                'value': pattern,
-                'signal': 'Detected'  # Placeholder
+        if self.macd_check.isChecked():
+            # Calculate MACD
+            exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+            exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+            data['MACD'] = exp1 - exp2
+            data['Signal'] = data['MACD'].ewm(span=9, adjust=False).mean()
+            results['MACD'] = {
+                'MACD': data['MACD'].iloc[-1],
+                'Signal': data['Signal'].iloc[-1],
+                'Histogram': data['MACD'].iloc[-1] - data['Signal'].iloc[-1]
             }
             
-        except Exception as e:
-            raise Exception(f"Error in pattern recognition: {str(e)}")
-            
-    def run_volatility_analysis(self):
-        """Run volatility analysis."""
-        try:
-            bb_period = self.findChild(QSpinBox, "BB Period").value()
-            bb_std = self.findChild(QDoubleSpinBox, "BB Std Dev").value()
-            
-            upper, middle, lower = talib.BBANDS(
-                self.current_data['Close'],
-                timeperiod=bb_period,
-                nbdevup=bb_std,
-                nbdevdn=bb_std
-            )
-            
-            current_price = self.current_data['Close'].iloc[-1]
-            self.analysis_results['Bollinger Bands'] = {
-                'value': f"Upper: {upper.iloc[-1]:.2f}, Middle: {middle.iloc[-1]:.2f}, Lower: {lower.iloc[-1]:.2f}",
-                'signal': 'Overbought' if current_price > upper.iloc[-1] else 'Oversold' if current_price < lower.iloc[-1] else 'Neutral'
+        if self.bollinger_check.isChecked():
+            # Calculate Bollinger Bands
+            data['MA20'] = data['Close'].rolling(window=20).mean()
+            data['STD20'] = data['Close'].rolling(window=20).std()
+            data['Upper'] = data['MA20'] + (data['STD20'] * 2)
+            data['Lower'] = data['MA20'] - (data['STD20'] * 2)
+            results['Bollinger Bands'] = {
+                'Upper': data['Upper'].iloc[-1],
+                'Middle': data['MA20'].iloc[-1],
+                'Lower': data['Lower'].iloc[-1]
             }
             
-        except Exception as e:
-            raise Exception(f"Error in volatility analysis: {str(e)}")
-            
-    def run_trend_analysis(self):
-        """Run trend analysis."""
-        try:
-            ma_period = self.findChild(QSpinBox, "MA Period").value()
-            ma = talib.SMA(self.current_data['Close'], timeperiod=ma_period)
-            
-            current_price = self.current_data['Close'].iloc[-1]
-            self.analysis_results['Trend'] = {
-                'value': f"MA: {ma.iloc[-1]:.2f}",
-                'signal': 'Bullish' if current_price > ma.iloc[-1] else 'Bearish'
+        return results
+        
+    def run_statistical_analysis(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Run statistical analysis on the data."""
+        results = {}
+        
+        if self.descriptive_check.isChecked():
+            # Calculate descriptive statistics
+            results['Descriptive Statistics'] = {
+                'Mean': data['Close'].mean(),
+                'Median': data['Close'].median(),
+                'Std Dev': data['Close'].std(),
+                'Skewness': data['Close'].skew(),
+                'Kurtosis': data['Close'].kurtosis()
             }
             
-        except Exception as e:
-            raise Exception(f"Error in trend analysis: {str(e)}")
-            
-    def run_volume_analysis(self):
-        """Run volume analysis."""
-        try:
-            volume_ma = self.findChild(QSpinBox, "Volume MA Period").value()
-            volume_ma = talib.SMA(self.current_data['Volume'], timeperiod=volume_ma)
-            
-            current_volume = self.current_data['Volume'].iloc[-1]
-            self.analysis_results['Volume'] = {
-                'value': f"Volume MA: {volume_ma.iloc[-1]:.2f}",
-                'signal': 'High' if current_volume > volume_ma.iloc[-1] else 'Low'
+        if self.normality_check.isChecked():
+            # Test for normality
+            stat, p = stats.normaltest(data['Close'])
+            results['Normality Test'] = {
+                'Statistic': stat,
+                'p-value': p,
+                'Normal': p > 0.05
             }
             
-        except Exception as e:
-            raise Exception(f"Error in volume analysis: {str(e)}")
+        if self.stationarity_check.isChecked():
+            # Test for stationarity
+            result = adfuller(data['Close'])
+            results['Stationarity Test'] = {
+                'ADF Statistic': result[0],
+                'p-value': result[1],
+                'Stationary': result[1] < 0.05
+            }
             
-    def update_results_display(self):
-        """Update the results display with analysis results."""
+        return results
+        
+    def run_timeseries_analysis(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Run time series analysis on the data."""
+        results = {}
+        
+        if self.trend_check.isChecked():
+            # Analyze trend
+            trend = np.polyfit(range(len(data)), data['Close'], 1)
+            results['Trend Analysis'] = {
+                'Slope': trend[0],
+                'Intercept': trend[1],
+                'Direction': 'Upward' if trend[0] > 0 else 'Downward'
+            }
+            
+        if self.seasonality_check.isChecked():
+            # Analyze seasonality
+            decomposition = seasonal_decompose(data['Close'], period=12)
+            results['Seasonality'] = {
+                'Seasonal Strength': decomposition.seasonal.std() / data['Close'].std(),
+                'Trend Strength': decomposition.trend.std() / data['Close'].std()
+            }
+            
+        if self.decomposition_check.isChecked():
+            # Decompose time series
+            decomposition = seasonal_decompose(data['Close'], period=12)
+            results['Decomposition'] = {
+                'Trend': decomposition.trend.dropna().tolist(),
+                'Seasonal': decomposition.seasonal.dropna().tolist(),
+                'Residual': decomposition.resid.dropna().tolist()
+            }
+            
+        return results
+        
+    def run_correlation_analysis(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Run correlation analysis on the data."""
+        results = {}
+        
+        if self.pearson_check.isChecked():
+            # Calculate Pearson correlation
+            corr_matrix = data[['Open', 'High', 'Low', 'Close', 'Volume']].corr()
+            results['Pearson Correlation'] = corr_matrix.to_dict()
+            
+        if self.spearman_check.isChecked():
+            # Calculate Spearman correlation
+            corr_matrix = data[['Open', 'High', 'Low', 'Close', 'Volume']].corr(method='spearman')
+            results['Spearman Correlation'] = corr_matrix.to_dict()
+            
+        return results
+        
+    def update_results_table(self, results: Dict[str, Any]):
+        """Update the results table with analysis results."""
         try:
-            self.results_table.setRowCount(len(self.analysis_results))
+            self.results_table.setRowCount(0)
+            
             row = 0
-            
-            for indicator, data in self.analysis_results.items():
-                self.results_table.setItem(row, 0, QTableWidgetItem(indicator))
-                self.results_table.setItem(row, 1, QTableWidgetItem(str(data['value'])))
-                self.results_table.setItem(row, 2, QTableWidgetItem(data['signal']))
-                row += 1
-                
-            # Update analysis text
-            analysis_text = "Analysis Results:\n\n"
-            for indicator, data in self.analysis_results.items():
-                analysis_text += f"{indicator}: {data['value']} ({data['signal']})\n"
-            self.analysis_text.setText(analysis_text)
-            
+            for category, metrics in results.items():
+                for metric, value in metrics.items():
+                    if isinstance(value, dict):
+                        for sub_metric, sub_value in value.items():
+                            self.results_table.insertRow(row)
+                            self.results_table.setItem(row, 0, QTableWidgetItem(f"{category} - {metric} - {sub_metric}"))
+                            self.results_table.setItem(row, 1, QTableWidgetItem(str(sub_value)))
+                            self.results_table.setItem(row, 2, QTableWidgetItem(self.get_metric_description(sub_metric)))
+                            row += 1
+                    else:
+                        self.results_table.insertRow(row)
+                        self.results_table.setItem(row, 0, QTableWidgetItem(f"{category} - {metric}"))
+                        self.results_table.setItem(row, 1, QTableWidgetItem(str(value)))
+                        self.results_table.setItem(row, 2, QTableWidgetItem(self.get_metric_description(metric)))
+                        row += 1
+                        
         except Exception as e:
-            raise Exception(f"Error updating results display: {str(e)}")
+            self.logger.error(f"Error updating results table: {e}")
             
-    def export_results(self):
-        """Export analysis results to a file."""
+    def get_metric_description(self, metric: str) -> str:
+        """Get description for a metric."""
+        descriptions = {
+            'MA20': '20-day Moving Average',
+            'MA50': '50-day Moving Average',
+            'MA200': '200-day Moving Average',
+            'RSI': 'Relative Strength Index',
+            'MACD': 'Moving Average Convergence Divergence',
+            'Upper': 'Upper Bollinger Band',
+            'Lower': 'Lower Bollinger Band',
+            'Mean': 'Arithmetic Mean',
+            'Median': 'Median Value',
+            'Std Dev': 'Standard Deviation',
+            'Skewness': 'Measure of Asymmetry',
+            'Kurtosis': 'Measure of Tailedness',
+            'Slope': 'Trend Slope',
+            'Direction': 'Trend Direction',
+            'Seasonal Strength': 'Strength of Seasonal Component',
+            'Trend Strength': 'Strength of Trend Component'
+        }
+        return descriptions.get(metric, '')
+        
+    def generate_summary(self, results: Dict[str, Any]) -> str:
+        """Generate a summary of the analysis results."""
+        summary = []
+        
+        for category, metrics in results.items():
+            summary.append(f"\n{category}:")
+            for metric, value in metrics.items():
+                if isinstance(value, dict):
+                    for sub_metric, sub_value in value.items():
+                        summary.append(f"  {sub_metric}: {sub_value}")
+                else:
+                    summary.append(f"  {metric}: {value}")
+                    
+        return "\n".join(summary)
+        
+    def send_to_charts(self):
+        """Send analysis results to the Charts tab."""
         try:
-            if not self.analysis_results:
-                self.status_label.setText("No results to export")
+            analysis_type = self.analysis_type_combo.currentText()
+            if analysis_type not in self.data_cache:
+                self.status_label.setText("No analysis results to send")
                 return
                 
-            # Create a DataFrame from the results
-            results_df = pd.DataFrame([
+            # Publish results to message bus
+            self.message_bus.publish(
+                "Analysis",
+                "analysis_results",
                 {
-                    'Indicator': indicator,
-                    'Value': data['value'],
-                    'Signal': data['signal']
+                    'type': analysis_type,
+                    'results': self.data_cache[analysis_type]
                 }
-                for indicator, data in self.analysis_results.items()
-            ])
-            
-            # Save to CSV
-            file_path, _ = QFileDialog.getSaveFileName(
-                self,
-                "Save Analysis Results",
-                "",
-                "CSV Files (*.csv);;All Files (*)"
             )
             
-            if file_path:
-                results_df.to_csv(file_path, index=False)
-                self.status_label.setText(f"Results exported to {file_path}")
-                
-        except Exception as e:
-            error_msg = f"Error exporting results: {str(e)}"
-            self.logger.error(error_msg)
-            self.status_label.setText(error_msg)
+            self.status_label.setText("Results sent to Charts tab")
             
-    def handle_message(self, sender: str, message_type: str, data: Any):
-        """Handle incoming messages."""
+        except Exception as e:
+            self.logger.error(f"Error sending to charts: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
+            
+    def get_data_from_bus(self) -> Optional[pd.DataFrame]:
+        """Get data from the message bus."""
+        try:
+            # Subscribe to data updates
+            self.message_bus.subscribe("Data", self.handle_data_update)
+            return None  # Data will be received asynchronously
+            
+        except Exception as e:
+            self.logger.error(f"Error getting data from bus: {e}")
+            return None
+            
+    def handle_data_update(self, sender: str, message_type: str, data: Any):
+        """Handle data updates from the message bus."""
         try:
             if message_type == "data_updated":
-                self.current_data = data[1]  # data is (ticker, dataframe)
-                self.status_label.setText(f"Received new data for {data[0]}")
+                # Process the received data
+                self.process_received_data(data)
                 
+        except Exception as e:
+            self.logger.error(f"Error handling data update: {e}")
+            
+    def process_received_data(self, data: Dict[str, Any]):
+        """Process received data from the message bus."""
+        try:
+            # Convert data to DataFrame
+            df = pd.DataFrame(data['data'])
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+            
+            # Store processed data
+            self.data_cache['raw_data'] = df
+            
+            self.status_label.setText("Data received and processed")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing received data: {e}")
+            
+    def process_message(self, sender: str, message_type: str, data: Any):
+        """Process incoming messages."""
+        try:
+            if message_type == "data_updated":
+                self.handle_data_update(sender, data)
+            elif message_type == "data_response":
+                self.handle_data_response(sender, data)
+            elif message_type == "analysis_request":
+                self.handle_analysis_request(sender, data)
+            elif message_type == "analysis_response":
+                self.handle_analysis_response(sender, data)
             elif message_type == "error":
-                error_msg = f"Received error from {sender}: {data}"
-                self.logger.error(error_msg)
-                self.status_label.setText(f"Error: {data}")
-                
-            elif message_type == "heartbeat":
-                self.logger.debug(f"Received heartbeat from {sender}")
+                self.handle_error(sender, data)
                 
         except Exception as e:
-            error_log = f"Error handling message in Analysis tab: {str(e)}"
-            self.logger.error(error_log)
+            self.logger.error(f"Error processing message: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
             
-    def send_heartbeat(self):
-        """Send heartbeat message."""
+    def handle_data_response(self, sender: str, data: Any):
+        """Handle data response from Data tab."""
         try:
-            self.message_bus.publish("Analysis", "heartbeat", "Alive")
+            ticker = data.get("ticker")
+            if ticker:
+                self.analysis_cache[ticker] = data.get("data")
+                self.run_analysis()  # Automatically run analysis when data is received
         except Exception as e:
-            self.logger.error(f"Error sending heartbeat: {str(e)}")
+            self.logger.error(f"Error handling data response: {e}")
             
-    def publish_message(self, message_type: str, data: Any):
-        """Publish a message to the message bus."""
+    def request_data(self):
+        """Request data from Data tab."""
         try:
-            self.message_bus.publish("Analysis", message_type, data)
+            ticker = self.ticker_combo.currentText()
+            if not ticker:
+                self.status_label.setText("Please select a ticker")
+                return
+                
+            # Generate unique request ID
+            request_id = str(uuid.uuid4())
+            self.pending_requests[request_id] = {
+                'ticker': ticker,
+                'timestamp': datetime.now(),
+                'status': 'pending'
+            }
+            
+            # Request data from Data tab
+            self.message_bus.publish(
+                "Analysis",
+                "data_request",
+                {
+                    'request_id': request_id,
+                    'ticker': ticker,
+                    'market': self.market_combo.currentText(),
+                    'start_date': self.start_date.date().toString("yyyy-MM-dd"),
+                    'end_date': self.end_date.date().toString("yyyy-MM-dd")
+                }
+            )
+            
+            self.status_label.setText(f"Requested data for {ticker}")
+            
         except Exception as e:
-            error_log = f"Error publishing message from Analysis tab: {str(e)}"
-            self.logger.error(error_log)
-
-    def closeEvent(self, event):
-        """Handle the close event."""
+            self.logger.error(f"Error requesting data: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
+            
+    def refresh_analysis(self):
+        """Refresh the current analysis."""
         try:
-            # Stop heartbeat timer
-            self.heartbeat_timer.stop()
+            ticker = self.ticker_combo.currentText()
+            if not ticker or ticker not in self.analysis_cache:
+                self.status_label.setText("No analysis to refresh")
+                return
+                
+            # Request fresh data
+            self.request_data()
             
-            # Unsubscribe from message bus
-            self.message_bus.unsubscribe("Analysis", self.handle_message)
-            
-            super().closeEvent(event)
+            # Run analysis when data is received
+            self.run_analysis()
             
         except Exception as e:
-            self.logger.error(f"Error in close event: {str(e)}")
+            self.logger.error(f"Error refreshing analysis: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
+            
+    def handle_analysis_request(self, sender: str, data: Any):
+        """Handle analysis request from other tabs."""
+        try:
+            request_id = data.get('request_id')
+            ticker = data.get('ticker')
+            analysis_type = data.get('analysis_type')
+            
+            if not all([request_id, ticker, analysis_type]):
+                self.logger.error("Invalid analysis request")
+                return
+                
+            # Check if we have the requested data
+            if ticker not in self.analysis_cache:
+                self.message_bus.publish(
+                    "Analysis",
+                    "error",
+                    {
+                        'request_id': request_id,
+                        'error': f"No data available for {ticker}"
+                    }
+                )
+                return
+                
+            # Run the requested analysis
+            results = self.run_analysis_by_type(
+                self.analysis_cache[ticker],
+                analysis_type
+            )
+            
+            # Send results back
+            self.message_bus.publish(
+                "Analysis",
+                "analysis_response",
+                {
+                    'request_id': request_id,
+                    'ticker': ticker,
+                    'analysis_type': analysis_type,
+                    'results': results
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error handling analysis request: {e}")
+            self.message_bus.publish(
+                "Analysis",
+                "error",
+                {
+                    'request_id': data.get('request_id'),
+                    'error': str(e)
+                }
+            )
+            
+    def handle_analysis_response(self, sender: str, data: Any):
+        """Handle analysis response from other tabs."""
+        try:
+            request_id = data.get('request_id')
+            if request_id in self.pending_requests:
+                # Update pending request
+                self.pending_requests[request_id]['status'] = 'completed'
+                self.pending_requests[request_id]['results'] = data.get('results')
+                
+                # Update UI with results
+                self.update_results_table(data.get('results'))
+                
+        except Exception as e:
+            self.logger.error(f"Error handling analysis response: {e}")
+            
+    def handle_error(self, sender: str, data: Any):
+        """Handle error messages."""
+        try:
+            request_id = data.get('request_id')
+            error_message = data.get('error')
+            
+            if request_id in self.pending_requests:
+                self.pending_requests[request_id]['status'] = 'error'
+                self.pending_requests[request_id]['error'] = error_message
+                
+            self.status_label.setText(f"Error: {error_message}")
+            
+        except Exception as e:
+            self.logger.error(f"Error handling error message: {e}")
+            
+    def run_analysis_by_type(self, data: pd.DataFrame, analysis_type: str) -> Dict[str, Any]:
+        """Run analysis based on type."""
+        if analysis_type == "Technical Analysis":
+            return self.run_technical_analysis(data)
+        elif analysis_type == "Fundamental Analysis":
+            return self.run_statistical_analysis(data)
+        elif analysis_type == "Correlation Analysis":
+            return self.run_correlation_analysis(data)
+        elif analysis_type == "Volatility Analysis":
+            return self.run_timeseries_analysis(data)
+        else:
+            raise ValueError(f"Unknown analysis type: {analysis_type}")
+            
+    def cleanup(self):
+        """Cleanup resources."""
+        super().cleanup()
+        self.data_cache.clear()
+        self.analysis_cache.clear()
+        self.pending_requests.clear()
 
 def main():
     """Main function for the analysis tab process."""

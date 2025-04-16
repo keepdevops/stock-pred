@@ -59,9 +59,54 @@ class AnalysisProcess(QWidget):
             elif message_type == "shutdown":
                 self.logger.info(f"Received shutdown request from {sender}")
                 self.close()
+            elif message_type == "data_request":
+                self.handle_data_request(sender, data)
+            elif message_type == "analysis_request":
+                self.handle_analysis_request(sender, data)
+            elif message_type == "heartbeat":
+                self.handle_heartbeat(sender, data)
                 
         except Exception as e:
             self.logger.error(f"Error handling message: {str(e)}")
+            
+    def handle_data_request(self, sender: str, data: Any):
+        """Handle data request from other tabs."""
+        try:
+            request_id = data.get('request_id')
+            ticker = data.get('ticker')
+            
+            if not all([request_id, ticker]):
+                self.logger.error("Invalid data request")
+                return
+                
+            # Forward the request to the analysis tab
+            if hasattr(self, 'analysis_tab'):
+                self.analysis_tab.request_data()
+                
+        except Exception as e:
+            self.logger.error(f"Error handling data request: {str(e)}")
+            
+    def handle_analysis_request(self, sender: str, data: Any):
+        """Handle analysis request from other tabs."""
+        try:
+            request_id = data.get('request_id')
+            ticker = data.get('ticker')
+            analysis_type = data.get('analysis_type')
+            
+            if not all([request_id, ticker, analysis_type]):
+                self.logger.error("Invalid analysis request")
+                return
+                
+            # Forward the request to the analysis tab
+            if hasattr(self, 'analysis_tab'):
+                self.analysis_tab.run_analysis()
+                
+        except Exception as e:
+            self.logger.error(f"Error handling analysis request: {str(e)}")
+            
+    def handle_heartbeat(self, sender: str, data: Any):
+        """Handle heartbeat message."""
+        self.logger.debug(f"Heartbeat from {sender}: {data}")
             
     def send_heartbeat(self):
         """Send heartbeat message to indicate the process is alive."""

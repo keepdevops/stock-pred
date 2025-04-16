@@ -1,176 +1,108 @@
 import sys
 import os
 import logging
-from typing import Any
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog,
-    QComboBox, QGroupBox, QFormLayout, QTabWidget, QTableWidget,
-    QTableWidgetItem, QHeaderView
-)
+import traceback
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta
 import pandas as pd
-import sqlite3
-import pyodbc
+import numpy as np
 import psycopg2
 import mysql.connector
 from sqlalchemy import create_engine
-import duckdb
-import polars as pl
-import json
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
+    QComboBox, QPushButton, QLabel, QSplitter, QApplication, QSpinBox,
+    QDoubleSpinBox, QGroupBox, QCheckBox, QHeaderView, QMessageBox, QDateEdit,
+    QTabWidget, QScrollArea, QFrame
+)
+from PyQt6.QtCore import Qt, QTimer, QDate
+from PyQt6.QtGui import QFont, QTextCursor
+from modules.tabs.base_tab import BaseTab
+import uuid
 
 # Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-    
-from stock_market_analyzer.modules.message_bus import MessageBus
 
-class ImportTab(QWidget):
-    """Tab for importing data from files and databases."""
+from ..message_bus import MessageBus
+
+class ImportTab(BaseTab):
+    """Tab for importing data from various sources."""
     
-    def __init__(self):
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.message_bus = MessageBus()
-        self.selected_file_path = None
-        self.db_connection = None
+        self.logger = logging.getLogger(__name__)
+        self.import_cache = {}
+        self.pending_requests = {}  # Track pending import requests
         self.setup_ui()
-        
+
     def setup_ui(self):
         """Setup the import tab UI."""
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-
-        # Create tab widget for different import sources
+        # Create tab widget
         self.tab_widget = QTabWidget()
         
-        # File Import Tab
-        file_tab = QWidget()
-        file_layout = QVBoxLayout()
+        # Create scroll area for each tab
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         
-        # File Selection
-        file_select_group = QGroupBox("File Selection")
-        file_select_layout = QHBoxLayout()
-        self.file_path_edit = QLineEdit()
-        self.file_path_edit.setPlaceholderText("Select a file to import...")
-        self.file_path_edit.setReadOnly(True)
-        file_select_layout.addWidget(self.file_path_edit)
-
-        self.browse_button = QPushButton("Browse...")
-        self.browse_button.clicked.connect(self.browse_file)
-        file_select_layout.addWidget(self.browse_button)
-        file_select_group.setLayout(file_select_layout)
-        file_layout.addWidget(file_select_group)
+        # File Import tab
+        file_import_tab = QWidget()
+        file_import_layout = QVBoxLayout()
         
-        # File Type Selection
-        file_type_group = QGroupBox("File Type")
-        file_type_layout = QFormLayout()
+        # Add file import UI elements
+        self.file_path_label = QLabel("No file selected")
+        file_import_layout.addWidget(self.file_path_label)
+        
+        browse_button = QPushButton("Browse")
+        browse_button.clicked.connect(self.browse_file)
+        file_import_layout.addWidget(browse_button)
+        
         self.file_type_combo = QComboBox()
-        self.file_type_combo.addItems([
-            "CSV", "Excel", "JSON", "Parquet", "HDF5", "SQLite",
-            "Feather", "Pickle", "Stata", "SAS", "SPSS", "DuckDB"
-        ])
-        file_type_layout.addRow("Select File Type:", self.file_type_combo)
-        file_type_group.setLayout(file_type_layout)
-        file_layout.addWidget(file_type_group)
+        self.file_type_combo.addItems(["CSV", "Excel", "JSON", "Parquet", "DuckDB"])
+        file_import_layout.addWidget(self.file_type_combo)
         
-        file_tab.setLayout(file_layout)
-        self.tab_widget.addTab(file_tab, "File Import")
+        import_button = QPushButton("Import")
+        import_button.clicked.connect(self.import_file)
+        file_import_layout.addWidget(import_button)
         
-        # Database Import Tab
-        db_tab = QWidget()
-        db_layout = QVBoxLayout()
+        file_import_tab.setLayout(file_import_layout)
         
-        # Database Type Selection
-        db_type_group = QGroupBox("Database Type")
-        db_type_layout = QFormLayout()
+        # Database Import tab
+        db_import_tab = QWidget()
+        db_import_layout = QVBoxLayout()
+        
+        # Add database import UI elements
         self.db_type_combo = QComboBox()
-        self.db_type_combo.addItems([
-            "SQLite", "MySQL", "PostgreSQL", "SQL Server", "Oracle", "DuckDB"
-        ])
-        self.db_type_combo.currentTextChanged.connect(self.update_db_connection_fields)
-        db_type_layout.addRow("Database Type:", self.db_type_combo)
-        db_type_group.setLayout(db_type_layout)
-        db_layout.addWidget(db_type_group)
+        self.db_type_combo.addItems(["SQLite", "PostgreSQL", "MySQL", "DuckDB"])
+        db_import_layout.addWidget(self.db_type_combo)
         
-        # Connection Settings
-        self.connection_group = QGroupBox("Connection Settings")
-        self.connection_layout = QFormLayout()
-        self.connection_group.setLayout(self.connection_layout)
-        db_layout.addWidget(self.connection_group)
+        self.db_path_label = QLabel("No database selected")
+        db_import_layout.addWidget(self.db_path_label)
         
-        # Query Settings
-        query_group = QGroupBox("Query Settings")
-        query_layout = QFormLayout()
-        self.query_edit = QTextEdit()
-        self.query_edit.setPlaceholderText("Enter SQL query...")
-        query_layout.addRow("SQL Query:", self.query_edit)
-        query_group.setLayout(query_layout)
-        db_layout.addWidget(query_group)
+        db_browse_button = QPushButton("Browse")
+        db_browse_button.clicked.connect(self.browse_database)
+        db_import_layout.addWidget(db_browse_button)
         
-        db_tab.setLayout(db_layout)
-        self.tab_widget.addTab(db_tab, "Database Import")
+        db_import_button = QPushButton("Import")
+        db_import_button.clicked.connect(self.import_database)
+        db_import_layout.addWidget(db_import_button)
         
-        layout.addWidget(self.tab_widget)
+        db_import_tab.setLayout(db_import_layout)
         
-        # Import Button
-        self.import_button = QPushButton("Import Data")
-        self.import_button.clicked.connect(self.import_data)
-        self.import_button.setEnabled(False)
-        layout.addWidget(self.import_button)
-
-        # Data Preview Table
-        preview_group = QGroupBox("Data Preview")
-        preview_layout = QVBoxLayout()
+        # Add tabs to tab widget
+        self.tab_widget.addTab(file_import_tab, "File Import")
+        self.tab_widget.addTab(db_import_tab, "Database Import")
         
-        # Create table widget
-        self.preview_table = QTableWidget()
-        self.preview_table.setColumnCount(0)
-        self.preview_table.setRowCount(0)
-        self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.preview_table.setAlternatingRowColors(True)
-        preview_layout.addWidget(self.preview_table)
-        
-        # Add row count label
-        self.row_count_label = QLabel("Rows: 0")
-        preview_layout.addWidget(self.row_count_label)
-        
-        preview_group.setLayout(preview_layout)
-        layout.addWidget(preview_group)
-
-        # Log/Status Display
-        layout.addWidget(QLabel("Import Log:"))
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        layout.addWidget(self.log_text)
-        
-        # Status label
-        self.status_label = QLabel("Import tab ready. Select a data source.")
-        layout.addWidget(self.status_label)
+        # Add tab widget to layout
+        self.layout.addWidget(self.tab_widget)
         
         # Subscribe to message bus
         self.message_bus.subscribe("Import", self.handle_message)
-        self.log_message("Import tab initialized.")
         
-        # Initialize database connection fields
-        self.update_db_connection_fields()
-
-    def update_db_connection_fields(self):
-        """Update database connection fields based on selected database type."""
-        # Clear existing fields
-        while self.connection_layout.rowCount() > 0:
-            self.connection_layout.removeRow(0)
-            
-        db_type = self.db_type_combo.currentText()
-        
-        if db_type in ["SQLite", "DuckDB"]:
-            self.connection_layout.addRow("Database File:", QLineEdit())
-        else:
-            self.connection_layout.addRow("Host:", QLineEdit())
-            self.connection_layout.addRow("Port:", QLineEdit())
-            self.connection_layout.addRow("Database:", QLineEdit())
-            self.connection_layout.addRow("Username:", QLineEdit())
-            self.connection_layout.addRow("Password:", QLineEdit())
+        self.logger.info("Import tab initialized")
 
     def browse_file(self):
         """Opens a file dialog to select a data file."""
@@ -200,31 +132,108 @@ class ImportTab(QWidget):
         
         if path:
             self.selected_file_path = path
-            self.file_path_edit.setText(path)
+            self.file_path_label.setText(path)
             self.import_button.setEnabled(True)
             self.status_label.setText("File selected. Ready to import.")
             self.log_message(f"Selected file: {path}")
         else:
             self.selected_file_path = None
-            self.file_path_edit.clear()
+            self.file_path_label.clear()
             self.import_button.setEnabled(False)
             self.status_label.setText("File selection cancelled.")
 
+    def import_file(self):
+        """Import data from a file."""
+        try:
+            file_path = self.file_path_label.text()
+            if not file_path:
+                self.logger.warning("No file selected")
+                return
+                
+            file_type = self.file_type_combo.currentText().lower()
+            self.logger.info(f"Importing {file_type} file: {file_path}")
+            
+            # Import data based on file type
+            if file_type == "csv":
+                df = pd.read_csv(file_path)
+            elif file_type == "excel":
+                df = pd.read_excel(file_path)
+            elif file_type == "json":
+                df = pd.read_json(file_path)
+            elif file_type == "parquet":
+                df = pd.read_parquet(file_path)
+            elif file_type == "duckdb":
+                import duckdb
+                conn = duckdb.connect(file_path)
+                df = conn.execute("SELECT * FROM data").fetchdf()
+                conn.close()
+            else:
+                raise ValueError(f"Unsupported file type: {file_type}")
+                
+            # Process and publish the data
+            self.process_and_publish_data(df)
+            
+        except Exception as e:
+            error_msg = f"Error importing file: {str(e)}"
+            self.logger.error(error_msg)
+            self.logger.error(traceback.format_exc())
+            self.status_label.setText(error_msg)
+            
+    def import_database(self):
+        """Import data from a database."""
+        try:
+            if not self.selected_db_path:
+                self.logger.warning("No database selected")
+                return
+                
+            db_type = self.db_type_combo.currentText().lower()
+            self.logger.info(f"Importing from {db_type} database: {self.selected_db_path}")
+            
+            # Import data based on database type
+            if db_type == "sqlite":
+                import sqlite3
+                conn = sqlite3.connect(self.selected_db_path)
+                df = pd.read_sql("SELECT * FROM data", conn)
+                conn.close()
+            elif db_type == "duckdb":
+                import duckdb
+                conn = duckdb.connect(self.selected_db_path)
+                df = conn.execute("SELECT * FROM data").fetchdf()
+                conn.close()
+            elif db_type == "postgresql":
+                # PostgreSQL uses connection strings
+                conn = psycopg2.connect(self.selected_db_path)
+                df = pd.read_sql("SELECT * FROM data", conn)
+                conn.close()
+            elif db_type == "mysql":
+                # MySQL uses connection strings
+                conn = mysql.connector.connect(self.selected_db_path)
+                df = pd.read_sql("SELECT * FROM data", conn)
+                conn.close()
+            else:
+                raise ValueError(f"Unsupported database type: {db_type}")
+                
+            # Process and publish the data
+            self.process_and_publish_data(df)
+            
+        except Exception as e:
+            error_msg = f"Error importing from database: {str(e)}"
+            self.logger.error(error_msg)
+            self.logger.error(traceback.format_exc())
+            self.status_label.setText(error_msg)
+            
     def import_data(self):
         """Import data from the selected source."""
         try:
             if self.tab_widget.currentIndex() == 0:  # File Import
-                self.import_from_file()
+                self.import_file()
             else:  # Database Import
-                self.import_from_database()
+                self.import_database()
         except Exception as e:
             error_msg = f"Error during import: {str(e)}"
             self.logger.error(error_msg)
             self.logger.error(traceback.format_exc())
-            self.log_message(error_msg)
-            self.message_bus.publish("Import", "error", error_msg)
-        finally:
-            self.log_message("=== Import Finished ===")
+            self.status_label.setText(error_msg)
 
     def import_from_file(self):
         """Import data from a file."""
@@ -438,6 +447,36 @@ class ImportTab(QWidget):
             error_log = f"Error handling message in ImportTab: {str(e)}"
             self.logger.error(error_log)
             self.log_message(error_log)
+
+    def browse_database(self):
+        """Opens a file dialog to select a database file."""
+        db_type = self.db_type_combo.currentText().lower()
+        file_filters = {
+            "sqlite": "SQLite Files (*.db *.sqlite)",
+            "duckdb": "DuckDB Files (*.duckdb)",
+            "postgresql": "All Files (*)",  # PostgreSQL uses connection strings
+            "mysql": "All Files (*)"  # MySQL uses connection strings
+        }
+        
+        file_filter = file_filters.get(db_type, "All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Select Database File", 
+            "", 
+            file_filter
+        )
+        
+        if path:
+            self.selected_db_path = path
+            self.db_path_label.setText(path)
+            self.db_import_button.setEnabled(True)
+            self.status_label.setText("Database selected. Ready to import.")
+            self.log_message(f"Selected database: {path}")
+        else:
+            self.selected_db_path = None
+            self.db_path_label.clear()
+            self.db_import_button.setEnabled(False)
+            self.status_label.setText("Database selection cancelled.")
 
 def main():
     """Main function for the import tab process."""
