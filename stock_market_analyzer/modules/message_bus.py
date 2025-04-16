@@ -12,63 +12,32 @@ class Message:
     source: str
 
 class MessageBus:
-    """Message bus for handling communication between different components."""
+    """Message bus for inter-tab communication."""
     
     def __init__(self):
         """Initialize the message bus."""
-        self.logger = logging.getLogger(__name__)
         self.subscribers: Dict[str, List[Callable]] = {}
+        self.logger = logging.getLogger(__name__)
         self.message_history: List[Message] = []
         
-    def subscribe(self, message_type: str, callback: Callable):
-        """
-        Subscribe to messages of a specific type.
+    def subscribe(self, topic: str, callback: Callable):
+        """Subscribe to a topic."""
+        if topic not in self.subscribers:
+            self.subscribers[topic] = []
+        if callback not in self.subscribers[topic]:
+            self.subscribers[topic].append(callback)
+            self.logger.debug(f"Added subscriber to topic '{topic}': {callback.__name__}")
         
-        Args:
-            message_type: Type of messages to subscribe to
-            callback: Function to call when a message of the specified type is received
-        """
-        if message_type not in self.subscribers:
-            self.subscribers[message_type] = []
-        self.subscribers[message_type].append(callback)
-        self.logger.debug(f"New subscriber for message type: {message_type}")
-        
-    def unsubscribe(self, message_type: str, callback: Callable):
-        """
-        Unsubscribe from messages of a specific type.
-        
-        Args:
-            message_type: Type of messages to unsubscribe from
-            callback: Function to remove from subscribers
-        """
-        if message_type in self.subscribers:
-            self.subscribers[message_type].remove(callback)
-            self.logger.debug(f"Removed subscriber for message type: {message_type}")
-            
-    def publish(self, message_type: str, data: Any, source: str = "unknown"):
-        """
-        Publish a message to all subscribers.
-        
-        Args:
-            message_type: Type of the message
-            data: Message data
-            source: Source of the message
-        """
-        message = Message(
-            type=message_type,
-            data=data,
-            timestamp=datetime.now(),
-            source=source
-        )
-        
-        self.message_history.append(message)
-        
-        if message_type in self.subscribers:
-            for callback in self.subscribers[message_type]:
+    def publish(self, topic: str, message_type: str, data: dict):
+        """Publish a message to subscribers."""
+        self.logger.debug(f"Publishing message - Topic: {topic}, Type: {message_type}, Data: {data}")
+        if topic in self.subscribers:
+            for callback in self.subscribers[topic]:
                 try:
-                    callback(source, message_type, data)
+                    callback(topic, message_type, data)
+                    self.logger.debug(f"Successfully delivered message to {callback.__name__}")
                 except Exception as e:
-                    self.logger.error(f"Error in subscriber callback: {e}")
+                    self.logger.error(f"Error delivering message to {callback.__name__}: {e}")
                     
     def get_message_history(self, message_type: str = None) -> List[Message]:
         """
@@ -101,4 +70,12 @@ class MessageBus:
         """
         if message_type:
             return {message_type: self.subscribers.get(message_type, [])}
-        return self.subscribers 
+        return self.subscribers
+
+    def unsubscribe(self, topic: str, callback: Callable):
+        """Unsubscribe from a topic."""
+        if topic in self.subscribers and callback in self.subscribers[topic]:
+            self.subscribers[topic].remove(callback)
+            self.logger.debug(f"Removed subscriber from topic '{topic}': {callback.__name__}")
+            if not self.subscribers[topic]:
+                del self.subscribers[topic] 
