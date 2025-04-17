@@ -11,8 +11,8 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from stock_market_analyzer.modules.message_bus import MessageBus
-from stock_market_analyzer.modules.tabs.charts_tab import ChartsTab
+from modules.message_bus import MessageBus
+from modules.tabs.charts_tab import ChartsTab
 
 class ChartsProcess(QWidget):
     """Process class for the Charts tab."""

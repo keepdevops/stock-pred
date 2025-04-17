@@ -25,39 +25,47 @@ if project_root not in sys.path:
 from modules.message_bus import MessageBus
 
 class PredictionsTab(BaseTab):
-    """Tab for making and viewing stock predictions."""
+    """Predictions tab for making and viewing stock predictions."""
     
     def __init__(self, parent=None):
         """Initialize the Predictions tab."""
-        super().__init__(parent)
+        # Initialize attributes before parent __init__
+        self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
-        
-        # Initialize instance variables
-        self.prediction_cache = {}
-        self.pending_requests = {}
-        
-        # Initialize UI components
+        self.current_color_scheme = "default"
+        self._ui_setup_done = False
         self.main_layout = None
         self.ticker_combo = None
         self.model_combo = None
         self.horizon_spin = None
-        self.confidence_spin = None
         self.predict_button = None
-        self.refresh_button = None
         self.predictions_table = None
+        self.status_label = None
+        self.prediction_cache = {}
+        self.pending_requests = {}
+        
+        super().__init__(parent)
+        
+        # Initialize UI components
+        self.confidence_spin = None
+        self.refresh_button = None
         self.metrics_table = None
         self.model_details = None
-        self.status_label = None
         self.progress_label = None
         
         # Setup UI and message bus
         self.setup_ui()
-        self.setup_message_bus()
         
-    def _setup_ui_impl(self):
+    def setup_ui(self):
         """Setup the UI components."""
-        # Create main layout
-        self.main_layout = QVBoxLayout()
+        # Clear the base layout
+        while self.main_layout.count():
+            item = self.main_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+                
+        self.main_layout.setSpacing(10)
+        self.main_layout.setContentsMargins(10, 10, 10, 10)
         
         # Create controls group
         controls_group = QGroupBox("Prediction Controls")
@@ -145,14 +153,12 @@ class PredictionsTab(BaseTab):
         
         # Status bar
         status_layout = QHBoxLayout()
-        self.status_label = QLabel("Ready")
         self.progress_label = QLabel()
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.progress_label)
         self.main_layout.addLayout(status_layout)
         
-        # Set the main layout
-        self.setLayout(self.main_layout)
+        self.logger.info("Predictions tab initialized")
         
     def _setup_message_bus_impl(self):
         """Setup message bus subscriptions."""
@@ -407,63 +413,7 @@ class PredictionsTab(BaseTab):
             self.pending_requests.clear()
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
-
-    def test_input_fields(self):
-        """Test input field functionality."""
-        # Test ticker input
-        self.ticker_combo.setText("AAPL")
-        assert self.ticker_combo.text() == "AAPL"
-        
-        # Test model combo box
-        self.model_combo.setCurrentText("Technical")
-        assert self.model_combo.currentText() == "Technical"
-        
-        # Test result text
-        test_text = "Test analysis results"
-        self.model_details.setText(test_text)
-        assert self.model_details.text() == test_text
-
-    def test_request_tracking(self):
-        """Test request tracking functionality."""
-        
-        # Test adding pending request
-        request_id = str(uuid.uuid4())
-        self.pending_requests[request_id] = {
-            'type': 'data',
-            'ticker': 'AAPL',
-            'timestamp': datetime.now()
-        }
-        assert request_id in self.pending_requests
-        
-        # Test request completion
-        data_response = {
-            'request_id': request_id,
-            'ticker': 'AAPL',
-            'data': []
-        }
-        self.handle_data_response("Data", data_response)
-        
-        # Test request cleanup
-        self.cleanup()
-        assert len(self.pending_requests) == 0
-
-    def run_tests(self):
-        """Run all tests for the Charts tab."""
-        try:
-            self.test_input_fields()
-            self.test_pub_sub()
-            self.test_message_handling()
-            self.test_chart_types()
-            self.test_data_cache()
-            self.test_request_tracking()
-            self.test_message_flow()
-            self.status_label.setText("All tests passed successfully")
-            self.logger.info("All Charts tab tests passed")
-        except Exception as e:
-            error_msg = f"Test failed: {str(e)}"
-            self.status_label.setText(error_msg)
-            self.logger.error(error_msg)
-
+            
     def refresh_prediction(self):
         """Refresh the current prediction."""
         try:

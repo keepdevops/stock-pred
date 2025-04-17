@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QPushButton, QLabel, QSplitter, QApplication, QSpinBox,
     QDoubleSpinBox, QGroupBox, QCheckBox, QHeaderView, QMessageBox, QDateEdit,
-    QLineEdit, QTabWidget, QScrollArea, QFrame
+    QLineEdit, QTabWidget, QScrollArea, QFrame, QTextEdit
 )
 from PyQt6.QtCore import Qt, QTimer, QDate
 from PyQt6.QtGui import QFont, QTextCursor, QIntValidator
@@ -23,26 +23,36 @@ if project_root not in sys.path:
 from ..message_bus import MessageBus
 
 class TradingTab(BaseTab):
-    """Tab for managing trading strategies and executing trades."""
+    """Trading tab for managing trading strategies and positions."""
     
     def __init__(self, parent=None):
         """Initialize the Trading tab."""
-        super().__init__(parent)
+        # Initialize attributes before parent __init__
         self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
-        self.trading_cache = {}
-        self.pending_requests = {}  # Track pending trading requests
-        self.positions = {}
-        self.setup_ui()
+        self.current_color_scheme = "default"
+        self._ui_setup_done = False
+        self.main_layout = None
+        self.ticker_combo = None
+        self.strategy_combo = None
+        self.entry_price_edit = None
+        self.stop_loss_edit = None
+        self.take_profit_edit = None
+        self.position_size_edit = None
+        self.enter_position_button = None
+        self.exit_position_button = None
+        self.positions_table = None
+        self.status_label = None
+        self.position_cache = {}
+        self.pending_requests = {}
         
-    def setup_ui(self):
+        super().__init__(parent)
+        
+    def _setup_ui_impl(self):
         """Setup the trading tab UI."""
-        # Create main layout
-        self.main_layout = QVBoxLayout()
-        self.setLayout(self.main_layout)
-        
         # Create tab widget
         self.tab_widget = QTabWidget()
+        self.main_layout.addWidget(self.tab_widget)
         
         # Create scroll area
         scroll_area = QScrollArea()
@@ -177,9 +187,6 @@ class TradingTab(BaseTab):
         
         # Add tabs to tab widget
         self.tab_widget.addTab(strategies_tab, "Trading")
-        
-        # Add tab widget to main layout
-        self.main_layout.addWidget(self.tab_widget)
         
         # Subscribe to message bus
         self.message_bus.subscribe("Trading", self.handle_message)
@@ -335,7 +342,7 @@ class TradingTab(BaseTab):
             # Get trade parameters
             symbol = self.symbol_input.text().strip()
             quantity = self.quantity_input.value()
-            order_type = self.order_type_combo.currentText()
+            order_type = self.order_type.currentText()
             price = self.price_input.value()
             
             if not symbol:
