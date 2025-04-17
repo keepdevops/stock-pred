@@ -1,30 +1,46 @@
 import sys
 import os
+import signal
 import logging
+import traceback
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
 
 # Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from stock_market_analyzer.modules.tabs.settings_tab import SettingsTab
+# Now we can import from modules directly
+from modules.message_bus import MessageBus
+from modules.tabs.settings_tab import SettingsTab
+
+def handle_shutdown(signum, frame):
+    """Handle shutdown signal."""
+    print("Received shutdown signal")
+    QApplication.quit()
 
 def main():
     """Main function for the settings tab process."""
-    # Setup logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    logger.info("Starting settings tab process")
-    
-    # Create and show the settings tab
-    app = QApplication(sys.argv)
-    window = SettingsTab()
-    window.setWindowTitle("Settings")
-    window.show()
-    
-    # Start the application event loop
-    sys.exit(app.exec())
+    try:
+        # Set up signal handlers
+        signal.signal(signal.SIGINT, handle_shutdown)
+        signal.signal(signal.SIGTERM, handle_shutdown)
+        
+        # Create application
+        app = QApplication(sys.argv)
+        
+        # Create and show the settings tab
+        settings_tab = SettingsTab()
+        settings_tab.show()
+        
+        # Start the application
+        sys.exit(app.exec())
+        
+    except Exception as e:
+        print(f"Error in settings tab process: {str(e)}")
+        print(traceback.format_exc())
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 

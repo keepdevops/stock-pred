@@ -24,81 +24,96 @@ from ..message_bus import MessageBus
 from .base_tab import BaseTab
 
 class HelpTab(BaseTab):
-    """Help tab for the stock market analyzer."""
+    """Help tab for providing user assistance and documentation."""
     
     def __init__(self, parent=None):
         """Initialize the Help tab."""
-        super().__init__(parent)
+        # Initialize attributes before parent __init__
         self.message_bus = MessageBus()
         self.logger = logging.getLogger(__name__)
+        self.current_color_scheme = "default"
+        self._ui_setup_done = False
+        self.main_layout = None
+        self.tab_widget = None
+        self.help_text = None
+        self.status_label = None
+        self.help_cache = {}
+        self.pending_requests = {}
+        
+        super().__init__(parent)
+        
+        # Setup UI after parent initialization
         self.setup_ui()
         
     def setup_ui(self):
-        """Setup the help tab UI."""
-        # Create tab widget
-        self.tab_widget = QTabWidget()
-        
-        # Create scroll area for each tab
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        
-        # Help tab
-        help_tab = QWidget()
-        help_layout = QVBoxLayout()
-        
-        # Add help UI elements
-        self.help_text = QTextEdit()
-        self.help_text.setReadOnly(True)
-        self.help_text.setHtml("""
-            <h1>Stock Market Analyzer Help</h1>
-            <p>Welcome to the Stock Market Analyzer application. This tool helps you analyze stock market data and make informed trading decisions.</p>
-            <h2>Features</h2>
-            <ul>
-                <li>Data Import: Import data from various sources including CSV, Excel, JSON, and databases</li>
-                <li>Analysis: Perform technical and fundamental analysis on stock data</li>
-                <li>Charts: Visualize stock data and analysis results</li>
-                <li>Models: Train and use machine learning models for predictions</li>
-                <li>Trading: Execute trades based on analysis and predictions</li>
-            </ul>
-            <h2>Getting Started</h2>
-            <ol>
-                <li>Import your stock data using the Import tab</li>
-                <li>Analyze the data using the Analysis tab</li>
-                <li>View the results in the Charts tab</li>
-                <li>Use the Models tab to make predictions</li>
-                <li>Execute trades using the Trading tab</li>
-            </ol>
-        """)
-        help_layout.addWidget(self.help_text)
-        
-        help_tab.setLayout(help_layout)
-        
-        # Add tabs to tab widget
-        self.tab_widget.addTab(help_tab, "Help")
-        
-        # Add tab widget to main layout
-        self.main_layout.addWidget(self.tab_widget)
-        
-        # Subscribe to message bus
+        """Setup the UI components."""
+        try:
+            # Clear the base layout
+            while self.main_layout.count():
+                item = self.main_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+                    
+            self.main_layout.setSpacing(10)
+            self.main_layout.setContentsMargins(10, 10, 10, 10)
+            
+            # Create help content group
+            help_group = QGroupBox("Help Documentation")
+            help_layout = QVBoxLayout()
+            
+            # Create tab widget
+            self.tab_widget = QTabWidget()
+            help_layout.addWidget(self.tab_widget)
+            
+            # Create help tabs
+            self.create_general_help_tab()
+            self.create_data_help_tab()
+            self.create_analysis_help_tab()
+            self.create_charts_help_tab()
+            self.create_trading_help_tab()
+            self.create_models_help_tab()
+            
+            help_group.setLayout(help_layout)
+            self.main_layout.addWidget(help_group)
+            
+            # Create status bar
+            status_layout = QHBoxLayout()
+            
+            self.status_label = QLabel("Ready")
+            self.status_label.setStyleSheet("color: green")
+            status_layout.addWidget(self.status_label)
+            
+            self.main_layout.addLayout(status_layout)
+            
+            self._ui_setup_done = True
+            
+        except Exception as e:
+            error_msg = f"Error setting up UI: {str(e)}"
+            self.logger.error(error_msg)
+            if self.status_label:
+                self.status_label.setText(error_msg)
+                
+    def _setup_message_bus_impl(self):
+        """Setup message bus subscriptions."""
+        super()._setup_message_bus_impl()
         self.message_bus.subscribe("Help", self.handle_message)
         
-        self.logger.info("Help tab initialized")
-        
-    def process_message(self, sender: str, message_type: str, data: Any):
-        """Process incoming messages."""
+    def handle_message(self, sender: str, message_type: str, data: Any):
+        """Handle incoming messages."""
         try:
             if message_type == "help_request":
                 self.handle_help_request(sender, data)
             elif message_type == "help_response":
                 self.handle_help_response(sender, data)
             elif message_type == "error":
-                self.logger.error(f"Error from {sender}: {data.get('error', 'Unknown error')}")
+                self.status_label.setText(f"Error: {data.get('error', 'Unknown error')}")
             elif message_type == "heartbeat":
                 self.status_label.setText("Connected")
+                
         except Exception as e:
-            self.logger.error(f"Error processing message: {str(e)}")
-            self.logger.error(traceback.format_exc())
+            error_msg = f"Error handling message: {str(e)}"
+            self.logger.error(error_msg)
+            self.status_label.setText(error_msg)
             
     def handle_help_request(self, sender: str, data: Any):
         """Handle help request from other tabs."""
@@ -125,7 +140,9 @@ class HelpTab(BaseTab):
             )
             
         except Exception as e:
-            self.logger.error(f"Error handling help request: {str(e)}")
+            error_msg = f"Error handling help request: {str(e)}"
+            self.logger.error(error_msg)
+            self.status_label.setText(error_msg)
             
     def handle_help_response(self, sender: str, data: Any):
         """Handle help response from other tabs."""
@@ -142,7 +159,9 @@ class HelpTab(BaseTab):
                 self.update_help_content(topic, content)
                 
         except Exception as e:
-            self.logger.error(f"Error handling help response: {str(e)}")
+            error_msg = f"Error handling help response: {str(e)}"
+            self.logger.error(error_msg)
+            self.status_label.setText(error_msg)
             
     def get_help_content(self, topic: str) -> str:
         """Get help content for a topic."""
@@ -158,15 +177,20 @@ class HelpTab(BaseTab):
         pass
         
     def cleanup(self):
-        """Cleanup resources."""
-        super().cleanup()
-        self.help_cache.clear()
-        self.pending_requests.clear()
-
+        """Clean up resources."""
+        try:
+            super().cleanup()
+            self.help_cache.clear()
+            self.pending_requests.clear()
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
+            
     def create_general_help_tab(self):
         """Create the general help tab."""
         tab = QWidget()
         layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         text = QTextEdit()
         text.setReadOnly(True)
@@ -188,12 +212,14 @@ class HelpTab(BaseTab):
         """)
         layout.addWidget(text)
         tab.setLayout(layout)
-        return tab
+        self.tab_widget.addTab(tab, "General Help")
         
     def create_data_help_tab(self):
         """Create the data help tab."""
         tab = QWidget()
         layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         text = QTextEdit()
         text.setReadOnly(True)
@@ -219,12 +245,14 @@ class HelpTab(BaseTab):
         """)
         layout.addWidget(text)
         tab.setLayout(layout)
-        return tab
+        self.tab_widget.addTab(tab, "Data Help")
         
     def create_analysis_help_tab(self):
         """Create the analysis help tab."""
         tab = QWidget()
         layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         text = QTextEdit()
         text.setReadOnly(True)
@@ -252,12 +280,14 @@ class HelpTab(BaseTab):
         """)
         layout.addWidget(text)
         tab.setLayout(layout)
-        return tab
+        self.tab_widget.addTab(tab, "Analysis Help")
         
     def create_charts_help_tab(self):
         """Create the charts help tab."""
         tab = QWidget()
         layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         text = QTextEdit()
         text.setReadOnly(True)
@@ -285,12 +315,14 @@ class HelpTab(BaseTab):
         """)
         layout.addWidget(text)
         tab.setLayout(layout)
-        return tab
+        self.tab_widget.addTab(tab, "Charts Help")
         
     def create_trading_help_tab(self):
         """Create the trading help tab."""
         tab = QWidget()
         layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         text = QTextEdit()
         text.setReadOnly(True)
@@ -318,7 +350,41 @@ class HelpTab(BaseTab):
         """)
         layout.addWidget(text)
         tab.setLayout(layout)
-        return tab
+        self.tab_widget.addTab(tab, "Trading Help")
+
+    def create_models_help_tab(self):
+        """Create the models help tab."""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setHtml("""
+            <h1>Models</h1>
+            <p>The Models tab provides information about the models used in the Stock Market Analyzer:</p>
+            
+            <h2>Model Types</h2>
+            <p>View the different types of models available:</p>
+            <ul>
+                <li>Machine Learning Models</li>
+                <li>Deep Learning Models</li>
+                <li>Time Series Models</li>
+            </ul>
+            
+            <h2>Model Performance</h2>
+            <p>Evaluate the performance of the models:</p>
+            <ul>
+                <li>Accuracy</li>
+                <li>Precision</li>
+                <li>Recall</li>
+                <li>F1 Score</li>
+            </ul>
+        """)
+        layout.addWidget(text)
+        tab.setLayout(layout)
+        self.tab_widget.addTab(tab, "Models Help")
 
 def main():
     """Main function for the help tab process."""
