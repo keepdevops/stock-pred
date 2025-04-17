@@ -26,6 +26,7 @@ class TabProcess(QWidget):
         self.cleanup_timer = QTimer()
         self.cleanup_timer.timeout.connect(self.check_process)
         self.cleanup_timer.start(1000)  # Check process every second
+        self._is_stopping = False  # Flag to prevent multiple stop attempts
         self.setup_ui()
         
     def setup_ui(self):
@@ -91,8 +92,18 @@ class TabProcess(QWidget):
     def stop_process(self):
         """Stop the process."""
         try:
-            if self.process is None:
+            # Prevent multiple stop attempts
+            if self._is_stopping:
+                self.logger.debug(f"Process {self.tab_name} is already being stopped")
+                return
+                
+            self._is_stopping = True
+            
+            # Store a local reference to the process
+            process = self.process
+            if process is None:
                 self.logger.warning(f"Process {self.tab_name} is already stopped or not initialized")
+                self._is_stopping = False
                 return
                 
             self.logger.info(f"Stopping {self.tab_name} process...")
@@ -101,14 +112,14 @@ class TabProcess(QWidget):
             self.message_bus.publish(self.tab_name, "shutdown", {})
             
             # Wait a bit for graceful shutdown
-            if not self.process.waitForFinished(2000):
+            if not process.waitForFinished(2000):
                 # If graceful shutdown fails, try terminate
-                self.process.terminate()
-                if not self.process.waitForFinished(2000):
+                process.terminate()
+                if not process.waitForFinished(2000):
                     # If terminate fails, force kill
                     self.logger.warning(f"Process {self.tab_name} did not terminate gracefully, forcing kill")
-                    self.process.kill()
-                    self.process.waitForFinished(1000)
+                    process.kill()
+                    process.waitForFinished(1000)
                 
             # Set process to None after successful shutdown
             self.process = None
@@ -119,10 +130,12 @@ class TabProcess(QWidget):
             self.logger.error(traceback.format_exc())
             # Ensure process is set to None even if there's an error
             self.process = None
+        finally:
+            self._is_stopping = False
             
     def check_process(self):
         """Check if the process is still running and handle any issues."""
-        if self.process is None:
+        if self.process is None or self._is_stopping:
             return
             
         if self.process.state() == QProcess.ProcessState.NotRunning:
@@ -133,8 +146,9 @@ class TabProcess(QWidget):
         """Handle process finished signal."""
         try:
             self.logger.info(f"Process for {self.tab_name} finished with exit code {exit_code}")
-            # Don't set process to None here, let stop_process handle it
-            self.stop_process()
+            # Only stop if we're not already stopping
+            if not self._is_stopping:
+                self.stop_process()
         except Exception as e:
             self.logger.error(f"Error handling process finished: {str(e)}")
             self.logger.error(traceback.format_exc())
@@ -147,8 +161,9 @@ class TabProcess(QWidget):
             # Only publish to message bus if it's not already an error message
             if not isinstance(error, str):
                 self.message_bus.publish(self.tab_name, "error", error_msg)
-            # Stop the process on error
-            self.stop_process()
+            # Only stop if we're not already stopping
+            if not self._is_stopping:
+                self.stop_process()
         except Exception as e:
             self.logger.error(f"Error handling process error: {str(e)}")
             self.logger.error(traceback.format_exc())

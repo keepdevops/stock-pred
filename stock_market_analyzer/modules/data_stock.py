@@ -8,6 +8,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+import time
 
 class DataStock:
     """Standalone library for handling stock data operations with yfinance."""
@@ -62,61 +63,78 @@ class DataStock:
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
-    def get_historical_data(self, symbol: str, start_date: str = None, end_date: str = None, 
-                          interval: str = '1d', output_file: str = None) -> pd.DataFrame:
-        """Get historical data for a ticker."""
+    def get_historical_data(self, tickers: List[str], start_date: str, end_date: str) -> Dict[str, pd.DataFrame]:
+        """Fetch historical data for multiple tickers."""
         try:
-            self.logger.info(f"Fetching historical data for {symbol}")
-            
-            # Set default dates if not provided
-            if not start_date:
-                start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-            if not end_date:
-                end_date = datetime.now().strftime('%Y-%m-%d')
-            
-            # Download data
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(
-                start=start_date,
-                end=end_date,
-                interval=interval
-            )
-            
-            if data.empty:
-                raise ValueError(f"No data available for {symbol}")
-            
-            # Reset index to make date a column
-            data = data.reset_index()
-            
-            # Rename columns to match our schema
-            data = data.rename(columns={
-                'Date': 'date',
-                'Open': 'open',
-                'High': 'high',
-                'Low': 'low',
-                'Close': 'close',
-                'Volume': 'volume',
-                'Adj Close': 'adj_close'
-            })
-            
-            # Convert date column to datetime
-            data['date'] = pd.to_datetime(data['date'])
-            
-            # Add additional calculated columns
-            data['daily_return'] = data['close'].pct_change()
-            data['cumulative_return'] = (1 + data['daily_return']).cumprod() - 1
-            
-            # Save to file if specified
-            if output_file:
-                data.to_csv(output_file, index=False)
-                self.logger.info(f"Data saved to {output_file}")
-            
+            data = {}
+            for ticker in tickers:
+                try:
+                    # Create Ticker object
+                    yf_ticker = yf.Ticker(ticker)
+                    
+                    # Fetch data with retry logic
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            # For real-time data, use a shorter period if dates are recent
+                            if start_date and end_date:
+                                ticker_data = yf_ticker.history(
+                                    start=start_date,
+                                    end=end_date,
+                                    interval="1d"
+                                )
+                            else:
+                                # Default to last 30 days for real-time data
+                                ticker_data = yf_ticker.history(period="1mo")
+                            
+                            # Handle case where yfinance returns None
+                            if ticker_data is None:
+                                self.logger.warning(f"No data returned from yfinance for {ticker}")
+                                continue
+                                
+                            # Convert to DataFrame if it's not already
+                            if not isinstance(ticker_data, pd.DataFrame):
+                                ticker_data = pd.DataFrame(ticker_data)
+                            
+                            # Check if we have any data
+                            if len(ticker_data) == 0:
+                                self.logger.warning(f"No data points for {ticker}")
+                                continue
+                                
+                            # Validate required columns
+                            required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                            if not all(col in ticker_data.columns for col in required_columns):
+                                self.logger.error(f"Missing required columns for {ticker}")
+                                continue
+                                
+                            # Ensure data is properly formatted
+                            ticker_data = ticker_data[required_columns]
+                            ticker_data = ticker_data.dropna()
+                            
+                            if len(ticker_data) == 0:
+                                self.logger.warning(f"No valid data points for {ticker} after cleaning")
+                                continue
+                                
+                            data[ticker] = ticker_data
+                            break
+                            
+                        except Exception as e:
+                            if attempt == max_retries - 1:
+                                self.logger.error(f"Failed to fetch data for {ticker} after {max_retries} attempts: {str(e)}")
+                            else:
+                                self.logger.warning(f"Attempt {attempt + 1} failed for {ticker}, retrying...")
+                                time.sleep(1)  # Wait before retry
+                                
+                except Exception as e:
+                    self.logger.error(f"Error processing ticker {ticker}: {str(e)}")
+                    continue
+                    
             return data
             
         except Exception as e:
-            self.logger.error(f"Error fetching historical data for {symbol}: {str(e)}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
+            self.logger.error(f"Error fetching historical data: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            return {}
     
     def get_multiple_tickers(self, symbols: List[str], start_date: str = None, 
                            end_date: str = None, interval: str = '1d',
@@ -132,8 +150,26 @@ class DataStock:
                     if output_dir:
                         output_file = Path(output_dir) / f"{symbol}_data.csv"
                     
-                    data = self.get_historical_data(symbol, start_date, end_date, interval, output_file)
+                    # Get data for single ticker
+                    ticker_data = self.get_historical_data([symbol], start_date, end_date)
+                    
+                    # Validate the returned data
+                    if not ticker_data or symbol not in ticker_data:
+                        self.logger.warning(f"No data returned for {symbol}")
+                        continue
+                        
+                    data = ticker_data[symbol]
+                    if not isinstance(data, pd.DataFrame) or data.empty:
+                        self.logger.warning(f"Invalid or empty data for {symbol}")
+                        continue
+                        
                     results[symbol] = data
+                    
+                    # Save to file if specified
+                    if output_file:
+                        data.to_csv(output_file)
+                        self.logger.info(f"Data saved to {output_file}")
+                        
                 except Exception as e:
                     self.logger.error(f"Error fetching data for {symbol}: {str(e)}")
                     continue
@@ -143,7 +179,7 @@ class DataStock:
         except Exception as e:
             self.logger.error(f"Error fetching multiple tickers: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
+            return {}
     
     def get_realtime_data(self, symbol: str, output_file: str = None) -> Dict:
         """Get real-time data for a ticker."""
@@ -300,7 +336,6 @@ def main():
                 args.symbol,
                 args.start_date,
                 args.end_date,
-                args.interval,
                 output_file
             )
             print(f"\nHistorical Data for {args.symbol}:")
