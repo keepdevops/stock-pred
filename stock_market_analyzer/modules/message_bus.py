@@ -1,15 +1,14 @@
 import logging
+import time
 from typing import Dict, List, Callable, Any
-from dataclasses import dataclass
-from datetime import datetime
 
-@dataclass
 class Message:
     """Represents a message in the message bus system."""
-    type: str
-    data: Any
-    timestamp: datetime
-    source: str
+    def __init__(self, type: str, data: Any, timestamp: float, source: str):
+        self.type = type
+        self.data = data
+        self.timestamp = timestamp
+        self.source = source
 
 class MessageBus:
     """Message bus for inter-tab communication."""

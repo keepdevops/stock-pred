@@ -17,7 +17,7 @@ import traceback
 logging.getLogger('matplotlib.font_manager').setLevel(logging.INFO)
 
 # Add project root to Python path
-project_root = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.dirname(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -28,7 +28,7 @@ print("Project root:", project_root)
 print("Modules directory:", os.path.join(project_root, "modules"))
 print("Database module path:", os.path.join(project_root, "modules", "database.py"))
 
-# Import modules using absolute imports
+# Import modules using relative imports
 from modules.database import DatabaseConnector
 from modules.data_loader import DataLoader
 from modules.data_service import DataService
@@ -36,15 +36,27 @@ from modules.stock_ai_agent import StockAIAgent
 from modules.trading.real_trading_agent import RealTradingAgent
 from modules.gui import StockGUI
 from modules.message_bus import MessageBus
+from modules.tabs.data_tab import DataTab
+from modules.tabs.analysis_tab import AnalysisTab
+from modules.tabs.charts_tab import ChartsTab
+from modules.tabs.models_tab import ModelsTab
+from modules.tabs.predictions_tab import PredictionsTab
+from modules.tabs.import_tab import ImportTab
+from modules.settings import Settings
 
 def setup_logging():
     """Set up logging configuration."""
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
     )
-    logger = logging.getLogger(__name__)
-    return logger
+    return logging.getLogger(__name__)
+
+# Initialize logger
+logger = setup_logging()
 
 # Global references for cleanup
 db_connector = None
@@ -53,7 +65,6 @@ gui_instance = None
 def signal_handler(sig, frame):
     """Handle termination signals for clean shutdown."""
     try:
-        logger = setup_logging()
         logger.info(f"Received signal {sig}, performing graceful shutdown")
         
         # Clean up GUI if it exists
@@ -80,61 +91,48 @@ def signal_handler(sig, frame):
         logger.error(traceback.format_exc())
         sys.exit(1)
 
+class StockMarketAnalyzer:
+    def __init__(self):
+        self.app = QApplication(sys.argv)
+        self.message_bus = MessageBus()
+        self.database = DatabaseConnector()
+        self.data_loader = DataLoader(self.database)
+        self.data_service = DataService(self.data_loader)
+        self.ai_agent = StockAIAgent(self.data_loader)
+        self.trading_agent = RealTradingAgent(self.data_loader)
+        self.settings = Settings()
+        
+        # Create and show main window
+        self.gui = StockGUI(
+            db_connector=self.database,
+            data_service=self.data_service,
+            ai_agent=self.ai_agent,
+            trading_agent=self.trading_agent,
+            message_bus=self.message_bus
+        )
+        self.gui.show()
+        
+    def run(self):
+        """Run the application."""
+        try:
+            logger.info("Starting application...")
+            
+            # Start the application event loop
+            logger.info("Starting event loop...")
+            sys.exit(self.app.exec())
+            
+        except Exception as e:
+            logger.error(f"Error running application: {e}")
+            self.cleanup()
+            sys.exit(1)
+
 def main():
-    """Main application entry point."""
+    """Main entry point."""
     try:
-        # Set up logging
-        logger = setup_logging()
-        
-        # Print environment info
-        logger.info(f"Python path: {sys.path}")
-        logger.info(f"Current directory: {os.getcwd()}")
-        logger.info(f"Project root: {project_root}")
-        logger.info(f"Modules directory: {os.path.join(project_root, 'modules')}")
-        logger.info(f"Database module path: {os.path.join(project_root, 'modules', 'database.py')}")
-        
-        # Initialize components in correct order
-        app = QApplication(sys.argv)
-        
-        # First initialize database
-        global db_connector
-        db_connector = DatabaseConnector()
-        logger.info("Database connector initialized")
-        
-        # Then initialize data components
-        data_loader = DataLoader(db_connector)
-        logger.info("Data loader initialized")
-        
-        data_service = DataService(data_loader)
-        logger.info("Data service initialized")
-        
-        # Initialize AI and trading components with data loader
-        ai_agent = StockAIAgent(data_loader)
-        logger.info("AI agent initialized")
-        
-        trading_agent = RealTradingAgent(data_loader)
-        logger.info("Trading agent initialized")
-        
-        # Initialize message bus
-        message_bus = MessageBus()
-        logger.info("Message bus initialized")
-        
-        # Create and show GUI
-        global gui_instance
-        gui_instance = StockGUI(db_connector, data_service, ai_agent, trading_agent, message_bus)
-        gui_instance.show()
-        logger.info("GUI initialized and shown")
-        
-        # Register signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-        
-        # Start application event loop
-        sys.exit(app.exec())
-        
+        app = StockMarketAnalyzer()
+        app.run()
     except Exception as e:
-        logger.error(f"Error in main: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Fatal error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

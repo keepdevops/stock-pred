@@ -1,7 +1,8 @@
-import sys
 import os
+import sys
 import logging
 import traceback
+from typing import Dict, Any, Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTabWidget, QSplitter,
@@ -14,109 +15,149 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QDateTime, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QIntValidator, QIcon
 
-# Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# Add project root to Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from modules.tab_process import TabProcess
-from modules.message_bus import MessageBus
-from modules.database import DatabaseConnector
-from modules.data_service import DataService
-from modules.stock_ai_agent import StockAIAgent
-from modules.trading.real_trading_agent import RealTradingAgent
+# Import modules using relative imports
+from .database import DatabaseConnector
+from .data_service import DataService
+from .stock_ai_agent import StockAIAgent
+from .trading.real_trading_agent import RealTradingAgent
+from .message_bus import MessageBus
+from .tab_process import TabProcess
+from .tabs.data_tab import DataTab
+from .tabs.analysis_tab import AnalysisTab
+from .tabs.charts_tab import ChartsTab
+from .tabs.models_tab import ModelsTab
+from .tabs.predictions_tab import PredictionsTab
+from .tabs.import_tab import ImportTab
+from .tabs.settings_tab import SettingsTab
+from .tabs.help_tab import HelpTab
+from .tabs.trading_tab import TradingTab
 
 class StockGUI(QMainWindow):
-    """Main GUI window for the stock market analyzer."""
+    """Main GUI window for the Stock Market Analyzer."""
     
-    def __init__(self, db_connector: DatabaseConnector, data_service: DataService, 
-                 ai_agent: StockAIAgent, trading_agent: RealTradingAgent, 
-                 message_bus: MessageBus):
-        super().__init__()
+    def __init__(
+        self,
+        db_connector: DatabaseConnector,
+        data_service: DataService,
+        ai_agent: StockAIAgent,
+        trading_agent: RealTradingAgent,
+        message_bus: MessageBus,
+        parent=None
+    ):
+        """Initialize the GUI.
+        
+        Args:
+            db_connector: Database connection manager.
+            data_service: Data service for market data.
+            ai_agent: AI agent for predictions.
+            trading_agent: Trading agent for real trading.
+            message_bus: Message bus for communication.
+            parent: Parent widget.
+        """
+        super().__init__(parent)
         self.db_connector = db_connector
         self.data_service = data_service
         self.ai_agent = ai_agent
         self.trading_agent = trading_agent
         self.message_bus = message_bus
-        self.logger = logging.getLogger(__name__)
-        self.tabs = {}
-        self.setup_gui()
+        self.logger = logging.getLogger(self.__class__.__name__)
         
-    def setup_gui(self):
-        """Setup the GUI components."""
+        # Initialize UI
+        self.setWindowTitle("Stock Market Analyzer")
+        self.setMinimumSize(1200, 800)
+        
+        # Create central widget and layout
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+        
+        # Initialize tabs
+        self.tabs = {}
+        self.setup_tabs()
+        
+        # Setup message bus subscriptions
+        self.setup_message_bus()
+        
+        # Setup status bar
+        self.setup_status_bar()
+        
+    def setup_tabs(self):
+        """Set up all tabs in the application."""
         try:
-            # Set window properties
-            self.setWindowTitle("Stock Market Analyzer")
-            self.setGeometry(100, 100, 1200, 800)
-            
-            # Create central widget and layout
-            central_widget = QWidget()
-            self.setCentralWidget(central_widget)
-            layout = QVBoxLayout(central_widget)
-            
-            # Create tab widget
-            self.tab_widget = QTabWidget()
-            layout.addWidget(self.tab_widget)
-            
-            # Define tabs
+            # Create tab instances
             self.tabs = {
-                "Data": TabProcess("Data"),
-                "Analysis": TabProcess("Analysis"),
-                "Models": TabProcess("Models"),
-                "Predictions": TabProcess("Predictions"),
-                "Charts": TabProcess("Charts"),
-                "Trading": TabProcess("Trading"),
-                "Import": TabProcess("Import"),
-                "Settings": TabProcess("Settings"),
-                "Help": TabProcess("Help")
+                "Data": TabProcess(DataTab, self.message_bus),
+                "Analysis": TabProcess(AnalysisTab, self.message_bus),
+                "Charts": TabProcess(ChartsTab, self.message_bus),
+                "Models": TabProcess(ModelsTab, self.message_bus),
+                "Predictions": TabProcess(PredictionsTab, self.message_bus),
+                "Import": TabProcess(ImportTab, self.message_bus),
+                "Settings": TabProcess(SettingsTab, self.message_bus),
+                "Help": TabProcess(HelpTab, self.message_bus),
+                "Trading": TabProcess(TradingTab, self.message_bus)
             }
             
             # Add tabs to tab widget
             for name, tab in self.tabs.items():
                 self.tab_widget.addTab(tab, name)
+                
+            # Start all tab processes
+            for tab in self.tabs.values():
                 tab.start_process()
                 
-            # Setup status bar
-            self.statusBar().showMessage("Ready")
-            
-            # Connect tab change signal
-            self.tab_widget.currentChanged.connect(self.handle_tab_change)
-            
-            self.logger.info("GUI setup completed successfully")
-            
         except Exception as e:
-            self.logger.error(f"Error setting up GUI: {str(e)}")
+            self.logger.error(f"Error setting up tabs: {str(e)}")
             self.logger.error(traceback.format_exc())
-            raise
+            QMessageBox.critical(self, "Error", f"Failed to initialize tabs: {str(e)}")
             
-    def handle_tab_change(self, index: int):
-        """Handle tab change events."""
+    def setup_message_bus(self):
+        """Set up message bus subscriptions."""
         try:
-            tab_name = self.tab_widget.tabText(index)
-            self.statusBar().showMessage(f"Switched to {tab_name} tab")
-            
+            self.message_bus.subscribe("all", self.handle_message)
         except Exception as e:
-            self.logger.error(f"Error handling tab change: {str(e)}")
+            self.logger.error(f"Error setting up message bus: {str(e)}")
             
-    def show_status_message(self, message: str, timeout: int = 3000):
-        """Show a message in the status bar."""
+    def setup_status_bar(self):
+        """Set up the status bar."""
+        self.statusBar().showMessage("Ready")
+        
+    def handle_message(self, sender: str, message_type: str, data: Dict[str, Any]):
+        """Handle incoming messages.
+        
+        Args:
+            sender: The sender of the message.
+            message_type: The type of message.
+            data: The message data.
+        """
         try:
-            self.statusBar().showMessage(message, timeout)
+            if message_type == "error":
+                self.statusBar().showMessage(f"Error from {sender}: {data.get('error', 'Unknown error')}")
+            elif message_type == "status":
+                self.statusBar().showMessage(f"{sender}: {data.get('status', '')}")
         except Exception as e:
-            self.logger.error(f"Error showing status message: {str(e)}")
+            self.logger.error(f"Error handling message: {str(e)}")
             
     def closeEvent(self, event):
-        """Handle the close event."""
+        """Handle window close event."""
         try:
-            # Stop all tab processes
+            # Clean up all tabs
             for tab in self.tabs.values():
-                tab.stop_process()
+                tab.cleanup()
                 
-            # Close database connection
-            self.db_connector.close()
-            
-            super().closeEvent(event)
-            
+            # Clean up other resources
+            if self.db_connector:
+                self.db_connector.close()
+                
+            event.accept()
         except Exception as e:
-            self.logger.error(f"Error in close event: {str(e)}")
-            self.logger.error(traceback.format_exc()) 
+            self.logger.error(f"Error during cleanup: {str(e)}")
+            event.accept()  # Still accept the close event 

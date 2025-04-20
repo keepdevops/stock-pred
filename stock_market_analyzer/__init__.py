@@ -2,19 +2,51 @@
 Stock Market Analyzer package.
 """
 
-# Remove circular imports
-# from .modules.gui import StockGUI
-# from .modules.database import DatabaseConnector
-# from .modules.data_loader import DataLoader
-# from .modules.stock_ai_agent import StockAIAgent
-# from .modules.trading.real_trading_agent import RealTradingAgent
+import sys
+import os
+
+# Add the project root to the Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# Import modules
+from .modules.gui import StockGUI
+from .modules.database import DatabaseConnector
+from .modules.data_loader import DataLoader
+from .modules.stock_ai_agent import StockAIAgent
+from .modules.trading.real_trading_agent import RealTradingAgent
+from .modules.message_bus import MessageBus
+from .modules.tabs import (
+    BaseTab,
+    DataTab,
+    AnalysisTab,
+    ChartsTab,
+    ModelsTab,
+    PredictionsTab,
+    ImportTab,
+    SettingsTab,
+    HelpTab,
+    TradingTab
+)
 
 __all__ = [
     'StockGUI',
     'DatabaseConnector',
     'DataLoader',
     'StockAIAgent',
-    'RealTradingAgent'
+    'RealTradingAgent',
+    'MessageBus',
+    'BaseTab',
+    'DataTab',
+    'AnalysisTab',
+    'ChartsTab',
+    'ModelsTab',
+    'PredictionsTab',
+    'ImportTab',
+    'SettingsTab',
+    'HelpTab',
+    'TradingTab'
 ]
 
 # Default configuration

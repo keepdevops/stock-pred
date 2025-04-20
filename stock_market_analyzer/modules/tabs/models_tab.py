@@ -2,43 +2,76 @@ import sys
 import os
 import logging
 import traceback
-from typing import List, Dict, Any
+import time
+import uuid
+from typing import Dict, Any, List, Optional
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QComboBox, QPushButton, QLabel, QFileDialog, QMessageBox, QListWidget,
-    QListWidgetItem, QLineEdit, QSplitter, QApplication, QSpinBox, QCheckBox,
-    QTabWidget, QScrollArea, QHeaderView, QFrame, QFormLayout, QGroupBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QComboBox, QTableWidget, QTableWidgetItem, QGroupBox,
+    QHeaderView, QMessageBox, QFileDialog, QSpinBox, QCheckBox,
+    QTabWidget, QScrollArea, QFrame, QFormLayout, QListWidget,
+    QListWidgetItem, QSplitter, QApplication, QDoubleSpinBox, QLineEdit
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from .base_tab import BaseTab
 from ..message_bus import MessageBus
-import uuid
+from ..settings import Settings
+from ..connection_dashboard import ConnectionDashboard
 from ..models.model_manager import ModelManager
-from datetime import datetime
+import numpy as np
+
+# Add the project root to the Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 class ModelsTab(BaseTab):
     """Models tab for managing and training prediction models."""
     
-    def __init__(self, parent=None):
-        """Initialize the Models tab."""
+    def __init__(self, message_bus: MessageBus, parent=None):
+        """Initialize the Models tab.
+        
+        Args:
+            message_bus: The message bus for communication.
+            parent: The parent widget.
+        """
         # Initialize attributes before parent __init__
-        self.model_cache = {}
-        self.pending_requests = {}
+        self.settings = Settings()
+        self.current_color_scheme = self.settings.get_color_scheme()
         self._ui_setup_done = False
-        self.main_layout = None
         self.model_list = None
         self.model_type_combo = None
         self.train_button = None
-        self.status_label = None
+        self.model_cache = {}
+        self.pending_requests = {}
+        self.connection_status = {}
+        self.connection_start_times = {}
+        self.messages_received = 0
+        self.messages_sent = 0
+        self.errors = 0
+        self.message_latencies = []
+        self.dashboard = ConnectionDashboard()
+        self.model_manager = ModelManager()
         
-        super().__init__(parent)
+        # Call parent __init__ with message bus
+        super().__init__(message_bus, parent)
         
-        # Setup UI after parent initialization
-        self.setup_ui()
-        
+    def _setup_message_bus_impl(self):
+        """Setup message bus subscriptions."""
+        try:
+            self.message_bus.subscribe("Models", self.handle_model_message)
+            self.message_bus.subscribe("Data", self.handle_data_message)
+            self.message_bus.subscribe("ConnectionStatus", self.handle_connection_status)
+            self.logger.debug("Subscribed to Models, Data, and ConnectionStatus topics")
+        except Exception as e:
+            self.handle_error("Error setting up message bus subscriptions", e)
+            
     def setup_ui(self):
-        """Setup the UI components."""
+        """Set up the UI components."""
+        if self._ui_setup_done:
+            return
+            
         try:
             # Clear the base layout
             while self.main_layout.count():
@@ -49,151 +82,209 @@ class ModelsTab(BaseTab):
             self.main_layout.setSpacing(10)
             self.main_layout.setContentsMargins(10, 10, 10, 10)
             
-            # Create models group
-            models_group = QGroupBox("Model Management")
-            models_layout = QVBoxLayout()
+            # Create model type selection
+            model_type_group = QGroupBox("Model Type")
+            model_type_layout = QHBoxLayout()
+            model_type_group.setLayout(model_type_layout)
             
-            # Model list
-            self.model_list = QListWidget()
-            self.model_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-            models_layout.addWidget(self.model_list)
-            
-            # Model type selection
-            type_layout = QHBoxLayout()
-            type_layout.addWidget(QLabel("Model Type:"))
             self.model_type_combo = QComboBox()
-            self.model_type_combo.addItems([
-                "LSTM",
-                "GRU",
-                "Transformer",
-                "Random Forest",
-                "XGBoost"
-            ])
-            type_layout.addWidget(self.model_type_combo)
-            models_layout.addLayout(type_layout)
+            self.model_type_combo.addItem("LSTM")
+            self.model_type_combo.addItem("Transformer")
             
-            # Action buttons
-            button_layout = QHBoxLayout()
+            # Only add XGBoost if it's available
+            try:
+                import xgboost
+                self.model_type_combo.addItem("XGBoost")
+            except ImportError:
+                pass
+                
+            model_type_layout.addWidget(QLabel("Model Type:"))
+            model_type_layout.addWidget(self.model_type_combo)
             
-            self.train_button = QPushButton("Train New Model")
+            # Create train button
+            self.train_button = QPushButton("Train Model")
             self.train_button.clicked.connect(self.train_model)
-            button_layout.addWidget(self.train_button)
+            model_type_layout.addWidget(self.train_button)
             
-            models_layout.addLayout(button_layout)
-            models_group.setLayout(models_layout)
-            self.main_layout.addWidget(models_group)
+            self.main_layout.addWidget(model_type_group)
             
-            # Create status bar
-            status_layout = QHBoxLayout()
+            # Create model list
+            model_list_group = QGroupBox("Models")
+            model_list_layout = QVBoxLayout()
+            model_list_group.setLayout(model_list_layout)
             
-            self.status_label = QLabel("Ready")
-            self.status_label.setStyleSheet("color: green")
-            status_layout.addWidget(self.status_label)
+            self.model_list = QListWidget()
+            self.model_list.itemSelectionChanged.connect(self.on_model_selected)
+            model_list_layout.addWidget(self.model_list)
             
-            self.main_layout.addLayout(status_layout)
+            self.main_layout.addWidget(model_list_group)
+            
+            # Update model list
+            self.update_model_list()
             
             self._ui_setup_done = True
+            self.logger.info("Models tab initialized")
             
         except Exception as e:
-            error_msg = f"Error setting up UI: {str(e)}"
-            self.logger.error(error_msg)
-            if self.status_label:
-                self.status_label.setText(error_msg)
-                
-    def _setup_message_bus_impl(self):
-        """Setup message bus subscriptions."""
-        super()._setup_message_bus_impl()
-        self.message_bus.subscribe("Models", self.handle_message)
-        
+            self.handle_error("Error setting up UI", e)
+            
     def train_model(self):
         """Train a new model."""
         try:
             model_type = self.model_type_combo.currentText()
             
-            # Generate request ID
-            request_id = str(uuid.uuid4())
+            if not model_type:
+                self.status_label.setText("Please select a model type")
+                return
+                
+            self.status_label.setText(f"Training {model_type} model...")
             
-            # Create request
-            request = {
-                'request_id': request_id,
-                'model_type': model_type,
-                'timestamp': datetime.now()
-            }
-            
-            # Add to pending requests
-            self.pending_requests[request_id] = request
-            
-            # Publish request
+            # Publish training request
             self.message_bus.publish(
                 "Models",
-                "train_model_request",
-                request
+                "train_model",
+                {
+                    "model_type": model_type,
+                    "timestamp": time.time()
+                }
             )
             
-            # Update UI
-            self.status_label.setText(f"Training {model_type} model...")
-            self.train_button.setEnabled(False)
+        except Exception as e:
+            self.handle_error("Error training model", e)
+            
+    def on_model_selected(self):
+        """Handle model selection."""
+        try:
+            selected_items = self.model_list.selectedItems()
+            if not selected_items:
+                return
+                
+            model_name = selected_items[0].text()
+            self.status_label.setText(f"Selected model: {model_name}")
+            
+            # Publish model selection
+            self.message_bus.publish(
+                "Models",
+                "model_selected",
+                {
+                    "model_name": model_name,
+                    "timestamp": time.time()
+                }
+            )
             
         except Exception as e:
-            error_msg = f"Error training model: {str(e)}"
-            self.logger.error(error_msg)
-            self.status_label.setText(error_msg)
+            self.handle_error("Error handling model selection", e)
             
-    def handle_message(self, sender: str, message_type: str, data: Any):
-        """Handle incoming messages."""
+    def update_model_list(self):
+        """Update the model list."""
+        try:
+            if not self.model_manager:
+                return
+                
+            # Clear current items
+            self.model_list.clear()
+            
+            # Add models to the list
+            for model in self.model_manager.get_trained_models():
+                self.model_list.addItem(model.name)
+                
+        except Exception as e:
+            self.handle_error("Error updating model list", e)
+            
+    def handle_model_message(self, sender: str, message_type: str, data: Dict[str, Any]):
+        """Handle model-related messages."""
         try:
             if message_type == "model_trained":
-                self.handle_model_trained(sender, data)
-            elif message_type == "error":
-                self.status_label.setText(f"Error: {data.get('error', 'Unknown error')}")
-                self.train_button.setEnabled(True)
+                self.update_model_list()
+                self.status_label.setText("Model training completed")
+            elif message_type == "model_error":
+                error_msg = data.get("error", "Unknown error")
+                self.handle_error("Model error", Exception(error_msg))
                 
         except Exception as e:
-            error_msg = f"Error handling message: {str(e)}"
-            self.logger.error(error_msg)
-            self.status_label.setText(error_msg)
+            self.handle_error("Error handling model message", e)
             
-    def handle_model_trained(self, sender: str, data: Any):
-        """Handle model trained response."""
+    def handle_data_message(self, sender: str, message_type: str, data: Dict[str, Any]):
+        """Handle data-related messages."""
         try:
-            request_id = data.get('request_id')
-            if request_id in self.pending_requests:
-                request = self.pending_requests[request_id]
-                model_name = data.get('model_name')
-                
-                if model_name:
-                    # Add model to list
-                    self.model_list.addItem(model_name)
-                    self.model_cache[model_name] = data
-                    
-                self.status_label.setText(f"Model {model_name} trained successfully")
-                self.train_button.setEnabled(True)
-                del self.pending_requests[request_id]
+            if message_type == "data_ready":
+                self.status_label.setText("Data ready for training")
+            elif message_type == "data_error":
+                error_msg = data.get("error", "Unknown error")
+                self.handle_error("Data error", Exception(error_msg))
                 
         except Exception as e:
-            error_msg = f"Error handling model trained response: {str(e)}"
-            self.logger.error(error_msg)
-            self.status_label.setText(error_msg)
+            self.handle_error("Error handling data message", e)
+            
+    def handle_connection_status(self, sender: str, message_type: str, data: Dict[str, Any]):
+        """Handle connection status messages."""
+        try:
+            status = data.get("status")
+            if status:
+                self.connection_status[sender] = status
+                self.update_connection_dashboard()
+                
+        except Exception as e:
+            self.handle_error("Error handling connection status", e)
+            
+    def update_connection_dashboard(self):
+        """Update the connection dashboard."""
+        try:
+            # Update connection data for each tab
+            for tab, status in self.connection_status.items():
+                self.dashboard.update_connection_data(tab, {
+                    'status': status == 'connected',
+                    'start_time': self.connection_start_times.get(tab),
+                    'last_heartbeat': time.time(),
+                    'messages_received': self.messages_received,
+                    'messages_sent': self.messages_sent,
+                    'errors': self.errors,
+                    'latencies': self.message_latencies
+                })
+            
+        except Exception as e:
+            self.handle_error("Error updating connection dashboard", e)
             
     def cleanup(self):
-        """Cleanup resources."""
+        """Clean up resources."""
         try:
-            super().cleanup()
+            # Clear caches
             self.model_cache.clear()
             self.pending_requests.clear()
-        except Exception as e:
-            self.logger.error(f"Error during cleanup: {e}")
+            self.connection_status.clear()
+            self.connection_start_times.clear()
             
-    def closeEvent(self, event):
-        """Handle the close event."""
-        self.cleanup()
-        super().closeEvent(event)
+            # Reset metrics
+            self.messages_received = 0
+            self.messages_sent = 0
+            self.errors = 0
+            self.message_latencies.clear()
+            
+            # Clean up model manager
+            if self.model_manager:
+                self.model_manager.cleanup()
+                
+            # Call parent cleanup
+            super().cleanup()
+            
+        except Exception as e:
+            self.handle_error("Error during cleanup", e)
 
 def main():
-    """Main function for running the Models tab."""
+    """Main function for the models tab process."""
     app = QApplication(sys.argv)
+    
+    # Setup logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    logger.info("Starting models tab process")
+    
+    # Create and show the models tab
     window = ModelsTab()
+    window.setWindowTitle("Models Tab")
     window.show()
+    
+    # Start the application event loop
     sys.exit(app.exec())
 
 if __name__ == "__main__":

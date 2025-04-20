@@ -30,8 +30,11 @@ def main():
         # Create application
         app = QApplication(sys.argv)
         
+        # Create message bus
+        message_bus = MessageBus()
+        
         # Create and show the trading tab
-        trading_tab = TradingTab()
+        trading_tab = TradingTab(message_bus=message_bus)
         trading_tab.show()
         
         # Start the application

@@ -23,11 +23,34 @@ class ProcessManager:
         
     def handle_message(self, sender: str, message_type: str, data: dict):
         """Handle incoming messages."""
-        if message_type == "heartbeat":
-            tab_name = data.get("tab_name")
-            if tab_name:
-                self.heartbeats[tab_name] = time.time()
-                
+        try:
+            if message_type == "heartbeat":
+                tab_name = data.get("tab_name")
+                if tab_name:
+                    self.heartbeats[tab_name] = time.time()
+                    logging.debug(f"Received heartbeat from {tab_name}")
+                    
+            elif message_type == "process_status":
+                tab_name = data.get("tab_name")
+                status = data.get("status")
+                if tab_name and status:
+                    logging.info(f"Process {tab_name} status: {status}")
+                    
+            elif message_type == "process_error":
+                tab_name = data.get("tab_name")
+                error = data.get("error")
+                if tab_name and error:
+                    logging.error(f"Process {tab_name} error: {error}")
+                    
+            elif message_type == "process_log":
+                tab_name = data.get("tab_name")
+                log = data.get("log")
+                if tab_name and log:
+                    logging.info(f"Process {tab_name} log: {log}")
+                    
+        except Exception as e:
+            logging.error(f"Error handling message from {sender}: {str(e)}")
+        
     def start_tab(self, tab_name: str, script_path: str) -> bool:
         """Start a new tab process."""
         try:

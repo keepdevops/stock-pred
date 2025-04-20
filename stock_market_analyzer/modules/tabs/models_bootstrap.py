@@ -30,8 +30,11 @@ def main():
         # Create application
         app = QApplication(sys.argv)
         
+        # Create message bus
+        message_bus = MessageBus()
+        
         # Create and show the models tab
-        models_tab = ModelsTab()
+        models_tab = ModelsTab(message_bus=message_bus)
         models_tab.show()
         
         # Start the application

@@ -12,6 +12,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # Now we can import from modules directly
+from modules.message_bus import MessageBus
 from modules.tabs.data_tab import DataTab
 
 def handle_shutdown(signum, frame):
@@ -29,8 +30,11 @@ def main():
         # Create application
         app = QApplication(sys.argv)
         
+        # Create message bus
+        message_bus = MessageBus()
+        
         # Create and show the data tab
-        data_tab = DataTab()
+        data_tab = DataTab(message_bus=message_bus)
         data_tab.show()
         
         # Start the application
