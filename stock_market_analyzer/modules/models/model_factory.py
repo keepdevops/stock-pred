@@ -2,7 +2,14 @@ from typing import Dict, Any, Optional
 import logging
 from .transformer_model import TransformerStockPredictor
 from .lstm_model import LSTMModel
-from .xgboost_model import XGBoostModel
+
+# Try to import XGBoostModel, but don't fail if it's not available
+try:
+    from .xgboost_model import XGBoostModel
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
+    XGBoostModel = None
 
 class ModelFactory:
     """Factory class for creating and managing different types of stock prediction models."""
@@ -25,15 +32,21 @@ class ModelFactory:
             
         Returns:
             An instance of the specified model type
+            
+        Raises:
+            ValueError: If the model type is not supported or if xgboost is not available
         """
         if model_params is None:
             model_params = {}
             
-        if model_type.lower() == 'transformer':
+        model_type = model_type.lower()
+        if model_type == 'transformer':
             return TransformerStockPredictor(**model_params)
-        elif model_type.lower() == 'lstm':
+        elif model_type == 'lstm':
             return LSTMModel(**model_params)
-        elif model_type.lower() == 'xgboost':
+        elif model_type == 'xgboost':
+            if not XGBOOST_AVAILABLE:
+                raise ValueError("XGBoost is not available. Please install the xgboost package.")
             return XGBoostModel(**model_params)
         else:
             raise ValueError(f"Unsupported model type: {model_type}")
