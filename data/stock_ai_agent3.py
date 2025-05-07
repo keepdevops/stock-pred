@@ -40,13 +40,30 @@ import pickle
 matplotlib.use('TkAgg')
 
 def find_databases():
-    """Find all DuckDB database files in the current directory"""
-    return glob.glob('*.db')
+    """Find all database files in the current directory"""
+    db_files = glob.glob('*.db') + glob.glob('*.duckdb')
+    print(f"Found database files: {db_files}")
+    return db_files
 
 def create_connection(db_name):
     """Create a database connection"""
     try:
-        return duckdb.connect(db_name)
+        # Try DuckDB first
+        try:
+            import duckdb
+            print(f"Attempting to connect to DuckDB database: {db_name}")
+            conn = duckdb.connect(db_name)
+            print("Successfully connected to DuckDB database")
+            return conn
+        except ImportError:
+            print("DuckDB not installed, falling back to SQLite")
+            import sqlite3
+            return sqlite3.connect(db_name)
+        except Exception as e:
+            print(f"Error connecting to DuckDB: {e}")
+            print("Falling back to SQLite")
+            import sqlite3
+            return sqlite3.connect(db_name)
     except Exception as e:
         print(f"Error connecting to database {db_name}: {e}")
         return None
@@ -177,11 +194,8 @@ class AIAgent:
 class DataAdapter:
     def __init__(self, sequence_length=60, features=None):
         self.sequence_length = sequence_length
-        # Define features in lowercase to match DataFrame columns
-        self.features = features or [
-            'open', 'high', 'low', 'close', 'volume',
-            'ma20', 'rsi', 'macd', 'ma50'  # All 9 features in lowercase
-        ]
+        # Use only the basic features that are always available
+        self.features = features or ['open', 'high', 'low', 'close', 'volume']
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         
     def prepare_training_data(self, data, sequence_length=10):
@@ -200,57 +214,28 @@ class DataAdapter:
                     print(f"Found date column: {date_col}")
                     break
             
-            # If we found a date column, set it as index
             if date_col:
-                # Convert to datetime if not already
-                if not pd.api.types.is_datetime64_any_dtype(data[date_col]):
-                    data[date_col] = pd.to_datetime(data[date_col])
-                
-                # Set as index
                 data = data.set_index(date_col)
-                print(f"Index before datetime conversion: {data.index}")
-                
-                # Ensure index is datetime
-                data.index = pd.to_datetime(data.index)
-                print(f"Index after datetime conversion: {data.index}")
-                
-                # Sort by date
-                data = data.sort_index()
             
-            # Calculate technical indicators again (on clean data)
-            data = self.calculate_technical_indicators(data)
-            print("Technical indicators calculated successfully.")
-            print("DataFrame with technical indicators:")
-            print(data.head())
+            # Select and handle features
+            df = data[self.features].ffill().bfill().fillna(0)
+            scaled_data = self.scaler.fit_transform(df)
             
-            # Remove non-numeric columns
-            numeric_cols = data.select_dtypes(include=['int64', 'float64']).columns
-            data = data[numeric_cols]
+            # Find the index of 'close' in features
+            close_idx = self.features.index('close')
+            print(f"Using 'close' price at index {close_idx}")
             
-            # Handle any remaining NaN values
-            data = data.fillna(method='ffill').fillna(method='bfill').fillna(0)
-            
-            # Normalize the data
-            scaler = MinMaxScaler(feature_range=(0, 1))
-            scaled_data = scaler.fit_transform(data)
-            self.scaler = scaler
-            
-            # Create sequences for LSTM
             X, y = [], []
-            for i in range(len(scaled_data) - sequence_length):
-                X.append(scaled_data[i:i + sequence_length])
-                y.append(scaled_data[i + sequence_length, data.columns.get_loc('close')])
-            
+            for i in range(len(scaled_data) - self.sequence_length):
+                X.append(scaled_data[i:i + self.sequence_length])
+                y.append(scaled_data[i + self.sequence_length, close_idx])
             X, y = np.array(X), np.array(y)
             
-            # Split into training and validation sets
             train_size = int(len(X) * 0.8)
             X_train, X_val = X[:train_size], X[train_size:]
             y_train, y_val = y[:train_size], y[train_size:]
             
             print(f"Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
-            print(f"Feature shape: X_train={X_train.shape}, X_val={X_val.shape}")
-            
             return X_train, X_val, y_train, y_val
         except Exception as e:
             print(f"Error preparing training data: {e}")
@@ -264,41 +249,22 @@ class DataAdapter:
             print(f"Initial DataFrame shape: {data.shape}")
             print(f"DataFrame columns: {list(data.columns)}")
             
-            # Calculate technical indicators
-            df = self.calculate_technical_indicators(data.copy())
-            
             # Important: Save the original scaler feature names
             if hasattr(self, 'scaler') and hasattr(self.scaler, 'feature_names_in_'):
                 print(f"Scaler was fitted with these features: {self.scaler.feature_names_in_}")
                 feature_columns = list(self.scaler.feature_names_in_)
             else:
-                # Fall back to default feature columns
-                feature_columns = ['open', 'high', 'low', 'close', 'volume', 'MA20', 'ma50', 'rsi', 'macd', 'prediction']
-            
-            # Check if MA20 exists in dataframe (case matters!)
-            if 'MA20' in df.columns:
-                # If we need ma20 (lowercase) and only have MA20, create it
-                if 'MA20' in feature_columns and 'ma20' not in df.columns:
-                    df['ma20'] = df['MA20']
-            elif 'ma20' in df.columns:
-                # If we need MA20 (uppercase) and only have ma20, create it
-                if 'MA20' in feature_columns and 'MA20' not in df.columns:
-                    df['MA20'] = df['ma20']
-                
-            # Do the same for ma50/MA50
-            if 'MA50' in df.columns and 'ma50' not in df.columns:
-                df['ma50'] = df['MA50']
-            elif 'ma50' in df.columns and 'MA50' not in df.columns:
-                df['MA50'] = df['ma50']
+                # Use only the basic features that are always available
+                feature_columns = ['open', 'high', 'low', 'close', 'volume']
             
             # Ensure all required columns exist
             for col in feature_columns:
-                if col not in df.columns:
+                if col not in data.columns:
                     print(f"Adding missing column: {col}")
-                    df[col] = 0  # Add missing columns with default values
+                    data[col] = 0  # Add missing columns with default values
             
             # Select only the necessary features in the same order as during training
-            df = df[feature_columns]
+            df = data[feature_columns]
             
             print(f"Final prediction features: {list(df.columns)}")
             
@@ -315,21 +281,21 @@ class DataAdapter:
             
             # Create sequences for LSTM (same window size as training)
             X_samples = []
-            for i in range(df_scaled.shape[0] - 9):
-                X_samples.append(df_scaled.values[i:i+10])
+            for i in range(df_scaled.shape[0] - self.sequence_length):
+                X_samples.append(df_scaled.values[i:i+self.sequence_length])
             
             if not X_samples:
                 print("Warning: Not enough data points for a prediction window")
                 # If we don't have enough data for a full window, use what we have
                 if df_scaled.shape[0] > 0:
                     # Pad with zeros if needed
-                    pad_size = 10 - df_scaled.shape[0]
+                    pad_size = self.sequence_length - df_scaled.shape[0]
                     if pad_size > 0:
                         padding = np.zeros((pad_size, df_scaled.shape[1]))
                         padded_data = np.vstack((padding, df_scaled.values))
                     else:
                         padded_data = df_scaled.values
-                    X_samples.append(padded_data[-10:])
+                    X_samples.append(padded_data[-self.sequence_length:])
             
             if X_samples:
                 prediction_data = np.array(X_samples)
@@ -426,10 +392,10 @@ class StockAIAgent:
             print("\nInitializing AI Agent...")
             self.model = None
             self.sequence_length = 60  # Number of time steps to look back
-            self.features = ['Open', 'High', 'Low', 'Close', 'Volume', 'RSI']
+            self.features = ['open', 'high', 'low', 'close', 'volume']
             self.data_adapter = DataAdapter(
                 sequence_length=self.sequence_length,
-                features=['open', 'high', 'low', 'close', 'volume', 'rsi', 'ma20', 'ma50', 'macd']
+                features=self.features
             )
             self.scaler = MinMaxScaler(feature_range=(0, 1))
             print("AI Agent initialized successfully")
@@ -486,20 +452,21 @@ class StockAIAgent:
             print("\nPreparing data for LSTM...")
             
             # Ensure all required features are present
-            missing_features = [f for f in self.features if f not in df.columns]
+            required_features = ['open', 'high', 'low', 'close', 'volume']
+            missing_features = [f for f in required_features if f not in df.columns]
             if missing_features:
                 raise ValueError(f"Missing required features: {missing_features}")
             
             # Scale features
             print("Scaling features...")
-            data = self.scaler.fit_transform(df[self.features])
+            data = self.scaler.fit_transform(df[required_features])
             
             # Create sequences
             print("Creating sequences...")
             X, y = [], []
             for i in range(len(data) - self.sequence_length):
                 X.append(data[i:(i + self.sequence_length)])
-                y.append(data[i + self.sequence_length, 3])  # 3 is Close price index
+                y.append(data[i + self.sequence_length, required_features.index('close')])  # Use index of 'close'
             
             X = np.array(X)
             y = np.array(y)
@@ -1215,6 +1182,7 @@ def initialize_control_panel(main_frame, databases):
                 return databases
             except Exception as e:
                 print(f"Error refreshing database list: {str(e)}")
+                traceback.print_exc()
                 return []
 
         def on_database_selected(event=None):
@@ -1486,44 +1454,56 @@ def initialize_control_panel(main_frame, databases):
             print(f"Selected Table: {table_name}")
             print(f"Selected Ticker: {ticker}")
             
-            # Simulate model training for demonstration
-            import tensorflow as tf
-            from tensorflow.keras.models import Sequential
-            from tensorflow.keras.layers import LSTM, Dense, Dropout
-            from tensorflow.keras.optimizers import Adam
-            import pickle
-            import os
+            # Connect to database
+            conn = None
+            try:
+                # Try DuckDB first
+                import duckdb
+                conn = duckdb.connect(db_name)
+                print("Connected using DuckDB")
+                output_text.insert("end", "Connected using DuckDB\n")
+            except:
+                # Fall back to SQLite
+                import sqlite3
+                conn = sqlite3.connect(db_name)
+                print("Connected using SQLite")
+                output_text.insert("end", "Connected using SQLite\n")
             
-            # Create models directory if it doesn't exist
-            os.makedirs("models", exist_ok=True)
+            # Query data
+            query = f"SELECT * FROM {table_name} WHERE ticker = ? ORDER BY date"
+            df = pd.read_sql_query(query, conn, params=(ticker,))
             
-            # Create a simple model
-            model = Sequential()
-            model.add(LSTM(50, return_sequences=True, input_shape=(10, 1)))
-            model.add(LSTM(50, return_sequences=False))
-            model.add(Dense(25))
-            model.add(Dense(1))
+            # Close connection
+            conn.close()
             
-            # Compile model
-            model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+            # Check if data is available
+            if df.empty:
+                error_msg = f"No data available for {ticker}"
+                print(error_msg)
+                status_var.set(error_msg)
+                output_text.insert("end", f"Error: {error_msg}\n")
+                return
             
-            # Save model and scaler
-            model.save(f"models/{ticker}_model.h5")
+            # Create StockAIAgent instance
+            agent = StockAIAgent()
             
-            # Create a dummy scaler for demonstration
-            from sklearn.preprocessing import MinMaxScaler
-            scaler = MinMaxScaler(feature_range=(0, 1))
-            with open(f"models/{ticker}_scaler.pkl", 'wb') as f:
-                pickle.dump(scaler, f)
+            # Train the model
+            history = agent.train(df, epochs=50, batch_size=32)
             
-            # Update global variables
-            trained_model = model
-            trained_scaler = scaler
-            
-            # Update status
-            status_var.set("Model built and saved successfully")
-            output_text.insert("end", "Model built and saved successfully\n")
-            print("Model built and saved successfully")
+            if history is not None:
+                # Update global variables
+                trained_model = agent.model
+                trained_scaler = agent.scaler
+                
+                # Update status
+                status_var.set("Model trained successfully")
+                output_text.insert("end", "Model trained successfully\n")
+                print("Model trained successfully")
+            else:
+                error_msg = "Model training failed"
+                print(error_msg)
+                status_var.set(error_msg)
+                output_text.insert("end", f"Error: {error_msg}\n")
 
         def make_prediction_handler():
             """Handle prediction button click"""
@@ -2374,28 +2354,60 @@ def get_duckdb_tables(conn):
 def get_table_columns(conn, table_name):
     """Get columns for a specific table"""
     try:
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT * FROM {table_name} LIMIT 1")
-        columns = [col[0] for col in cursor.description]
-        print(f"Available columns in DuckDB: {columns}")
-        return columns
+        # Try DuckDB first
+        try:
+            import duckdb
+            if isinstance(conn, duckdb.DuckDBPyConnection):
+                cursor = conn.cursor()
+                cursor.execute(f"DESCRIBE {table_name}")
+                return [col[0] for col in cursor.fetchall()]
+        except ImportError:
+            pass
+        
+        # Fall back to SQLite
+        import sqlite3
+        if isinstance(conn, sqlite3.Connection):
+            cursor = conn.cursor()
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            return [col[1] for col in cursor.fetchall()]
+        
+        print("Unsupported database type")
+        return []
+            
     except Exception as e:
         print(f"Error getting table columns: {str(e)}")
+        traceback.print_exc()
         return []
 
 def get_unique_tickers(conn, table_name):
     """Get unique tickers for a specific table"""
     try:
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT DISTINCT ticker FROM {table_name} ORDER BY ticker")
-        tickers = [row[0] for row in cursor.fetchall()]
-        print(f"Found {len(tickers)} tickers")
-        return tickers
+        # Try DuckDB first
+        try:
+            import duckdb
+            if isinstance(conn, duckdb.DuckDBPyConnection):
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT DISTINCT ticker FROM {table_name} ORDER BY ticker")
+                return [row[0] for row in cursor.fetchall()]
+        except ImportError:
+            pass
+        
+        # Fall back to SQLite
+        import sqlite3
+        if isinstance(conn, sqlite3.Connection):
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT DISTINCT ticker FROM {table_name} ORDER BY ticker")
+            return [row[0] for row in cursor.fetchall()]
+        
+        print("Unsupported database type")
+        return []
+            
     except Exception as e:
         print(f"Error getting unique tickers: {str(e)}")
+        traceback.print_exc()
         return []
 
-def refresh_database_list(db_var):
+def refresh_database_list(db_var, db_combo):
     """Refresh the list of databases"""
     try:
         print("Refreshing database list...")
@@ -2407,24 +2419,15 @@ def refresh_database_list(db_var):
         print(f"Found databases: {databases}")
         
         # Update combobox values
-        parent = db_var.winfo_toplevel()
-        combobox = None
-        
-        # Find the combobox that uses this variable
-        for widget in parent.winfo_children():
-            if isinstance(widget, ttk.Combobox) and widget.cget("textvariable") == str(db_var):
-                combobox = widget
-                break
-        
-        if combobox:
-            combobox["values"] = databases
-            if databases and databases[0]:
-                db_var.set(databases[0])
+        db_combo["values"] = databases
+        if databases and databases[0]:
+            db_var.set(databases[0])
         
         print("Database list refreshed")
         return databases
     except Exception as e:
         print(f"Error refreshing database list: {str(e)}")
+        traceback.print_exc()
         return []
 
 def refresh_table_list(table_var, tables):
