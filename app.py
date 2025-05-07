@@ -1,17 +1,24 @@
 import sys
+import time
 import logging
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QLabel, QComboBox, QListWidget, 
                             QPushButton, QLineEdit, QMessageBox, QProgressBar,
                             QListWidgetItem, QFileDialog, QGroupBox, QDateEdit,
                             QCheckBox, QRadioButton, QSpinBox, QTextEdit, QDockWidget,
-                            QTableWidget, QTableWidgetItem)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDate
+                            QTableWidget, QTableWidgetItem, QScrollArea, QInputDialog)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDate, QTimer
 from src.data.ticker_manager import TickerManager
 from datetime import datetime
 import os
 import functools
 import pandas_datareader.data as web
+import time
+import queue
+import requests
+import pandas as pd
+from src.data.twelvedata_downloader import TwelveDataDownloader
+from bs4 import BeautifulSoup
 
 # Set up logging for the root logger - will be captured by GUI log handler
 logging.basicConfig(
@@ -186,6 +193,147 @@ class DataDownloadWorker(QThread):
             logger.error(f"Error in download worker: {e}")
             self.error.emit(str(e))
 
+class BatchDownloadWorker(QThread):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(int, str)
+    error = pyqtSignal(str)
+
+    def __init__(self, api_key, category, ticker_manager, interval, start_date, end_date, cache_dir=None):
+        super().__init__()
+        self.api_key = api_key
+        self.category = category
+        self.ticker_manager = ticker_manager
+        self.interval = interval
+        self.start_date = start_date
+        self.end_date = end_date
+        self.cache_dir = cache_dir
+
+    def run(self):
+        try:
+            downloader = TwelveDataDownloader(self.api_key)
+            symbols = self.ticker_manager.tickers.get(self.category, [])
+            total = len(symbols)
+            if not symbols:
+                self.error.emit(f"No symbols found for category '{self.category}'")
+                return
+            # Warn if 1min/5min/15min/30min/45min and >7 days
+            if self.interval in ["1min", "5min", "15min", "30min", "45min"]:
+                dt1 = datetime.strptime(self.start_date, "%Y-%m-%d")
+                dt2 = datetime.strptime(self.end_date, "%Y-%m-%d")
+                days = (dt2 - dt1).days
+                if days > 7:
+                    self.error.emit(f"Twelve Data free tier only allows a few days of 1-minute data. You requested {days} days. Reduce the date range or use a lower granularity.")
+                    return
+            # Run batch download, emit progress
+            BATCH_SIZE = 8
+            all_data = {}
+            for i in range(0, total, BATCH_SIZE):
+                batch = symbols[i:i+BATCH_SIZE]
+                self.progress.emit(i, f"Downloading batch {i//BATCH_SIZE+1} of {(total+BATCH_SIZE-1)//BATCH_SIZE} ({len(batch)} symbols)")
+                result = downloader.batch_download_category_to_cache(
+                    category=self.category,
+                    ticker_manager=self.ticker_manager,
+                    interval=self.interval,
+                    start_date=self.start_date,
+                    end_date=self.end_date,
+                    cache_dir=self.cache_dir,
+                    verbose=False
+                )
+                all_data.update(result)
+            self.finished.emit(len(all_data), f"Downloaded and cached data for {len(all_data)} symbols in category '{self.category}'.")
+        except Exception as e:
+            self.error.emit(str(e))
+
+class ScheduledBatchDownloadWorker(QThread):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(int, str)
+    error = pyqtSignal(str)
+    quota_update = pyqtSignal(str)
+
+    def __init__(self, provider, api_key, category, ticker_manager, interval, start_date, end_date, batch_size, total_hours, start_time=None):
+        super().__init__()
+        self.provider = provider
+        self.api_key = api_key
+        self.category = category
+        self.ticker_manager = ticker_manager
+        self.interval = interval
+        self.start_date = start_date
+        self.end_date = end_date
+        self.batch_size = batch_size
+        self.total_hours = total_hours
+        self.start_time = start_time
+
+    def run(self):
+        try:
+            symbols = self.ticker_manager.tickers.get(self.category, [])
+            total = len(symbols)
+            if not symbols:
+                self.error.emit(f"No symbols found for category '{self.category}'")
+                return
+            num_batches = (total + self.batch_size - 1) // self.batch_size
+            interval_seconds = self.total_hours * 3600 / num_batches
+            if self.start_time is None:
+                start_time = datetime.datetime.utcnow()
+            else:
+                start_time = self.start_time
+            for i in range(num_batches):
+                now = datetime.datetime.utcnow()
+                scheduled_time = start_time + datetime.timedelta(seconds=i * interval_seconds)
+                wait_seconds = (scheduled_time - now).total_seconds()
+                if wait_seconds > 0:
+                    self.progress.emit(i, f"Waiting {wait_seconds/60:.2f} minutes for next batch...")
+                    time.sleep(wait_seconds)
+                batch = symbols[i*self.batch_size:(i+1)*self.batch_size]
+                self.progress.emit(i, f"Downloading batch {i+1}/{num_batches} ({len(batch)} symbols) at {datetime.datetime.utcnow().strftime('%H:%M UTC')}")
+                try:
+                    if self.provider == 'twelvedata':
+                        from src.data.twelvedata_downloader import TwelveDataDownloader
+                        downloader = TwelveDataDownloader(self.api_key)
+                        temp_category = '__temp_batch__'
+                        self.ticker_manager.tickers[temp_category] = batch
+                        downloader.batch_download_category_to_cache(
+                            category=temp_category,
+                            ticker_manager=self.ticker_manager,
+                            interval=self.interval,
+                            start_date=self.start_date,
+                            end_date=self.end_date,
+                            cache_dir=None,
+                            batch_size=self.batch_size,
+                            verbose=False
+                        )
+                        del self.ticker_manager.tickers[temp_category]
+                    elif self.provider == 'yfinance':
+                        # Use TickerManager's get_historical_data for yfinance
+                        data = self.ticker_manager.get_historical_data(
+                            batch,
+                            self.start_date,
+                            self.end_date,
+                            interval=self.interval,
+                            data_source='yfinance',
+                            download_mode='sequential',
+                            clean_data=True
+                        )
+                        # Save each DataFrame to cache
+                        cache_dir = getattr(self.ticker_manager, 'cache_dir', None)
+                        if cache_dir:
+                            for ticker, df in data.items():
+                                if df is not None and not df.empty:
+                                    cache_file = cache_dir / f"{ticker}_{self.start_date}_{self.end_date}_{self.interval}_yfinance.csv"
+                                    df.to_csv(cache_file)
+                    elif self.provider == 'tiingo':
+                        self.progress.emit(i, "Tiingo batch download not yet implemented.")
+                    elif self.provider == 'alphavantage':
+                        self.progress.emit(i, "Alpha Vantage batch download not yet implemented.")
+                    else:
+                        self.progress.emit(i, f"Batch download not supported for provider: {self.provider}")
+                    self.quota_update.emit("update")
+                except Exception as e:
+                    self.error.emit(str(e))
+                    return
+            self.finished.emit(total, f"Scheduled batch download complete for {total} symbols in category '{self.category}'.")
+        except Exception as e:
+            self.error.emit(str(e))
+
 class StockGUI(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -196,6 +344,12 @@ class StockGUI(QMainWindow):
         self.selected_tickers = set()
         self.current_data = {}
         self.data_source = 'yfinance'
+        self.log_queue = queue.Queue()
+        self.provenance = {}  # {ticker: {'origin': ..., 'destination': ..., 'filesize': None}}
+        # Set up a timer to poll the queue and update the log
+        self.log_timer = QTimer()
+        self.log_timer.timeout.connect(self.process_log_queue)
+        self.log_timer.start(100)  # Check every 100 ms
         self.init_ui()
         self.setup_log_display()
         self.resize(1200, 800)           # Initial size
@@ -235,20 +389,152 @@ class StockGUI(QMainWindow):
         data_source_layout = QHBoxLayout()
         self.yfinance_radio = QRadioButton('yfinance')
         self.pdr_radio = QRadioButton('pandas_datareader')
+        self.twelvedata_radio = QRadioButton('Twelve Data')
+        self.alphavantage_radio = QRadioButton('Alpha Vantage')
+        self.stooq_radio = QRadioButton('Stooq')
         self.yfinance_radio.setChecked(True)
         data_source_layout.addWidget(self.yfinance_radio)
         data_source_layout.addWidget(self.pdr_radio)
+        data_source_layout.addWidget(self.twelvedata_radio)
+        data_source_layout.addWidget(self.alphavantage_radio)
+        data_source_layout.addWidget(self.stooq_radio)
+
+        # Sub-source combo for pandas_datareader
         self.pdr_source_combo = QComboBox()
-        self.pdr_source_combo.addItems(['stooq', 'av', 'fred'])  # Add more as needed
+        self.pdr_source_combo.addItems(['stooq', 'av', 'fred', 'tiingo'])
         self.pdr_source_combo.setVisible(False)
         data_source_layout.addWidget(self.pdr_source_combo)
+
+        # Stooq API Key input (for consistency/future use)
+        self.stooq_api_label = QLabel('Stooq API Key:')
+        self.stooq_api_input = QLineEdit()
+        self.stooq_api_input.setPlaceholderText('Enter your Stooq API Key (not required)')
+        self.stooq_api_label.setVisible(False)
+        self.stooq_api_input.setVisible(False)
+        data_source_layout.addWidget(self.stooq_api_label)
+        data_source_layout.addWidget(self.stooq_api_input)
+
+        # Tiingo API Key input
+        self.tiingo_api_label = QLabel('Tiingo API Key:')
+        self.tiingo_api_input = QLineEdit()
+        self.tiingo_api_input.setPlaceholderText('Enter your Tiingo API Key')
+        self.tiingo_api_label.setVisible(False)
+        self.tiingo_api_input.setVisible(False)
+        data_source_layout.addWidget(self.tiingo_api_label)
+        data_source_layout.addWidget(self.tiingo_api_input)
+
+        # Twelve Data API Key input
+        self.twelvedata_api_label = QLabel('Twelve Data API Key:')
+        self.twelvedata_api_input = QLineEdit()
+        self.twelvedata_api_input.setPlaceholderText('Enter your Twelve Data API Key')
+        self.twelvedata_api_label.setVisible(False)
+        self.twelvedata_api_input.setVisible(False)
+        data_source_layout.addWidget(self.twelvedata_api_label)
+        data_source_layout.addWidget(self.twelvedata_api_input)
+
+        # Alpha Vantage API Key input
+        self.alphavantage_api_label = QLabel('Alpha Vantage API Key:')
+        self.alphavantage_api_input = QLineEdit()
+        self.alphavantage_api_input.setPlaceholderText('Enter your Alpha Vantage API Key')
+        self.alphavantage_api_label.setVisible(False)
+        self.alphavantage_api_input.setVisible(False)
+        data_source_layout.addWidget(self.alphavantage_api_label)
+        data_source_layout.addWidget(self.alphavantage_api_input)
+
         data_source_group.setLayout(data_source_layout)
-        layout.addWidget(data_source_group)
+        # Make scrollable
+        data_source_scroll = QScrollArea()
+        data_source_scroll.setWidgetResizable(True)
+        data_source_scroll.setWidget(data_source_group)
+        data_source_scroll.setStyleSheet('background-color: #222; color: #fff;')
+        data_source_group.setStyleSheet('color: #fff; background-color: #222;')
+        layout.addWidget(data_source_scroll)
         self.yfinance_radio.toggled.connect(lambda: self.set_data_source('yfinance'))
         self.pdr_radio.toggled.connect(lambda: self.set_data_source('pandas_datareader'))
+        self.twelvedata_radio.toggled.connect(lambda: self.set_data_source('twelvedata'))
+        self.alphavantage_radio.toggled.connect(lambda: self.set_data_source('alphavantage'))
+        self.stooq_radio.toggled.connect(lambda: self.set_data_source('stooq'))
 
         # Show/hide the sub-source combo based on selection
         self.pdr_radio.toggled.connect(lambda checked: self.pdr_source_combo.setVisible(checked))
+
+        # Show/hide the Tiingo, Twelve Data, and Alpha Vantage API key input based on selection
+        def handle_pdr_sub_source_change(text):
+            if text == 'tiingo':
+                self.tiingo_api_label.setVisible(True)
+                self.tiingo_api_input.setVisible(True)
+                self.twelvedata_api_label.setVisible(False)
+                self.twelvedata_api_input.setVisible(False)
+                self.alphavantage_api_label.setVisible(False)
+                self.alphavantage_api_input.setVisible(False)
+                self.stooq_api_label.setVisible(False)
+                self.stooq_api_input.setVisible(False)
+                self.download_mode_combo.setCurrentText('sequential')
+                self.download_mode_combo.setEnabled(False)
+            elif text == 'twelvedata':
+                self.tiingo_api_label.setVisible(False)
+                self.tiingo_api_input.setVisible(False)
+                self.twelvedata_api_label.setVisible(True)
+                self.twelvedata_api_input.setVisible(True)
+                self.alphavantage_api_label.setVisible(False)
+                self.alphavantage_api_input.setVisible(False)
+                self.stooq_api_label.setVisible(False)
+                self.stooq_api_input.setVisible(False)
+                self.download_mode_combo.setCurrentText('sequential')
+                self.download_mode_combo.setEnabled(False)
+            elif text == 'stooq':
+                self.tiingo_api_label.setVisible(False)
+                self.tiingo_api_input.setVisible(False)
+                self.twelvedata_api_label.setVisible(False)
+                self.twelvedata_api_input.setVisible(False)
+                self.alphavantage_api_label.setVisible(False)
+                self.alphavantage_api_input.setVisible(False)
+                self.stooq_api_label.setVisible(True)
+                self.stooq_api_input.setVisible(True)
+                self.download_mode_combo.setEnabled(True)
+            else:
+                self.tiingo_api_label.setVisible(False)
+                self.tiingo_api_input.setVisible(False)
+                self.twelvedata_api_label.setVisible(False)
+                self.twelvedata_api_input.setVisible(False)
+                self.alphavantage_api_label.setVisible(False)
+                self.alphavantage_api_input.setVisible(False)
+                self.stooq_api_label.setVisible(False)
+                self.stooq_api_input.setVisible(False)
+                self.download_mode_combo.setEnabled(True)
+        self.pdr_source_combo.currentTextChanged.connect(handle_pdr_sub_source_change)
+
+        # Show/hide API key fields for top-level selections
+        self.twelvedata_radio.toggled.connect(
+            lambda checked: (
+                self.twelvedata_api_label.setVisible(checked),
+                self.twelvedata_api_input.setVisible(checked),
+                self.pdr_source_combo.setVisible(False),
+                self.tiingo_api_label.setVisible(False),
+                self.tiingo_api_input.setVisible(False),
+                self.alphavantage_api_label.setVisible(False),
+                self.alphavantage_api_input.setVisible(False),
+                self.stooq_api_label.setVisible(False),
+                self.stooq_api_input.setVisible(False),
+                self.download_mode_combo.setCurrentText('sequential'),
+                self.download_mode_combo.setEnabled(False)
+            )
+        )
+        self.alphavantage_radio.toggled.connect(
+            lambda checked: (
+                self.alphavantage_api_label.setVisible(checked),
+                self.alphavantage_api_input.setVisible(checked),
+                self.pdr_source_combo.setVisible(False),
+                self.tiingo_api_label.setVisible(False),
+                self.tiingo_api_input.setVisible(False),
+                self.twelvedata_api_label.setVisible(False),
+                self.twelvedata_api_input.setVisible(False),
+                self.stooq_api_label.setVisible(False),
+                self.stooq_api_input.setVisible(False),
+                self.download_mode_combo.setCurrentText('sequential'),
+                self.download_mode_combo.setEnabled(False)
+            )
+        )
 
         # --- Top Controls (Category/Search) ---
         top_controls = QHBoxLayout()
@@ -258,6 +544,29 @@ class StockGUI(QMainWindow):
         self.category_combo.currentTextChanged.connect(self.update_ticker_list)
         top_controls.addWidget(category_label)
         top_controls.addWidget(self.category_combo)
+        
+        # Add Instruments button
+        self.add_instruments_btn = QPushButton('Add Instruments')
+        self.add_instruments_btn.clicked.connect(self.add_instruments_categories)
+        top_controls.addWidget(self.add_instruments_btn)
+
+        # Add button to fetch Stooq tickers in top controls
+        self.add_stooq_btn = QPushButton('Add Stooq Tickers')
+        self.add_stooq_btn.clicked.connect(self.fetch_and_add_stooq_tickers)
+        top_controls.addWidget(self.add_stooq_btn)
+
+        # Add button to open and process CSV files from hard drive
+        self.open_csv_btn = QPushButton('Open CSV Files')
+        self.open_csv_btn.setToolTip('Open and process one or more CSV/TXT files from your hard drive')
+        self.open_csv_btn.clicked.connect(self.open_and_process_csv_files)
+        top_controls.addWidget(self.open_csv_btn)
+
+        # Add button to bulk load directory
+        self.bulk_load_btn = QPushButton('Bulk Load Directory')
+        self.bulk_load_btn.setToolTip('Recursively load all CSV/TXT files from a directory')
+        self.bulk_load_btn.clicked.connect(self.bulk_load_directory)
+        top_controls.addWidget(self.bulk_load_btn)
+
         search_label = QLabel('Search:')
         self.search_box = QLineEdit()
         self.search_box.textChanged.connect(self.filter_tickers)
@@ -318,7 +627,13 @@ class StockGUI(QMainWindow):
         date_layout.addLayout(interval_layout)
         
         date_group.setLayout(date_layout)
-        right_layout.addWidget(date_group)
+        # Make scrollable
+        date_scroll = QScrollArea()
+        date_scroll.setWidgetResizable(True)
+        date_scroll.setWidget(date_group)
+        date_scroll.setStyleSheet('background-color: #222; color: #fff;')
+        date_group.setStyleSheet('color: #fff; background-color: #222;')
+        right_layout.addWidget(date_scroll)
 
         # Download mode selector
         download_mode_layout = QHBoxLayout()
@@ -348,19 +663,51 @@ class StockGUI(QMainWindow):
         processing_layout.addWidget(self.async_radio)
         processing_layout.addWidget(self.batch_radio)
         
-        # Add batch size selector
+        # Add batch size selector (greyscale, smaller font for two-digit values)
         batch_size_layout = QHBoxLayout()
         batch_size_label = QLabel("Batch Size:")
+        batch_size_label.setStyleSheet('''
+            QLabel {
+                font-size: 10px;
+                font-weight: bold;
+                padding: 4px 8px;
+                margin-right: 8px;
+                background-color: #f5f5f5;
+                border: 2px solid #757575;
+                border-radius: 6px;
+                color: #212121;
+            }
+        ''')
         self.batch_size_spin = QSpinBox()
         self.batch_size_spin.setRange(1, 10)
         self.batch_size_spin.setValue(3)
         self.batch_size_spin.setEnabled(False)  # Disabled by default
+        self.batch_size_spin.setMinimumWidth(40)
+        self.batch_size_spin.setMinimumHeight(24)
+        self.batch_size_spin.setStyleSheet('''
+            QSpinBox {
+                font-size: 10px;
+                font-weight: bold;
+                padding: 4px 8px;
+                margin-left: 8px;
+                background-color: #fafafa;
+                border: 2px solid #757575;
+                border-radius: 6px;
+                color: #212121;
+            }
+        ''')
         batch_size_layout.addWidget(batch_size_label)
         batch_size_layout.addWidget(self.batch_size_spin)
         processing_layout.addLayout(batch_size_layout)
         
         processing_group.setLayout(processing_layout)
-        right_layout.addWidget(processing_group)
+        # Make scrollable
+        processing_scroll = QScrollArea()
+        processing_scroll.setWidgetResizable(True)
+        processing_scroll.setWidget(processing_group)
+        processing_scroll.setStyleSheet('background-color: #222; color: #fff;')
+        processing_group.setStyleSheet('color: #fff; background-color: #222;')
+        right_layout.addWidget(processing_scroll)
 
         # Data Cleaning Options
         cleaning_group = QGroupBox("Data Cleaning Options")
@@ -381,7 +728,13 @@ class StockGUI(QMainWindow):
             cleaning_layout.addWidget(checkbox)
         
         cleaning_group.setLayout(cleaning_layout)
-        right_layout.addWidget(cleaning_group)
+        # Make scrollable
+        cleaning_scroll = QScrollArea()
+        cleaning_scroll.setWidgetResizable(True)
+        cleaning_scroll.setWidget(cleaning_group)
+        cleaning_scroll.setStyleSheet('background-color: #222; color: #fff;')
+        cleaning_group.setStyleSheet('color: #fff; background-color: #222;')
+        right_layout.addWidget(cleaning_scroll)
 
         # Download button
         self.download_btn = QPushButton('Download Data')
@@ -421,6 +774,32 @@ class StockGUI(QMainWindow):
         right_layout.addWidget(QLabel('Live Data Preview:'))
         right_layout.addWidget(self.data_table)
 
+        # Batch Download button (smaller width, font fits button)
+        self.batch_download_btn = QPushButton('Batch Download Category to Cache')
+        self.batch_download_btn.clicked.connect(self.batch_download_category_to_cache_gui)
+        self.batch_download_btn.setFixedWidth(220)
+        self.batch_download_btn.setStyleSheet('''
+            QPushButton {
+                font-size: 10px;
+                font-weight: bold;
+                color: #000000;
+                background-color: #e0e0e0;
+                border: 2px solid #757575;
+                border-radius: 8px;
+                padding: 8px 8px;
+                margin: 10px 0px;
+            }
+            QPushButton:hover, QPushButton:focus {
+                background-color: #bdbdbd;
+                color: #000000;
+            }
+        ''')
+        right_layout.addWidget(self.batch_download_btn)
+
+        self.scheduled_batch_btn = QPushButton('Scheduled Batch Download (23h)')
+        self.scheduled_batch_btn.clicked.connect(self.scheduled_batch_download_gui)
+        right_layout.addWidget(self.scheduled_batch_btn)
+
         content_layout.addWidget(right_panel)
         layout.addLayout(content_layout)
 
@@ -431,6 +810,13 @@ class StockGUI(QMainWindow):
         self.pdr_source_combo.currentTextChanged.connect(
             lambda text: setattr(self, 'pdr_sub_source', text)
         )
+
+        # Update download mode combo based on data source
+        if self.data_source == 'pandas_datareader' and getattr(self, 'pdr_sub_source', None) == 'tiingo':
+            self.download_mode_combo.setCurrentText('sequential')
+            self.download_mode_combo.setEnabled(False)
+        else:
+            self.download_mode_combo.setEnabled(True)
 
     def setup_log_display(self):
         """Set up log display as a dock widget"""
@@ -558,23 +944,46 @@ class StockGUI(QMainWindow):
         elif source == 'pandas_datareader' and self.pdr_radio.isChecked():
             self.data_source = 'pandas_datareader'
             self.pdr_sub_source = self.pdr_source_combo.currentText()
+        elif source == 'twelvedata' and self.twelvedata_radio.isChecked():
+            self.data_source = 'twelvedata'
+            self.pdr_sub_source = None
+        elif source == 'alphavantage' and self.alphavantage_radio.isChecked():
+            self.data_source = 'alphavantage'
+            self.pdr_sub_source = None
+        elif source == 'stooq' and self.stooq_radio.isChecked():
+            self.data_source = 'stooq'
+            self.pdr_sub_source = None
+        if self.data_source == 'twelvedata':
+            api_key = self.twelvedata_api_input.text().strip()
+            if api_key:
+                os.environ['TWELVEDATA_API_KEY'] = api_key
 
     def download_data(self):
         if not self.selected_tickers:
-            QMessageBox.warning(self, "Warning", "Please select at least one ticker")
+            QMessageBox.warning(
+                self,
+                'No Ticker Selected',
+                'Please select at least one ticker before downloading data.'
+            )
             return
         if not self.ticker_manager:
-            QMessageBox.warning(self, "Warning", "Please apply database settings first.")
+            QMessageBox.warning(
+                self,
+                'Database Not Set',
+                'Please apply database settings first before downloading data.'
+            )
             return
+
+        # --- Set Tiingo API key if needed ---
+        if self.data_source == 'pandas_datareader' and getattr(self, 'pdr_sub_source', None) == 'tiingo':
+            api_key = self.tiingo_api_input.text().strip()
+            if api_key:
+                os.environ['TIINGO_API_KEY'] = api_key
 
         try:
             # Get date range from date pickers
             start_date = self.start_date.date().toString('yyyy-MM-dd')
             end_date = self.end_date.date().toString('yyyy-MM-dd')
-
-            # Get download mode and interval
-            download_mode = self.download_mode_combo.currentText()
-            interval = self.interval_combo.currentText()
 
             # Get processing mode
             if self.sequential_radio.isChecked():
@@ -600,7 +1009,7 @@ class StockGUI(QMainWindow):
             # Show progress bar
             self.progress_bar.setVisible(True)
             self.progress_bar.setRange(0, len(self.selected_tickers))
-            status_text = f"Downloading data using {download_mode} mode with {interval} interval"
+            status_text = f"Downloading data using {processing_mode} mode with {self.interval_combo.currentText()} interval"
             if processing_mode == 'batch':
                 status_text += f" (Batch size: {batch_size})"
             self.status_label.setText(status_text)
@@ -612,25 +1021,33 @@ class StockGUI(QMainWindow):
                 list(self.selected_tickers),
                 start_date,
                 end_date,
-                download_mode,
+                processing_mode,
                 cleaning_options,
-                interval,
+                self.interval_combo.currentText(),
                 processing_mode,
                 batch_size if processing_mode == 'batch' else None,
                 self.data_source,
                 getattr(self, 'pdr_sub_source', None)
             )
-            self.worker.finished.connect(self.on_download_finished)
-            self.worker.error.connect(self.on_download_error)
+            self.worker.error.connect(self.log_message)
+            self.worker.finished.connect(self.log_message)
             self.worker.progress.connect(self.update_progress)
             self.worker.ticker_data.connect(self.on_ticker_data)
             self.data_table.setRowCount(0)
             self.data_table.setColumnCount(0)
             self.worker.start()
 
+            # Track provenance for API downloads
+            for ticker in self.selected_tickers:
+                origin_str = f"API: {self.data_source} ({ticker})"
+                self.provenance[ticker] = {'origin': origin_str, 'destination': None, 'filesize': None}
+
         except Exception as e:
             logger.error(f"Error starting download: {e}")
             QMessageBox.critical(self, "Error", f"Failed to start download: {str(e)}")
+
+    def log_message(self, msg):
+        self.log_text.append(str(msg))
 
     def on_download_finished(self, data):
         """Handle successful data download"""
@@ -640,6 +1057,7 @@ class StockGUI(QMainWindow):
         self.download_btn.setEnabled(True)
         self.export_btn.setEnabled(True)  # Enable export button after successful download
         logger.info(f"Successfully downloaded data for {len(data)} tickers")
+        self.update_quota_label()
 
     def on_download_error(self, error_msg):
         """Handle download error"""
@@ -648,17 +1066,32 @@ class StockGUI(QMainWindow):
         self.download_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", f"Failed to download data: {error_msg}")
         logger.error(f"Data download failed: {error_msg}")
+        self.update_quota_label()
 
     def export_data(self):
-        """Export downloaded data to selected format"""
-        if not self.current_data:
-            QMessageBox.warning(self, "Warning", "No data to export. Please download data first.")
+        """Export downloaded data to selected format, or process loaded files if present"""
+        if not self.ticker_manager:
+            QMessageBox.warning(
+                self,
+                'Database Not Set',
+                'Please apply database settings first before exporting data.'
+            )
             return
-
+        if hasattr(self, 'raw_data') and self.raw_data:
+            # Process loaded files before exporting
+            processed = self.process_loaded_files()
+            if not processed:
+                return
+        if not self.current_data:
+            QMessageBox.warning(
+                self,
+                'No Data to Export',
+                'No data is available to export. Please download or process data first.'
+            )
+            return
         try:
             # Get export format
             export_format = self.export_combo.currentText()
-            
             # Get filename from user
             default_name = f"stock_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             filename, _ = QFileDialog.getSaveFileName(
@@ -667,33 +1100,164 @@ class StockGUI(QMainWindow):
                 os.path.join(self.ticker_manager.get_export_dir(), default_name),
                 "All Files (*.*)"
             )
-            
             if not filename:
                 return
-            
             # Remove extension if present
             filename = os.path.splitext(filename)[0]
-            
             # Export data
             export_path = self.ticker_manager.export_data(
                 self.current_data,
                 format=export_format,
                 filename=os.path.basename(filename)
             )
-            
-            # Show success message
+            # Build export summary
+            export_summaries = []
+            for ticker, df in self.current_data.items():
+                nrows = len(df)
+                ncols = len(df.columns)
+                # Try to find a date column or use index
+                date_col = None
+                for col in df.columns:
+                    if 'date' in col.lower():
+                        date_col = col
+                        break
+                if date_col is not None:
+                    try:
+                        min_date = str(df[date_col].min())
+                        max_date = str(df[date_col].max())
+                    except Exception:
+                        min_date = max_date = 'N/A'
+                elif isinstance(df.index, pd.DatetimeIndex) or 'datetime' in str(type(df.index)).lower():
+                    try:
+                        min_date = str(df.index.min())
+                        max_date = str(df.index.max())
+                    except Exception:
+                        min_date = max_date = 'N/A'
+                else:
+                    min_date = max_date = 'N/A'
+                # Get provenance info
+                origin = self.provenance.get(ticker, {}).get('origin', 'unknown')
+                # Find exported file size if possible
+                dest_path = None
+                if os.path.isdir(export_path):
+                    # If export_path is a directory, look for the file
+                    for ext in ['csv', 'json', 'xlsx', 'db', 'duckdb', 'parquet', 'arrow']:
+                        possible_file = os.path.join(export_path, f"{os.path.basename(filename)}_{ticker}.{ext}")
+                        if os.path.exists(possible_file):
+                            dest_path = possible_file
+                            break
+                else:
+                    dest_path = export_path
+                filesize = None
+                if dest_path and os.path.exists(dest_path):
+                    filesize = os.path.getsize(dest_path)
+                    self.provenance[ticker]['destination'] = dest_path
+                    self.provenance[ticker]['filesize'] = filesize
+                else:
+                    self.provenance[ticker]['destination'] = dest_path or 'unknown'
+                    self.provenance[ticker]['filesize'] = None
+                export_summaries.append(
+                    f"Ticker: {ticker}\n"
+                    f"  Columns: {ncols}, Rows: {nrows}\n"
+                    f"  Dates: {min_date} to {max_date}\n"
+                    f"  File size: {filesize/1024:.2f} KB\n"
+                    f"  Origin: {origin}\n"
+                    f"  Destination: {self.provenance[ticker]['destination']}\n"
+                )
+                # Print to log as well
+                logger.info(f"Exported {ticker}: cols={ncols}, rows={nrows}, dates={min_date} to {max_date}, size={filesize/1024 if filesize else 'N/A'} KB, origin={origin}, dest={self.provenance[ticker]['destination']}")
+            summary_msg = f"Data exported successfully to:\n{export_path}\n\n" + "\n".join(export_summaries)
+            # Add default message if summary_msg is empty
+            if not summary_msg.strip():
+                summary_msg = f"Export completed, but no data was exported. Please check your data and try again."
             QMessageBox.information(
                 self,
                 "Export Successful",
-                f"Data exported successfully to:\n{export_path}"
+                f"Export completed!\n\n{summary_msg}\n\nYou can now find your exported files at the destination paths above."
             )
             self.status_label.setText(f"Exported data to {export_path}")
             logger.info(f"Successfully exported data to {export_path}")
-            
         except Exception as e:
             logger.error(f"Error exporting data: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to export data: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Failed to export data: {str(e)}\n\nNo data was exported. Please check your export directory, your data, and try again."
+            )
             self.status_label.setText("Export failed")
+
+    def process_loaded_files(self):
+        """
+        Clean and process files loaded into self.raw_data, store in self.current_data, and show cleaning summary.
+        """
+        if not self.ticker_manager:
+            QMessageBox.warning(
+                self,
+                'Database Not Set',
+                'Please apply database settings first before processing files.'
+            )
+            return False
+        if not hasattr(self, 'raw_data') or not self.raw_data:
+            QMessageBox.warning(
+                self,
+                'No Data Loaded',
+                'No files have been loaded. Please use "Open CSV Files" or "Bulk Load Directory" first.'
+            )
+            return False
+        # Set up progress bar
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, len(self.raw_data))
+        self.progress_bar.setValue(0)
+        loaded = 0
+        failed = 0
+        tickers = []
+        failed_files = []
+        self.current_data = {}
+        # Clear the live data table before processing
+        self.data_table.setRowCount(0)
+        self.data_table.setColumnCount(0)
+        for ticker, value in self.raw_data.items():
+            try:
+                # value is either a DataFrame or a dict with 'df' and 'path'
+                if isinstance(value, dict) and 'df' in value:
+                    df = value['df']
+                    file_path = value.get('path', None)
+                else:
+                    df = value
+                    file_path = None
+                if df is None or df.empty:
+                    raise ValueError(f"DataFrame for {ticker} is empty or None")
+                # Optionally, apply cleaning here if needed
+                self.current_data[ticker] = df
+                # Track provenance if not already set
+                if ticker not in self.provenance:
+                    self.provenance[ticker] = {'origin': file_path or 'unknown', 'destination': None, 'filesize': None}
+                loaded += 1
+                tickers.append(f"{ticker} ({file_path})" if file_path else ticker)
+                self.progress_bar.setValue(loaded)
+            except Exception as e:
+                logger.error(f"Failed to process loaded data for {ticker}: {e}")
+                self.log_text.append(f"Failed to process loaded data for {ticker}: {e}")
+                failed += 1
+                failed_files.append(os.path.basename(file_path))
+        msg = (
+            f'Processed {loaded} files. Tickers: {", ".join(tickers)}\n'
+            f'Failed to process {failed} files: {", ".join(failed_files)}' if failed else ''
+        )
+        # Add default message if msg is empty
+        if not msg.strip():
+            msg = 'No files were processed. Please check your files and try again.'
+        QMessageBox.information(
+            self,
+            'Bulk Load Complete',
+            f"Bulk loading finished!\n\n{msg}\n\nYou can now review the loaded data or export it."
+        )
+        if loaded:
+            self.export_btn.setEnabled(True)
+        else:
+            self.export_btn.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        return loaded > 0
 
     def quick_select(self, period):
         """Handle quick selection of date ranges"""
@@ -718,19 +1282,12 @@ class StockGUI(QMainWindow):
 
     @signal_safe
     def update_progress(self, value, message=""):
-        """Update progress bar with current value and optional message"""
-        try:
-            self.progress_bar.setValue(value)
-            if message:
-                self.status_label.setText(message)
-            logger.info(f"Progress update: {value}% - {message}")
-        except Exception as e:
-            logger.error(f"Error in update_progress: {str(e)}")
-            # Try to show the error in the GUI
-            try:
-                self.status_label.setText(f"Error updating progress: {str(e)}")
-            except:
-                pass
+        self.progress_bar.setValue(value)
+        if message:
+            self.log_text.append(str(message))
+        else:
+            self.log_text.append(str(value))
+        logger.info(f"Progress update: {value}% - {message}")
 
     def on_ticker_data(self, ticker, df):
         # Show the latest ticker's data in the table (append as new row)
@@ -744,6 +1301,389 @@ class StockGUI(QMainWindow):
             for col, col_name in enumerate(df.columns):
                 val = str(df.iloc[0][col_name])
                 self.data_table.setItem(row, col + 1, QTableWidgetItem(val))
+
+    def process_log_queue(self):
+        while not self.log_queue.empty():
+            msg = self.log_queue.get()
+            self.log_text.append(str(msg))
+
+    def add_instruments_categories(self):
+        api_key = self.twelvedata_api_input.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "API Key Required", "Please enter your Twelve Data API key in the input field.")
+            return
+        # Define endpoints and category names
+        endpoints = [
+            ("Forex", f"https://api.twelvedata.com/forex_pairs?apikey={api_key}"),
+            ("Crypto", f"https://api.twelvedata.com/cryptocurrencies?apikey={api_key}"),
+            ("Commodities", f"https://api.twelvedata.com/commodities?apikey={api_key}")
+        ]
+        added = []
+        for category_name, url in endpoints:
+            try:
+                response = requests.get(url)
+                data = response.json()
+                if 'data' in data:
+                    df = pd.DataFrame(data['data'])
+                    if 'symbol' in df.columns:
+                        symbols = df['symbol'].dropna().astype(str).str.strip().tolist()
+                        self.ticker_manager.tickers[category_name] = symbols
+                        if category_name not in self.ticker_manager.categories:
+                            self.ticker_manager.categories.append(category_name)
+                            self.category_combo.addItem(category_name)
+                        added.append((category_name, len(symbols)))
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to fetch {category_name} instruments: {e}")
+        if added:
+            msg = "\n".join([f"Loaded {count} symbols into category '{cat}'." for cat, count in added])
+            QMessageBox.information(self, "Success", msg)
+        else:
+            QMessageBox.warning(self, "No Data", "No instruments were added.")
+
+    def batch_download_category_to_cache_gui(self):
+        if not self.ticker_manager:
+            QMessageBox.warning(self, "Warning", "Please apply database settings first.")
+            return
+        category = self.category_combo.currentText()
+        interval = self.interval_combo.currentText()
+        start_date = self.start_date.date().toString('yyyy-MM-dd')
+        end_date = self.end_date.date().toString('yyyy-MM-dd')
+        api_key = self.twelvedata_api_input.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "API Key Required", "Please enter your Twelve Data API key in the input field.")
+            return
+        self.status_label.setText("Batch downloading category to cache...")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # Indeterminate
+        self.batch_download_btn.setEnabled(False)
+        self.worker = BatchDownloadWorker(api_key, category, self.ticker_manager, interval, start_date, end_date)
+        self.worker.progress.connect(self.on_batch_download_progress)
+        self.worker.finished.connect(self.on_batch_download_finished)
+        self.worker.error.connect(self.on_batch_download_error)
+        self.worker.start()
+
+    def on_batch_download_progress(self, value, message):
+        self.status_label.setText(message)
+        self.log_text.append(message)
+
+    def on_batch_download_finished(self, count, message):
+        self.status_label.setText(message)
+        self.log_text.append(message)
+        self.progress_bar.setVisible(False)
+        self.batch_download_btn.setEnabled(True)
+        QMessageBox.information(self, "Batch Download Complete", message)
+        self.update_quota_label()
+
+    def on_batch_download_error(self, error_msg):
+        self.status_label.setText("Batch download failed.")
+        self.log_text.append(f"Error: {error_msg}")
+        self.progress_bar.setVisible(False)
+        self.batch_download_btn.setEnabled(True)
+        if 'quota' in error_msg.lower() or 'limit' in error_msg.lower():
+            QMessageBox.warning(self, "Twelve Data API Quota Exceeded", "You have reached your Twelve Data API quota. Please wait for your quota to reset or upgrade your plan.")
+        else:
+            QMessageBox.critical(self, "Error", f"Batch download failed: {error_msg}")
+        self.update_quota_label()
+
+    def update_quota_label(self):
+        # Implementation of update_quota_label method
+        pass
+
+    def scheduled_batch_download_gui(self):
+        if not self.ticker_manager:
+            QMessageBox.warning(self, "Warning", "Please apply database settings first.")
+            return
+        category = self.category_combo.currentText()
+        interval = self.interval_combo.currentText()
+        start_date = self.start_date.date().toString('yyyy-MM-dd')
+        end_date = self.end_date.date().toString('yyyy-MM-dd')
+        provider = self.data_source
+        if provider == 'twelvedata':
+            api_key = self.twelvedata_api_input.text().strip()
+        elif provider == 'tiingo':
+            api_key = self.tiingo_api_input.text().strip()
+        elif provider == 'alphavantage':
+            api_key = self.alphavantage_api_input.text().strip()
+        else:
+            api_key = ''
+        if not api_key:
+            QMessageBox.warning(self, "API Key Required", f"Please enter your {provider.title()} API key in the input field.")
+            return
+        # Prompt for batch size and total hours
+        max_batch = len(self.ticker_manager.tickers.get(category, []))
+        batch_size, ok1 = QInputDialog.getInt(self, "Batch Size", f"Enter batch size (max {max_batch}):", min=1, max=max_batch, value=8)
+        if not ok1:
+            return
+        total_hours, ok2 = QInputDialog.getInt(self, "Total Hours", "Enter total period in hours:", min=1, max=24, value=23)
+        if not ok2:
+            return
+        self.status_label.setText("Scheduled batch downloading...")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.scheduled_worker = ScheduledBatchDownloadWorker(
+            provider, api_key, category, self.ticker_manager, interval, start_date, end_date, batch_size, total_hours
+        )
+        self.scheduled_worker.progress.connect(self.on_batch_download_progress)
+        self.scheduled_worker.finished.connect(self.on_batch_download_finished)
+        self.scheduled_worker.error.connect(self.on_batch_download_error)
+        self.scheduled_worker.quota_update.connect(lambda _: self.update_quota_label())
+        self.scheduled_worker.start()
+
+    def fetch_and_add_stooq_tickers(self):
+        """
+        Adds predefined Stooq Forex, Commodities, and Stocks categories with example tickers to the category combo box.
+        """
+        if not self.ticker_manager:
+            QMessageBox.warning(self, "Warning", "Please apply database settings first.")
+            return
+        # Predefined example tickers
+        stooq_forex = [
+            'EURUSD', 'USDJPY', 'GBPUSD', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD',
+            'EURJPY', 'GBPJPY', 'EURGBP', 'USDHKD', 'USDSEK', 'USDSGD', 'USDNOK', 'USDZAR', 'USDMXN'
+        ]
+        stooq_commodities = [
+            'GOLD', 'SILVER', 'OIL', 'COPPER', 'PLATINUM', 'PALLADIUM', 'NGAS', 'CORN', 'WHEAT', 'SOYB'
+        ]
+        stooq_stocks = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'DIS'
+        ]
+        # Add categories and tickers
+        if stooq_forex:
+            self.ticker_manager.tickers['Stooq Forex'] = stooq_forex
+            if 'Stooq Forex' not in self.ticker_manager.categories:
+                self.ticker_manager.categories.append('Stooq Forex')
+                self.category_combo.addItem('Stooq Forex')
+        if stooq_commodities:
+            self.ticker_manager.tickers['Stooq Commodities'] = stooq_commodities
+            if 'Stooq Commodities' not in self.ticker_manager.categories:
+                self.ticker_manager.categories.append('Stooq Commodities')
+                self.category_combo.addItem('Stooq Commodities')
+        if stooq_stocks:
+            self.ticker_manager.tickers['Stooq Stocks'] = stooq_stocks
+            if 'Stooq Stocks' not in self.ticker_manager.categories:
+                self.ticker_manager.categories.append('Stooq Stocks')
+                self.category_combo.addItem('Stooq Stocks')
+        msg = (
+            f"Added categories and example tickers:\n"
+            f"Stooq Forex: {', '.join(stooq_forex)}\n"
+            f"Stooq Commodities: {', '.join(stooq_commodities)}\n"
+            f"Stooq Stocks: {', '.join(stooq_stocks)}"
+        )
+        QMessageBox.information(self, "Stooq Tickers", msg)
+
+    def open_and_process_csv_files(self):
+        import os
+        import glob
+        import pandas as pd
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        files, _ = QFileDialog.getOpenFileNames(self, 'Select CSV or TXT Files', '', 'CSV or TXT Files (*.csv *.txt)')
+        if not files:
+            return
+        loaded = 0
+        failed = 0
+        tickers = []
+        failed_files = []
+        self.raw_data = {}
+        for file_path in files:
+            try:
+                print(f"[INFO] Loading file: {file_path}")
+                # Try both comma and semicolon delimiters for robustness
+                try:
+                    df = pd.read_csv(file_path, delimiter=',')
+                    if df.shape[1] == 1:
+                        df = pd.read_csv(file_path, delimiter=';')
+                except Exception:
+                    df = pd.read_csv(file_path, delimiter=';')
+                print(f"[SUCCESS] Loaded {file_path}: {df.shape[0]} rows, {df.shape[1]} columns")
+                ticker = os.path.splitext(os.path.basename(file_path))[0]
+                # Print file size
+                try:
+                    file_size_kb = os.path.getsize(file_path) / 1024
+                    print(f"[INFO] File size: {file_size_kb:.1f} KB")
+                except Exception:
+                    pass
+                # If .txt, convert to .csv (in memory, not saving to disk unless needed)
+                if file_path.lower().endswith('.txt'):
+                    print(f"[INFO] Converting {file_path} to CSV format (in memory)")
+                self.raw_data[ticker] = {'df': df, 'path': file_path}
+                # Track provenance
+                self.provenance[ticker] = {'origin': file_path, 'destination': None, 'filesize': None}
+                loaded += 1
+                tickers.append(ticker)
+            except Exception as e:
+                print(f"[ERROR] Failed to load {file_path}: {e}")
+                logger.error(f"Failed to load {file_path}: {e}")
+                self.log_text.append(f"Failed to load {file_path}: {e}")
+                failed += 1
+                failed_files.append(os.path.basename(file_path))
+        # Build detailed summary for loaded files
+        summary_lines = []
+        for ticker in tickers:
+            entry = self.raw_data[ticker]
+            df = entry['df']
+            file_path = entry['path']
+            nrows = len(df)
+            ncols = len(df.columns)
+            # Try to find a date column or use index
+            date_col = None
+            for col in df.columns:
+                if 'date' in col.lower():
+                    date_col = col
+                    break
+            if date_col is not None:
+                try:
+                    min_date = str(df[date_col].min())
+                    max_date = str(df[date_col].max())
+                except Exception:
+                    min_date = max_date = 'N/A'
+            elif isinstance(df.index, pd.DatetimeIndex) or 'datetime' in str(type(df.index)).lower():
+                try:
+                    min_date = str(df.index.min())
+                    max_date = str(df.index.max())
+                except Exception:
+                    min_date = max_date = 'N/A'
+            else:
+                min_date = max_date = 'N/A'
+            filesize = None
+            if file_path and os.path.exists(file_path):
+                filesize = os.path.getsize(file_path)
+            summary_lines.append(
+                f"Ticker: {ticker}\n"
+                f"  Columns: {ncols}, Rows: {nrows}\n"
+                f"  Dates: {min_date} to {max_date}\n"
+                f"  File size: {filesize/1024:.2f} KB\n"
+                f"  Origin: {file_path}\n"
+            )
+        msg = (
+            f'Loaded {loaded} files. Tickers: {", ".join(tickers)}\n'
+            f'Failed to load {failed} files: {", ".join(failed_files)}' if failed else ''
+        )
+        # Add detailed summary if any files loaded
+        if summary_lines:
+            msg += '\n\n' + '\n'.join(summary_lines)
+        QMessageBox.information(
+            self,
+            'Bulk Load Complete',
+            f"Bulk loading finished!\n\n{msg}\n\nYou can now review the loaded data or export it."
+        )
+        if loaded:
+            self.export_btn.setEnabled(True)
+        else:
+            self.export_btn.setEnabled(False)
+
+    def bulk_load_directory(self):
+        import os
+        import pandas as pd
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        # Prompt user for root directory
+        root_dir = QFileDialog.getExistingDirectory(self, 'Select Root Directory')
+        if not root_dir:
+            return
+        all_files = []
+        # Advanced crawler: os.walk, skip hidden files/folders, log each directory
+        for dirpath, dirnames, filenames in os.walk(root_dir):
+            # Skip hidden directories
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            self.log_text.append(f"Entering directory: {dirpath}")
+            for filename in filenames:
+                if filename.startswith('.'):
+                    continue  # Skip hidden files
+                if filename.lower().endswith('.csv') or filename.lower().endswith('.txt'):
+                    file_path = os.path.join(dirpath, filename)
+                    all_files.append(file_path)
+        if not all_files:
+            QMessageBox.information(
+                self,
+                'No Files Found',
+                'No CSV or TXT files were found in the selected directory.\n\nPlease choose another directory or check your files.'
+            )
+            return
+        # Set up progress bar
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, len(all_files))
+        self.progress_bar.setValue(0)
+        loaded = 0
+        failed = 0
+        tickers = []
+        failed_files = []
+        self.raw_data = {}
+        for idx, file_path in enumerate(all_files, 1):
+            try:
+                # Try both comma and semicolon delimiters for robustness
+                try:
+                    df = pd.read_csv(file_path, delimiter=',')
+                    if df.shape[1] == 1:
+                        df = pd.read_csv(file_path, delimiter=';')
+                except Exception:
+                    df = pd.read_csv(file_path, delimiter=';')
+                ticker = os.path.splitext(os.path.basename(file_path))[0]
+                self.raw_data[ticker] = {'df': df, 'path': file_path}
+                # Track provenance
+                self.provenance[ticker] = {'origin': file_path, 'destination': None, 'filesize': None}
+                loaded += 1
+                tickers.append(ticker)
+                self.log_text.append(f"Loaded: {file_path}")
+                self.progress_bar.setValue(idx)
+            except Exception as e:
+                logger.error(f"Failed to load {file_path}: {e}")
+                self.log_text.append(f"Failed to load {file_path}: {e}")
+                failed += 1
+                failed_files.append(os.path.basename(file_path))
+        self.progress_bar.setVisible(False)
+        # Restore summary_lines block
+        summary_lines = []
+        for ticker in tickers:
+            entry = self.raw_data[ticker]
+            df = entry['df']
+            file_path = entry['path']
+            nrows = len(df)
+            ncols = len(df.columns)
+            # Try to find a date column or use index
+            date_col = None
+            for col in df.columns:
+                if 'date' in col.lower():
+                    date_col = col
+                    break
+            if date_col is not None:
+                try:
+                    min_date = str(df[date_col].min())
+                    max_date = str(df[date_col].max())
+                except Exception:
+                    min_date = max_date = 'N/A'
+            elif isinstance(df.index, pd.DatetimeIndex) or 'datetime' in str(type(df.index)).lower():
+                try:
+                    min_date = str(df.index.min())
+                    max_date = str(df.index.max())
+                except Exception:
+                    min_date = max_date = 'N/A'
+            else:
+                min_date = max_date = 'N/A'
+            filesize = None
+            if file_path and os.path.exists(file_path):
+                filesize = os.path.getsize(file_path)
+            summary_lines.append(
+                f"Ticker: {ticker}\n"
+                f"  Columns: {ncols}, Rows: {nrows}\n"
+                f"  Dates: {min_date} to {max_date}\n"
+                f"  File size: {filesize/1024:.2f} KB\n"
+                f"  Origin: {file_path}\n"
+            )
+        msg = (
+            f'Loaded {loaded} files. Tickers: {", ".join(tickers)}\n'
+            f'Failed to load {failed} files: {", ".join(failed_files)}' if failed else ''
+        )
+        # Add detailed summary if any files loaded
+        if summary_lines:
+            msg += '\n\n' + '\n'.join(summary_lines)
+        QMessageBox.information(
+            self,
+            'Bulk Load Complete',
+            f"Bulk loading finished!\n\n{msg}\n\nYou can now review the loaded data or export it."
+        )
+        if loaded:
+            self.export_btn.setEnabled(True)
+        else:
+            self.export_btn.setEnabled(False)
 
 def main():
     """Main application entry point"""
