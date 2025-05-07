@@ -1,5 +1,6 @@
 import pandas as pd
 from pathlib import Path
+import time
 import logging
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -17,6 +18,9 @@ import concurrent.futures
 from functools import partial
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from .twelvedata_downloader import TwelveDataDownloader
+from PyQt5.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QLabel, QLineEdit, QRadioButton, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QSpinBox
+import requests
 
 try:
     import pandas_datareader.data as pdr
@@ -24,6 +28,66 @@ except ImportError:
     pdr = None
 
 logger = logging.getLogger(__name__)
+
+os.environ['TIINGO_API_KEY'] = 'your_actual_tiingo_api_key'
+
+def convert_symbol(symbol, provider, instrument_type='stock'):
+    """
+    Convert a Twelve Data symbol to the correct format for the given provider.
+    provider: 'yfinance', 'alphavantage', 'tiingo'
+    instrument_type: 'stock', 'forex', or 'crypto'
+    Returns:
+        - For yfinance/tiingo: string
+        - For alphavantage (forex): tuple (from_symbol, to_symbol)
+    """
+    symbol = symbol.strip()
+    if provider == 'yfinance':
+        if instrument_type == 'forex':
+            # Twelve Data: 'EUR/USD' → yfinance: 'EURUSD=X'
+            if '/' in symbol:
+                return symbol.replace('/', '') + '=X'
+            return symbol + '=X'
+        elif instrument_type == 'crypto':
+            # Twelve Data: 'BTC/USD' → yfinance: 'BTC-USD'
+            if '/' in symbol:
+                return symbol.replace('/', '-')
+            return symbol
+        else:
+            # Stock: use as-is
+            return symbol
+
+    elif provider == 'alphavantage':
+        if instrument_type == 'forex':
+            # Twelve Data: 'EUR/USD' → Alpha Vantage: ('EUR', 'USD')
+            if '/' in symbol:
+                parts = symbol.split('/')
+                if len(parts) == 2:
+                    return parts[0], parts[1]
+            return symbol, None
+        elif instrument_type == 'crypto':
+            # Alpha Vantage: ('BTC', 'USD')
+            if '/' in symbol:
+                parts = symbol.split('/')
+                if len(parts) == 2:
+                    return parts[0], parts[1]
+            return symbol, None
+        else:
+            # Stock: use as-is
+            return symbol
+
+    elif provider == 'tiingo':
+        if instrument_type == 'crypto':
+            # Twelve Data: 'BTC/USD' → Tiingo: 'btcusd'
+            if '/' in symbol:
+                return symbol.replace('/', '').lower()
+            return symbol.lower()
+        else:
+            # Stock: use as-is
+            return symbol
+
+    else:
+        # Unknown provider, return as-is
+        return symbol
 
 class TickerManager:
     def __init__(self, db_name=None, db_dir=None):
@@ -322,9 +386,32 @@ class TickerManager:
                 if interval != '1d':
                     logger.warning(f"pandas_datareader only supports daily data. Forcing interval to '1d'.")
                 try:
-                    df = pdr.DataReader(ticker, pdr_sub_source, start=start_date, end=end_date)
+                    if pdr_sub_source == 'tiingo':
+                        # Set your Tiingo API key here if not already set in your environment
+                        # os.environ['TIINGO_API_KEY'] = 'your_actual_tiingo_api_key'
+                        df = pdr.DataReader(ticker, 'tiingo', start=start_date, end=end_date)
+                        if isinstance(df.index, pd.MultiIndex):
+                            # Tiingo sometimes returns a MultiIndex (ticker, date)
+                            if isinstance(df.index.get_level_values(-1)[0], pd.Timestamp):
+                                df.index = df.index.get_level_values(-1)
+                            else:
+                                df.index = pd.to_datetime(df.index.get_level_values(-1), errors='coerce')
+                        elif isinstance(df.index, tuple) or not isinstance(df.index, pd.DatetimeIndex):
+                            try:
+                                df.index = pd.to_datetime(df.index, errors='coerce')
+                            except Exception as e:
+                                self.logger.error(f"Error converting index to datetime: {e}")
+                    else:
+                        df = pdr.DataReader(ticker, pdr_sub_source, start=start_date, end=end_date)
                 except Exception as e:
                     logger.error(f"pandas_datareader error for {ticker}: {e}")
+                    return ticker, None
+            elif data_source == 'coingecko':
+                from src.data.coingecko_downloader import CoinGeckoDownloader
+                downloader = CoinGeckoDownloader()
+                df = downloader.download_historical(ticker, vs_currency='usd', days='max', interval=interval)
+                if df is None or df.empty:
+                    logger.error(f"No data available for {ticker} from CoinGecko")
                     return ticker, None
             else:
                 logger.error(f"Unknown data source: {data_source}")
@@ -367,6 +454,7 @@ class TickerManager:
                 for ticker, df in results:
                     if df is not None:
                         data[ticker] = df
+                        self.data_downloaded.emit(ticker, df)  # emit a signal with the new data
                 # Add a delay between batches
                 if i + batch_size < len(tickers):
                     delay = self.base_delay/2 + random.uniform(0, self.jitter/2)
@@ -402,6 +490,7 @@ class TickerManager:
                             result = future.result()
                             if result is not None:
                                 data[ticker] = result
+                                self.data_downloaded.emit(ticker, result)  # emit a signal with the new data
                         except Exception as e:
                             logger.error(f"Error in parallel download for {ticker}: {e}")
                 
@@ -467,6 +556,7 @@ class TickerManager:
                     if clean_data:
                         df = self.clean_data(df)
                     results[result_ticker] = df
+                    self.data_downloaded.emit(result_ticker, df)  # emit a signal with the new data
                 
                 # Add cool-down period between tickers
                 if i < len(tickers):
@@ -491,6 +581,7 @@ class TickerManager:
                             if clean_data:
                                 df = self.clean_data(df)
                             results[result_ticker] = df
+                            self.data_downloaded.emit(result_ticker, df)  # emit a signal with the new data
                     except Exception as e:
                         logger.error(f"Error handling future result: {e}")
                         continue
@@ -510,6 +601,7 @@ class TickerManager:
                     if clean_data:
                         df = self.clean_data(df)
                     results[result_ticker] = df
+                    self.data_downloaded.emit(result_ticker, df)  # emit a signal with the new data
         
         else:
             logger.error(f"Unsupported download mode: {download_mode}")
@@ -518,6 +610,12 @@ class TickerManager:
         # Log results
         success_count = len(results)
         logger.info(f"Download complete. Successfully downloaded data for {success_count}/{len(tickers)} tickers")
+        
+        # --- Set Twelve Data API key if needed ---
+        if data_source == 'pandas_datareader' and getattr(self, 'pdr_sub_source', None) == 'twelvedata':
+            api_key = self.twelvedata_api_input.text().strip()
+            if api_key:
+                os.environ['TWELVEDATA_API_KEY'] = api_key
         
         return results
 
@@ -729,7 +827,7 @@ class TickerManager:
                 if combined_df is None:
                     combined_df = df_copy
                 else:
-                    combined_df = pd.concat([combined_df, df_copy])
+                    combined_df = pd.concat([combined_df, df_copy], axis=0, ignore_index=True)
             if combined_df is not None:
                 combined_df.to_parquet(filepath, index=True)
             return filepath
@@ -748,7 +846,7 @@ class TickerManager:
                     combined_data.append(df_copy)
                 
                 if combined_data:
-                    combined_df = pd.concat(combined_data)
+                    combined_df = pd.concat(combined_data, axis=0, ignore_index=True)
                     table = pa.Table.from_pandas(combined_df)
                     pq.write_table(table, filepath)
                 return filepath
@@ -865,43 +963,41 @@ class TickerManager:
             return df
 
     def standardize_dates(self, df):
-        """Standardize date format and timezone"""
+        """Standardize date format and timezone, robust to non-date index values."""
         try:
-            # Convert index to datetime if it's not already
+            # If index is not DatetimeIndex, try to convert, but coerce errors to NaT
             if not isinstance(df.index, pd.DatetimeIndex):
-                df.index = pd.to_datetime(df.index, utc=True)
-            
+                df.index = pd.to_datetime(df.index, errors='coerce', utc=True)
+                # Drop rows where index could not be converted to datetime (NaT)
+                df = df[~df.index.isna()]
             # Handle timezone if present
             if hasattr(df.index, 'tz') and df.index.tz is not None:
                 df.index = df.index.tz_convert('UTC')
             elif hasattr(df.index, 'tz') and df.index.tz is None:
                 df.index = df.index.tz_localize('UTC')
-            
             return df
         except Exception as e:
             logger.error(f"Error standardizing dates: {e}")
             return df
 
     def _fill_trading_gaps(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Fill missing trading days with forward-filled values"""
+        """Fill missing trading days with forward-filled values, robust to non-date index values."""
         try:
-            # Ensure index is datetime with UTC timezone
+            # Ensure index is datetime with UTC timezone, coerce errors to NaT
             if not isinstance(df.index, pd.DatetimeIndex):
-                df.index = pd.to_datetime(df.index, utc=True)
+                df.index = pd.to_datetime(df.index, errors='coerce', utc=True)
+                df = df[~df.index.isna()]
             elif df.index.tz is None:
                 df.index = df.index.tz_localize('UTC')
-            
             # Create a complete date range in UTC
+            if len(df.index) == 0:
+                return df  # Nothing to do
             date_range = pd.date_range(start=df.index.min(), end=df.index.max(), freq='B', tz='UTC')
-            
             # Reindex the DataFrame
             df = df.reindex(date_range)
-            
             # Forward fill missing values
             df = df.ffill()
-            
             return df
-            
         except Exception as e:
             logger.error(f"Error filling trading gaps: {e}")
             return df
@@ -1125,4 +1221,327 @@ class TickerManager:
             return pl_df
         except Exception as e:
             logger.error(f"Error converting to Polars: {e}")
-            raise 
+            raise
+
+    def download_data_from_twelve_data(self, api_key, ticker, interval, start_date, end_date):
+        # Example usage:
+        downloader = TwelveDataDownloader(api_key)
+        data = downloader.download_batch_historical(
+            symbols=[ticker],
+            interval=interval,
+            start_date=start_date,
+            end_date=end_date,
+            outputsize=100,
+            timezone='UTC',
+            order='asc'
+        )
+        if data:
+            self.tickers['Forex'] = data
+            if 'Forex' not in self.categories:
+                self.categories.append('Forex')
+                self.category_combo.addItem('Forex')
+            return data
+        else:
+            logger.error(f"Failed to download data from Twelve Data for {ticker}")
+            return None
+
+    def load_custom_list(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select CSV File", "", "CSV Files (*.csv)")
+        if not filepath:
+            return
+        try:
+            symbols = load_symbols_from_csv(filepath)
+            category_name = "MyList"
+            self.tickers[category_name] = symbols
+            if category_name not in self.categories:
+                self.categories.append(category_name)
+            logger.info(f"Loaded {len(symbols)} symbols into category '{category_name}'.")
+        except Exception as e:
+            logger.error(f"Failed to load symbols: {e}")
+
+    def add_category_from_csv(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select CSV File", "", "CSV Files (*.csv)")
+        if not filepath:
+            return
+        # Ask user for a category name
+        category_name, ok = QInputDialog.getText(self, "Category Name", "Enter a name for the new category:")
+        if not ok or not category_name.strip():
+            return
+        category_name = category_name.strip()
+        try:
+            import pandas as pd
+            df = pd.read_csv(filepath)
+            if 'Symbol' in df.columns:
+                symbols = df['Symbol'].dropna().astype(str).str.strip().tolist()
+            else:
+                symbols = df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+            self.tickers[category_name] = symbols
+            if category_name not in self.categories:
+                self.categories.append(category_name)
+                self.category_combo.addItem(category_name)
+            QMessageBox.information(self, "Success", f"Loaded {len(symbols)} symbols into category '{category_name}'.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load symbols: {e}")
+
+    def add_crypto_category(self):
+        api_key = self.twelvedata_api_input.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "API Key Required", "Please enter your Twelve Data API key in the input field.")
+            return
+        try:
+            import requests
+            import pandas as pd
+            url = f'https://api.twelvedata.com/cryptocurrencies?apikey={api_key}'
+            response = requests.get(url)
+            data = response.json()
+            if 'data' in data:
+                df = pd.DataFrame(data['data'])
+                crypto_symbols = df['symbol'].tolist()
+                category_name = "Crypto"
+                self.tickers[category_name] = crypto_symbols
+                if category_name not in self.categories:
+                    self.categories.append(category_name)
+                    self.category_combo.addItem(category_name)
+                QMessageBox.information(self, "Success", f"Loaded {len(crypto_symbols)} crypto pairs into category '{category_name}'.")
+            else:
+                QMessageBox.critical(self, "Error", f"Failed to fetch crypto pairs: {data}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to fetch crypto pairs: {e}")
+
+    def _init_ui(self):
+        self.setWindowTitle('Stock Quote Viewer')
+        self.setGeometry(100, 100, 1000, 800)
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+
+        # --- Data Source Selection ---
+        data_source_group = QGroupBox('Data Source')
+        data_source_layout = QHBoxLayout()
+        self.yfinance_radio = QRadioButton('yfinance')
+        self.pdr_radio = QRadioButton('pandas_datareader')
+        self.twelvedata_radio = QRadioButton('Twelve Data')
+        self.yfinance_radio.setChecked(True)
+        data_source_layout.addWidget(self.yfinance_radio)
+        data_source_layout.addWidget(self.pdr_radio)
+        data_source_layout.addWidget(self.twelvedata_radio)
+
+        data_source_group.setLayout(data_source_layout)
+        layout.addWidget(data_source_group)
+
+        print("Twelve Data radio button created")
+
+        self.add_forex_btn = QPushButton('Add Forex Pairs')
+        self.add_forex_btn.clicked.connect(self.add_forex_category)
+        layout.addWidget(self.add_forex_btn)
+
+        self.batch_size_spin = QSpinBox()
+        self.batch_size_spin.setEnabled(True)
+        layout.addWidget(self.batch_size_spin)
+
+        self.quota_label = QLabel("Quota: -")
+        self.quota_label.setStyleSheet("font-size: 12px; color: #888;")
+        layout.addWidget(self.quota_label)
+
+    def handle_pdr_sub_source_change(self, text):
+        if text == 'tiingo':
+            self.tiingo_api_label.setVisible(True)
+            self.tiingo_api_input.setVisible(True)
+            self.twelvedata_api_label.setVisible(False)
+            self.twelvedata_api_input.setVisible(False)
+            self.download_mode_combo.setCurrentText('sequential')
+            self.download_mode_combo.setEnabled(False)
+            self.batch_size_spin.setEnabled(True)
+        elif text == 'twelvedata':
+            self.tiingo_api_label.setVisible(False)
+            self.tiingo_api_input.setVisible(False)
+            self.twelvedata_api_label.setVisible(True)
+            self.twelvedata_api_input.setVisible(True)
+            self.download_mode_combo.setCurrentText('sequential')
+            self.download_mode_combo.setEnabled(False)
+            self.batch_size_spin.setEnabled(False)
+        else:
+            self.tiingo_api_label.setVisible(False)
+            self.tiingo_api_input.setVisible(False)
+            self.twelvedata_api_label.setVisible(False)
+            self.twelvedata_api_input.setVisible(False)
+            self.download_mode_combo.setEnabled(True)
+            self.batch_size_spin.setEnabled(False)
+        self.pdr_source_combo.currentTextChanged.connect(self.handle_pdr_sub_source_change)
+
+    def set_data_source(self, source):
+        if source == 'yfinance' and self.yfinance_radio.isChecked():
+            self.data_source = 'yfinance'
+            self.pdr_sub_source = None
+        elif source == 'pandas_datareader' and self.pdr_radio.isChecked():
+            self.data_source = 'pandas_datareader'
+            self.pdr_sub_source = self.pdr_source_combo.currentText()
+        elif source == 'twelvedata' and self.twelvedata_radio.isChecked():
+            self.data_source = 'twelvedata'
+            self.pdr_sub_source = None
+        if self.data_source == 'twelvedata':
+            api_key = self.twelvedata_api_input.text().strip()
+            if api_key:
+                os.environ['TWELVEDATA_API_KEY'] = api_key 
+
+    def download_all_forex_pairs(self):
+        api_key = 'YOUR_API_KEY'
+        url = f'https://api.twelvedata.com/forex_pairs?apikey={api_key}'
+        response = requests.get(url)
+        data = response.json()
+
+        # The response will have a 'data' key with a list of dicts
+        if 'data' in data:
+            df = pd.DataFrame(data['data'])
+            # The 'symbol' column contains the forex pairs
+            forex_symbols = df['symbol'].tolist()
+            print(forex_symbols)
+        else:
+            print("No data found or error:", data)
+
+    def download_all_supported_symbols(self):
+        api_key = 'YOUR_API_KEY'
+        url = f'https://api.twelvedata.com/symbol_search?symbol=ALL&apikey={api_key}'
+        response = requests.get(url)
+        data = response.json()
+
+        if 'data' in data:
+            df = pd.DataFrame(data['data'])
+            # You can filter by 'instrument_type' (e.g., 'Stock', 'ETF', 'Forex', 'Crypto')
+            forex_df = df[df['instrument_type'] == 'Forex']
+            forex_symbols = forex_df['symbol'].tolist()
+            print(forex_symbols)
+        else:
+            print("No data found or error:", data)
+
+    def add_forex_category(self):
+        api_key = self.twelvedata_api_input.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "API Key Required", "Please enter your Twelve Data API key in the input field.")
+            return
+        try:
+            import requests
+            import pandas as pd
+            url = f'https://api.twelvedata.com/forex_pairs?apikey={api_key}'
+            response = requests.get(url)
+            data = response.json()
+            if 'data' in data:
+                df = pd.DataFrame(data['data'])
+                forex_symbols = df['symbol'].tolist()
+                category_name = "Forex"
+                self.tickers[category_name] = forex_symbols
+                if category_name not in self.categories:
+                    self.categories.append(category_name)
+                    self.category_combo.addItem(category_name)
+                QMessageBox.information(self, "Success", f"Loaded {len(forex_symbols)} forex pairs into category '{category_name}'.")
+            else:
+                QMessageBox.critical(self, "Error", f"Failed to fetch forex pairs: {data}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to fetch forex pairs: {e}")
+
+    def convert_symbol(self, symbol, provider, instrument_type='stock'):
+        """
+        Convert a Twelve Data symbol to the correct format for the given provider.
+        provider: 'yfinance', 'alphavantage', 'tiingo'
+        instrument_type: 'stock', 'forex', or 'crypto'
+        Returns:
+            - For yfinance/tiingo: string
+            - For alphavantage (forex): tuple (from_symbol, to_symbol)
+        """
+        symbol = symbol.strip()
+        if provider == 'yfinance':
+            if instrument_type == 'forex':
+                # Twelve Data: 'EUR/USD' → yfinance: 'EURUSD=X'
+                if '/' in symbol:
+                    return symbol.replace('/', '') + '=X'
+                return symbol + '=X'
+            elif instrument_type == 'crypto':
+                # Twelve Data: 'BTC/USD' → yfinance: 'BTC-USD'
+                if '/' in symbol:
+                    return symbol.replace('/', '-')
+                return symbol
+            else:
+                # Stock: use as-is
+                return symbol
+
+        elif provider == 'alphavantage':
+            if instrument_type == 'forex':
+                # Twelve Data: 'EUR/USD' → Alpha Vantage: ('EUR', 'USD')
+                if '/' in symbol:
+                    parts = symbol.split('/')
+                    if len(parts) == 2:
+                        return parts[0], parts[1]
+                return symbol, None
+            elif instrument_type == 'crypto':
+                # Alpha Vantage: ('BTC', 'USD')
+                if '/' in symbol:
+                    parts = symbol.split('/')
+                    if len(parts) == 2:
+                        return parts[0], parts[1]
+                return symbol, None
+            else:
+                # Stock: use as-is
+                return symbol
+
+        elif provider == 'tiingo':
+            if instrument_type == 'crypto':
+                # Twelve Data: 'BTC/USD' → Tiingo: 'btcusd'
+                if '/' in symbol:
+                    return symbol.replace('/', '').lower()
+                return symbol.lower()
+            else:
+                # Stock: use as-is
+                return symbol
+
+        else:
+            # Unknown provider, return as-is
+            return symbol
+
+    def batch_download_category_to_cache(self, category, ticker_manager, interval, start_date, end_date, cache_dir=None, batch_size=8, verbose=True):
+        # ...
+        BATCH_SIZE = batch_size
+        # ...
+        print(f"Symbols in category '{category}': {self.tickers[category]}")
+        for i in range(0, len(self.tickers[category]), BATCH_SIZE):
+            batch = self.tickers[category][i:i+BATCH_SIZE]
+            print(f"Requesting batch: {batch}")
+            # ... rest of the loop body ...
+            print(f"API response: {csv_data[:200]}")  # Print first 200 chars of response
+            # ... after parsing ...
+            if 'symbol' in df.columns:
+                for symbol in batch:
+                    symbol_df = df[df['symbol'] == symbol].copy()
+                    print(f"Rows for {symbol}: {len(symbol_df)}")
+
+    def update_quota_label(self):
+        source = self.data_source
+        if source == 'twelvedata':
+            api_key = self.twelvedata_api_input.text().strip()
+            if api_key:
+                try:
+                    import requests
+                    url = f"https://api.twelvedata.com/usage?apikey={api_key}"
+                    response = requests.get(url, timeout=5)
+                    data = response.json()
+                    if 'data' in data:
+                        used = data['data'].get('api_credits_used', '?')
+                        per_min = data['data'].get('api_credits_per_minute', 8)
+                        per_day = data['data'].get('api_credits_per_day', 800)
+                        self.quota_label.setText(f"Twelve Data: {used}/{per_day} credits used today, {per_min}/min limit")
+                    else:
+                        self.quota_label.setText("Twelve Data: Usage info unavailable")
+                except Exception as e:
+                    self.quota_label.setText("Twelve Data: Usage info error")
+            else:
+                self.quota_label.setText("Twelve Data: Enter API key to view quota")
+        elif source == 'alphavantage':
+            self.quota_label.setText("Alpha Vantage: 25/day (free tier, enforced by Alpha Vantage)")
+        elif source == 'tiingo':
+            self.quota_label.setText("Tiingo: 500/day (free tier, tracked locally)")
+        else:
+            self.quota_label.setText("No quota for this provider")
+
+if __name__ == '__main__':
+    print(convert_symbol('EUR/USD', 'yfinance', 'forex'))   # EURUSD=X
+    # ... other print statements ... 
