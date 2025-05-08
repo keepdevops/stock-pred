@@ -356,7 +356,7 @@ class StockGUI(QMainWindow):
         # self.showMaximized()           # (Optional) Start maximized
 
     def init_ui(self):
-        self.setWindowTitle('Stock Quote Viewer')
+        self.setWindowTitle('Data Cleaning and Conversion')
         self.setGeometry(100, 100, 1000, 800)
 
         central_widget = QWidget()
@@ -738,8 +738,6 @@ class StockGUI(QMainWindow):
         export_layout = QHBoxLayout()
         export_label = QLabel('Export Format:')
         self.export_combo = QComboBox()
-        # REMOVE or comment out this line:
-        # self.export_combo.addItems(self.ticker_manager.get_export_formats())
         export_layout.addWidget(export_label)
         export_layout.addWidget(self.export_combo)
         right_layout.addLayout(export_layout)
@@ -1065,7 +1063,7 @@ class StockGUI(QMainWindow):
             # Get export format
             export_format = self.export_combo.currentText()
             # Get filename from user
-            default_name = f"stock_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            default_name = f"cleaned_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             filename, _ = QFileDialog.getSaveFileName(
                 self,
                 "Save Data",
