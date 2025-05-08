@@ -11,12 +11,13 @@ from config.config_manager import ConfigurationManager
 class DataLoader:
     """Handles loading and managing stock data."""
     
-    def __init__(self, config):
+    def __init__(self, config, db=None):
         self.logger = logging.getLogger("DataLoader")
         self.config = config
         self.period = config.get('period', '2y')
         self.interval = config.get('interval', '1d')
         self._stop_realtime = False
+        self.db = db  # Store database reference for later use
     
     def collect_historical_data(self, symbol: str) -> Optional[pd.DataFrame]:
         """Collect historical data for a given ticker."""

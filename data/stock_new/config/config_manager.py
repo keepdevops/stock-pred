@@ -193,6 +193,26 @@ class ConfigurationManager:
                 "path": "data/market_data.duckdb",
                 "type": "duckdb"
             },
+            "data_processing": {
+                "cleaning": {
+                    "lowercase": True,
+                    "remove_special_chars": True,
+                    "standardize_dates": "YYYY-MM-DD",
+                    "fill_missing": "0"
+                },
+                "validation": {
+                    "enabled": True,
+                    "batch_size": 10,
+                    "required_columns": ["date", "open", "high", "low", "close", "volume"],
+                    "date_format": "YYYY-MM-DD",
+                    "numeric_fields": ["open", "high", "low", "close", "volume"]
+                },
+                "database": {
+                    "type": "duckdb",
+                    "path": "data/market_data.duckdb",
+                    "index_columns": ["date"]
+                }
+            },
             "data_collection": {
                 "period": "2y",
                 "interval": "1d",
@@ -204,6 +224,11 @@ class ConfigurationManager:
                 "theme": "default"
             }
         }
+
+    @property
+    def data_processing(self):
+        """Get data processing configuration."""
+        return self.config.get("data_processing", {})
 
     @property
     def database(self):
