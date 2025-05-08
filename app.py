@@ -345,7 +345,6 @@ class StockGUI(QMainWindow):
         self.current_data = {}
         self.data_source = 'yfinance'
         self.log_queue = queue.Queue()
-        self.provenance = {}  # {ticker: {'origin': ..., 'destination': ..., 'filesize': None}}
         # Set up a timer to poll the queue and update the log
         self.log_timer = QTimer()
         self.log_timer.timeout.connect(self.process_log_queue)
@@ -560,12 +559,6 @@ class StockGUI(QMainWindow):
         self.open_csv_btn.setToolTip('Open and process one or more CSV/TXT files from your hard drive')
         self.open_csv_btn.clicked.connect(self.open_and_process_csv_files)
         top_controls.addWidget(self.open_csv_btn)
-
-        # Add button to bulk load directory
-        self.bulk_load_btn = QPushButton('Bulk Load Directory')
-        self.bulk_load_btn.setToolTip('Recursively load all CSV/TXT files from a directory')
-        self.bulk_load_btn.clicked.connect(self.bulk_load_directory)
-        top_controls.addWidget(self.bulk_load_btn)
 
         search_label = QLabel('Search:')
         self.search_box = QLineEdit()
@@ -960,18 +953,10 @@ class StockGUI(QMainWindow):
 
     def download_data(self):
         if not self.selected_tickers:
-            QMessageBox.warning(
-                self,
-                'No Ticker Selected',
-                'Please select at least one ticker before downloading data.'
-            )
+            QMessageBox.warning(self, "Warning", "Please select at least one ticker")
             return
         if not self.ticker_manager:
-            QMessageBox.warning(
-                self,
-                'Database Not Set',
-                'Please apply database settings first before downloading data.'
-            )
+            QMessageBox.warning(self, "Warning", "Please apply database settings first.")
             return
 
         # --- Set Tiingo API key if needed ---
@@ -1037,11 +1022,6 @@ class StockGUI(QMainWindow):
             self.data_table.setColumnCount(0)
             self.worker.start()
 
-            # Track provenance for API downloads
-            for ticker in self.selected_tickers:
-                origin_str = f"API: {self.data_source} ({ticker})"
-                self.provenance[ticker] = {'origin': origin_str, 'destination': None, 'filesize': None}
-
         except Exception as e:
             logger.error(f"Error starting download: {e}")
             QMessageBox.critical(self, "Error", f"Failed to start download: {str(e)}")
@@ -1071,11 +1051,7 @@ class StockGUI(QMainWindow):
     def export_data(self):
         """Export downloaded data to selected format, or process loaded files if present"""
         if not self.ticker_manager:
-            QMessageBox.warning(
-                self,
-                'Database Not Set',
-                'Please apply database settings first before exporting data.'
-            )
+            QMessageBox.warning(self, "Warning", "Please apply database settings first.")
             return
         if hasattr(self, 'raw_data') and self.raw_data:
             # Process loaded files before exporting
@@ -1083,11 +1059,7 @@ class StockGUI(QMainWindow):
             if not processed:
                 return
         if not self.current_data:
-            QMessageBox.warning(
-                self,
-                'No Data to Export',
-                'No data is available to export. Please download or process data first.'
-            )
+            QMessageBox.warning(self, "Warning", "No data to export. Please download or process data first.")
             return
         try:
             # Get export format
@@ -1110,80 +1082,17 @@ class StockGUI(QMainWindow):
                 format=export_format,
                 filename=os.path.basename(filename)
             )
-            # Build export summary
-            export_summaries = []
-            for ticker, df in self.current_data.items():
-                nrows = len(df)
-                ncols = len(df.columns)
-                # Try to find a date column or use index
-                date_col = None
-                for col in df.columns:
-                    if 'date' in col.lower():
-                        date_col = col
-                        break
-                if date_col is not None:
-                    try:
-                        min_date = str(df[date_col].min())
-                        max_date = str(df[date_col].max())
-                    except Exception:
-                        min_date = max_date = 'N/A'
-                elif isinstance(df.index, pd.DatetimeIndex) or 'datetime' in str(type(df.index)).lower():
-                    try:
-                        min_date = str(df.index.min())
-                        max_date = str(df.index.max())
-                    except Exception:
-                        min_date = max_date = 'N/A'
-                else:
-                    min_date = max_date = 'N/A'
-                # Get provenance info
-                origin = self.provenance.get(ticker, {}).get('origin', 'unknown')
-                # Find exported file size if possible
-                dest_path = None
-                if os.path.isdir(export_path):
-                    # If export_path is a directory, look for the file
-                    for ext in ['csv', 'json', 'xlsx', 'db', 'duckdb', 'parquet', 'arrow']:
-                        possible_file = os.path.join(export_path, f"{os.path.basename(filename)}_{ticker}.{ext}")
-                        if os.path.exists(possible_file):
-                            dest_path = possible_file
-                            break
-                else:
-                    dest_path = export_path
-                filesize = None
-                if dest_path and os.path.exists(dest_path):
-                    filesize = os.path.getsize(dest_path)
-                    self.provenance[ticker]['destination'] = dest_path
-                    self.provenance[ticker]['filesize'] = filesize
-                else:
-                    self.provenance[ticker]['destination'] = dest_path or 'unknown'
-                    self.provenance[ticker]['filesize'] = None
-                export_summaries.append(
-                    f"Ticker: {ticker}\n"
-                    f"  Columns: {ncols}, Rows: {nrows}\n"
-                    f"  Dates: {min_date} to {max_date}\n"
-                    f"  File size: {filesize/1024:.2f} KB\n"
-                    f"  Origin: {origin}\n"
-                    f"  Destination: {self.provenance[ticker]['destination']}\n"
-                )
-                # Print to log as well
-                logger.info(f"Exported {ticker}: cols={ncols}, rows={nrows}, dates={min_date} to {max_date}, size={filesize/1024 if filesize else 'N/A'} KB, origin={origin}, dest={self.provenance[ticker]['destination']}")
-            summary_msg = f"Data exported successfully to:\n{export_path}\n\n" + "\n".join(export_summaries)
-            # Add default message if summary_msg is empty
-            if not summary_msg.strip():
-                summary_msg = f"Export completed, but no data was exported. Please check your data and try again."
+            # Show success message
             QMessageBox.information(
                 self,
                 "Export Successful",
-                f"Export completed!\n\n{summary_msg}\n\nYou can now find your exported files at the destination paths above."
+                f"Data exported successfully to:\n{export_path}"
             )
             self.status_label.setText(f"Exported data to {export_path}")
             logger.info(f"Successfully exported data to {export_path}")
         except Exception as e:
             logger.error(f"Error exporting data: {e}")
-            QMessageBox.critical(
-                self,
-                "Export Error",
-                f"Failed to export data: {str(e)}\n\nNo data was exported. Please check your export directory, your data, and try again."
-            )
+            QMessageBox.critical(self, "Error", f"Failed to export data: {str(e)}")
             self.status_label.setText("Export failed")
 
     def process_loaded_files(self):
@@ -1191,72 +1100,70 @@ class StockGUI(QMainWindow):
         Clean and process files loaded into self.raw_data, store in self.current_data, and show cleaning summary.
         """
         if not self.ticker_manager:
-            QMessageBox.warning(
-                self,
-                'Database Not Set',
-                'Please apply database settings first before processing files.'
-            )
+            QMessageBox.warning(self, 'Warning', 'Please apply database settings first.')
             return False
         if not hasattr(self, 'raw_data') or not self.raw_data:
-            QMessageBox.warning(
-                self,
-                'No Data Loaded',
-                'No files have been loaded. Please use "Open CSV Files" or "Bulk Load Directory" first.'
-            )
+            QMessageBox.warning(self, 'No Data', 'No files loaded to process.')
             return False
-        # Set up progress bar
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, len(self.raw_data))
-        self.progress_bar.setValue(0)
         loaded = 0
-        failed = 0
         tickers = []
-        failed_files = []
+        cleaning_summaries = []
+        failed_tickers = []
         self.current_data = {}
         # Clear the live data table before processing
         self.data_table.setRowCount(0)
         self.data_table.setColumnCount(0)
-        for ticker, value in self.raw_data.items():
+        for ticker, df in self.raw_data.items():
             try:
-                # value is either a DataFrame or a dict with 'df' and 'path'
-                if isinstance(value, dict) and 'df' in value:
-                    df = value['df']
-                    file_path = value.get('path', None)
-                else:
-                    df = value
-                    file_path = None
-                if df is None or df.empty:
-                    raise ValueError(f"DataFrame for {ticker} is empty or None")
-                # Optionally, apply cleaning here if needed
-                self.current_data[ticker] = df
-                # Track provenance if not already set
-                if ticker not in self.provenance:
-                    self.provenance[ticker] = {'origin': file_path or 'unknown', 'destination': None, 'filesize': None}
+                stats = {}
+                stats['original_rows'] = len(df)
+                stats['original_missing'] = int(df.isnull().sum().sum())
+                stats['original_duplicates'] = int(df.duplicated().sum())
+                cleaned_df = self.ticker_manager.clean_data(df)
+                stats['cleaned_rows'] = len(cleaned_df)
+                stats['cleaned_missing'] = int(cleaned_df.isnull().sum().sum())
+                stats['cleaned_duplicates'] = int(cleaned_df.duplicated().sum())
+                summary = (
+                    f"{ticker}: "
+                    f"Rows: {stats['original_rows']}→{stats['cleaned_rows']}, "
+                    f"Missing: {stats['original_missing']}→{stats['cleaned_missing']}, "
+                    f"Duplicates: {stats['original_duplicates']}→{stats['cleaned_duplicates']}"
+                )
+                cleaning_summaries.append(summary)
+                self.current_data[ticker] = cleaned_df
                 loaded += 1
-                tickers.append(f"{ticker} ({file_path})" if file_path else ticker)
-                self.progress_bar.setValue(loaded)
+                tickers.append(ticker)
+                # Update live preview for this ticker (show all rows)
+                self.status_label.setText(f"Previewing cleaned data for {ticker}")
+                preview_df = cleaned_df
+                if not preview_df.empty:
+                    # Always show all columns seen so far
+                    current_headers = [self.data_table.horizontalHeaderItem(i).text() for i in range(self.data_table.columnCount())] if self.data_table.columnCount() > 0 else []
+                    all_columns = set(current_headers[1:] if current_headers else []) | set(preview_df.columns)
+                    all_columns = ['Ticker'] + sorted(all_columns)
+                    # If new columns are found, update the table structure
+                    if self.data_table.columnCount() != len(all_columns) or current_headers != all_columns:
+                        self.data_table.setColumnCount(len(all_columns))
+                        self.data_table.setHorizontalHeaderLabels(all_columns)
+                    # Add all rows for this ticker
+                    for i in range(len(preview_df)):
+                        row = self.data_table.rowCount()
+                        self.data_table.insertRow(row)
+                        self.data_table.setItem(row, 0, QTableWidgetItem(ticker))
+                        for col_idx, col_name in enumerate(all_columns[1:], start=1):
+                            val = str(preview_df.iloc[i][col_name]) if col_name in preview_df.columns else ''
+                            self.data_table.setItem(row, col_idx, QTableWidgetItem(val))
             except Exception as e:
-                logger.error(f"Failed to process loaded data for {ticker}: {e}")
-                self.log_text.append(f"Failed to process loaded data for {ticker}: {e}")
-                failed += 1
-                failed_files.append(os.path.basename(file_path))
+                logger.error(f"Failed to clean/process {ticker}: {e}")
+                self.log_text.append(f"Failed to clean/process {ticker}: {e}")
+                cleaning_summaries.append(f"{ticker}: Cleaning failed ({e})")
+                failed_tickers.append(ticker)
         msg = (
-            f'Processed {loaded} files. Tickers: {", ".join(tickers)}\n'
-            f'Failed to process {failed} files: {", ".join(failed_files)}' if failed else ''
+            f'Processed {loaded} files. Tickers: {", ".join(tickers)}\n\n'
+            f'Failed to process {len(failed_tickers)} files: {", ".join(failed_tickers)}\n\n' if failed_tickers else ''
+            f'Cleaning summary:\n' + '\n'.join(cleaning_summaries)
         )
-        # Add default message if msg is empty
-        if not msg.strip():
-            msg = 'No files were processed. Please check your files and try again.'
-        QMessageBox.information(
-            self,
-            'Bulk Load Complete',
-            f"Bulk loading finished!\n\n{msg}\n\nYou can now review the loaded data or export it."
-        )
-        if loaded:
-            self.export_btn.setEnabled(True)
-        else:
-            self.export_btn.setEnabled(False)
-        self.progress_bar.setVisible(False)
+        QMessageBox.information(self, 'Processing Summary', msg)
         return loaded > 0
 
     def quick_select(self, period):
@@ -1473,7 +1380,6 @@ class StockGUI(QMainWindow):
 
     def open_and_process_csv_files(self):
         import os
-        import glob
         import pandas as pd
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
         files, _ = QFileDialog.getOpenFileNames(self, 'Select CSV or TXT Files', '', 'CSV or TXT Files (*.csv *.txt)')
@@ -1486,129 +1392,6 @@ class StockGUI(QMainWindow):
         self.raw_data = {}
         for file_path in files:
             try:
-                print(f"[INFO] Loading file: {file_path}")
-                # Try both comma and semicolon delimiters for robustness
-                try:
-                    df = pd.read_csv(file_path, delimiter=',')
-                    if df.shape[1] == 1:
-                        df = pd.read_csv(file_path, delimiter=';')
-                except Exception:
-                    df = pd.read_csv(file_path, delimiter=';')
-                print(f"[SUCCESS] Loaded {file_path}: {df.shape[0]} rows, {df.shape[1]} columns")
-                ticker = os.path.splitext(os.path.basename(file_path))[0]
-                # Print file size
-                try:
-                    file_size_kb = os.path.getsize(file_path) / 1024
-                    print(f"[INFO] File size: {file_size_kb:.1f} KB")
-                except Exception:
-                    pass
-                # If .txt, convert to .csv (in memory, not saving to disk unless needed)
-                if file_path.lower().endswith('.txt'):
-                    print(f"[INFO] Converting {file_path} to CSV format (in memory)")
-                self.raw_data[ticker] = {'df': df, 'path': file_path}
-                # Track provenance
-                self.provenance[ticker] = {'origin': file_path, 'destination': None, 'filesize': None}
-                loaded += 1
-                tickers.append(ticker)
-            except Exception as e:
-                print(f"[ERROR] Failed to load {file_path}: {e}")
-                logger.error(f"Failed to load {file_path}: {e}")
-                self.log_text.append(f"Failed to load {file_path}: {e}")
-                failed += 1
-                failed_files.append(os.path.basename(file_path))
-        # Build detailed summary for loaded files
-        summary_lines = []
-        for ticker in tickers:
-            entry = self.raw_data[ticker]
-            df = entry['df']
-            file_path = entry['path']
-            nrows = len(df)
-            ncols = len(df.columns)
-            # Try to find a date column or use index
-            date_col = None
-            for col in df.columns:
-                if 'date' in col.lower():
-                    date_col = col
-                    break
-            if date_col is not None:
-                try:
-                    min_date = str(df[date_col].min())
-                    max_date = str(df[date_col].max())
-                except Exception:
-                    min_date = max_date = 'N/A'
-            elif isinstance(df.index, pd.DatetimeIndex) or 'datetime' in str(type(df.index)).lower():
-                try:
-                    min_date = str(df.index.min())
-                    max_date = str(df.index.max())
-                except Exception:
-                    min_date = max_date = 'N/A'
-            else:
-                min_date = max_date = 'N/A'
-            filesize = None
-            if file_path and os.path.exists(file_path):
-                filesize = os.path.getsize(file_path)
-            summary_lines.append(
-                f"Ticker: {ticker}\n"
-                f"  Columns: {ncols}, Rows: {nrows}\n"
-                f"  Dates: {min_date} to {max_date}\n"
-                f"  File size: {filesize/1024:.2f} KB\n"
-                f"  Origin: {file_path}\n"
-            )
-        msg = (
-            f'Loaded {loaded} files. Tickers: {", ".join(tickers)}\n'
-            f'Failed to load {failed} files: {", ".join(failed_files)}' if failed else ''
-        )
-        # Add detailed summary if any files loaded
-        if summary_lines:
-            msg += '\n\n' + '\n'.join(summary_lines)
-        QMessageBox.information(
-            self,
-            'Bulk Load Complete',
-            f"Bulk loading finished!\n\n{msg}\n\nYou can now review the loaded data or export it."
-        )
-        if loaded:
-            self.export_btn.setEnabled(True)
-        else:
-            self.export_btn.setEnabled(False)
-
-    def bulk_load_directory(self):
-        import os
-        import pandas as pd
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
-        # Prompt user for root directory
-        root_dir = QFileDialog.getExistingDirectory(self, 'Select Root Directory')
-        if not root_dir:
-            return
-        all_files = []
-        # Advanced crawler: os.walk, skip hidden files/folders, log each directory
-        for dirpath, dirnames, filenames in os.walk(root_dir):
-            # Skip hidden directories
-            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
-            self.log_text.append(f"Entering directory: {dirpath}")
-            for filename in filenames:
-                if filename.startswith('.'):
-                    continue  # Skip hidden files
-                if filename.lower().endswith('.csv') or filename.lower().endswith('.txt'):
-                    file_path = os.path.join(dirpath, filename)
-                    all_files.append(file_path)
-        if not all_files:
-            QMessageBox.information(
-                self,
-                'No Files Found',
-                'No CSV or TXT files were found in the selected directory.\n\nPlease choose another directory or check your files.'
-            )
-            return
-        # Set up progress bar
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, len(all_files))
-        self.progress_bar.setValue(0)
-        loaded = 0
-        failed = 0
-        tickers = []
-        failed_files = []
-        self.raw_data = {}
-        for idx, file_path in enumerate(all_files, 1):
-            try:
                 # Try both comma and semicolon delimiters for robustness
                 try:
                     df = pd.read_csv(file_path, delimiter=',')
@@ -1617,69 +1400,19 @@ class StockGUI(QMainWindow):
                 except Exception:
                     df = pd.read_csv(file_path, delimiter=';')
                 ticker = os.path.splitext(os.path.basename(file_path))[0]
-                self.raw_data[ticker] = {'df': df, 'path': file_path}
-                # Track provenance
-                self.provenance[ticker] = {'origin': file_path, 'destination': None, 'filesize': None}
+                self.raw_data[ticker] = df
                 loaded += 1
                 tickers.append(ticker)
-                self.log_text.append(f"Loaded: {file_path}")
-                self.progress_bar.setValue(idx)
             except Exception as e:
                 logger.error(f"Failed to load {file_path}: {e}")
                 self.log_text.append(f"Failed to load {file_path}: {e}")
                 failed += 1
                 failed_files.append(os.path.basename(file_path))
-        self.progress_bar.setVisible(False)
-        # Restore summary_lines block
-        summary_lines = []
-        for ticker in tickers:
-            entry = self.raw_data[ticker]
-            df = entry['df']
-            file_path = entry['path']
-            nrows = len(df)
-            ncols = len(df.columns)
-            # Try to find a date column or use index
-            date_col = None
-            for col in df.columns:
-                if 'date' in col.lower():
-                    date_col = col
-                    break
-            if date_col is not None:
-                try:
-                    min_date = str(df[date_col].min())
-                    max_date = str(df[date_col].max())
-                except Exception:
-                    min_date = max_date = 'N/A'
-            elif isinstance(df.index, pd.DatetimeIndex) or 'datetime' in str(type(df.index)).lower():
-                try:
-                    min_date = str(df.index.min())
-                    max_date = str(df.index.max())
-                except Exception:
-                    min_date = max_date = 'N/A'
-            else:
-                min_date = max_date = 'N/A'
-            filesize = None
-            if file_path and os.path.exists(file_path):
-                filesize = os.path.getsize(file_path)
-            summary_lines.append(
-                f"Ticker: {ticker}\n"
-                f"  Columns: {ncols}, Rows: {nrows}\n"
-                f"  Dates: {min_date} to {max_date}\n"
-                f"  File size: {filesize/1024:.2f} KB\n"
-                f"  Origin: {file_path}\n"
-            )
         msg = (
             f'Loaded {loaded} files. Tickers: {", ".join(tickers)}\n'
             f'Failed to load {failed} files: {", ".join(failed_files)}' if failed else ''
         )
-        # Add detailed summary if any files loaded
-        if summary_lines:
-            msg += '\n\n' + '\n'.join(summary_lines)
-        QMessageBox.information(
-            self,
-            'Bulk Load Complete',
-            f"Bulk loading finished!\n\n{msg}\n\nYou can now review the loaded data or export it."
-        )
+        QMessageBox.information(self, 'File Load Summary', msg)
         if loaded:
             self.export_btn.setEnabled(True)
         else:
