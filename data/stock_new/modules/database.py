@@ -125,28 +125,23 @@ class DatabaseConnector:
         data: pd.DataFrame,
         realtime: bool = False
     ) -> None:
-        """Save ticker data to database."""
+        """Save ticker data to database (DuckDB)."""
         try:
-            # Prepare data
             df = data.copy()
-            df['ticker'] = ticker
-            
-            # Insert data
-            if realtime:
-                # For realtime data, we might want to update existing records
-                self.connection.execute("""
-                    INSERT OR REPLACE INTO stock_data
-                    SELECT * FROM df
-                """)
-            else:
-                # For historical data, ignore duplicates
-                self.connection.execute("""
-                    INSERT OR IGNORE INTO stock_data
-                    SELECT * FROM df
-                """)
-            
+            if "ticker" not in df.columns:
+                df["ticker"] = ticker
+            # Ensure column order matches stock_data: date, ticker, open, high, low, close, adj_close, volume
+            cols = ["date", "ticker", "open", "high", "low", "close", "adj_close", "volume"]
+            df = df[[c for c in cols if c in df.columns]]
+            # DuckDB: register DataFrame then INSERT with ON CONFLICT DO NOTHING
+            self.connection.register("_ticker_df", df)
+            self.connection.execute("""
+                INSERT INTO stock_data
+                SELECT * FROM _ticker_df
+                ON CONFLICT (date, ticker) DO NOTHING
+            """)
+            self.connection.unregister("_ticker_df")
             self.logger.info(f"Saved data for {ticker}")
-            
         except Exception as e:
             self.logger.error(f"Error saving data for {ticker}: {str(e)}")
             raise

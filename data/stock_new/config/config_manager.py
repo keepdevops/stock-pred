@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 import logging
@@ -199,11 +200,44 @@ class ConfigurationManager:
                 "retries": 3,
                 "retry_delay": 5
             },
+            "data_processing": {
+                "database": {
+                    "type": "duckdb",
+                    "path": "data/market_data.duckdb",
+                    "index_columns": ["date"]
+                }
+            },
             "gui": {
                 "window_size": "1200x800",
                 "theme": "default"
             }
         }
+
+    @property
+    def data_processing(self):
+        """Get data processing configuration (database, cleaning, validation)."""
+        dp = self.config.get("data_processing") or {}
+        db = dp.get("database") or {}
+        # Support flat config keys (e.g. system_config.json with db_path)
+        path = db.get("path") or self.config.get("db_path") or "data/market_data.duckdb"
+        return SimpleNamespace(
+            database=SimpleNamespace(
+                path=path,
+                type=db.get("type", "duckdb"),
+                index_columns=db.get("index_columns", ["date"])
+            ),
+            cleaning=getattr(self, "_cleaning_config", None),
+            validation=getattr(self, "_validation_config", None),
+        )
+
+    @property
+    def gui_settings(self):
+        """Get GUI settings (window_size, theme) for main.py run()."""
+        gui = self.config.get("gui") or {}
+        return SimpleNamespace(
+            window_size=gui.get("window_size", "1200x800"),
+            theme=gui.get("theme", "default")
+        )
 
     @property
     def database(self):
@@ -213,7 +247,18 @@ class ConfigurationManager:
     @property
     def data_collection(self):
         """Get data collection configuration."""
-        return self.config.get("data_collection", {})
+        base = self.config.get("data_collection") or {}
+        # Support flat config (e.g. system_config.json: data_period, data_interval)
+        if not base and (self.config.get("data_period") or self.config.get("data_interval")):
+            base = {
+                "period": self.config.get("data_period", "2y"),
+                "interval": self.config.get("data_interval", "1d"),
+                "retries": self.config.get("retries", 3),
+                "retry_delay": self.config.get("retry_delay", 5),
+            }
+        if not base:
+            base = {"period": "2y", "interval": "1d", "retries": 3, "retry_delay": 5}
+        return base
 
     @property
     def gui(self):

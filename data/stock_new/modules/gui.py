@@ -261,32 +261,52 @@ class StockGUI:
                 self.details_text.config(state=tk.DISABLED)
 
     def _load_nasdaq_data(self):
-        """Load data from NASDAQ screener CSV file."""
+        """Load data from NASDAQ screener CSV file. Uses defaults if file is missing."""
         try:
             self.status_var.set("Loading NASDAQ data...")
             self.root.update()
-            
-            # Find the NASDAQ screener file
-            nasdaq_files = list(Path(".").glob("nasdaq_screener_*.csv"))
+
+            # Look in current dir and common data dirs
+            nasdaq_files = (
+                list(Path(".").glob("nasdaq_screener_*.csv"))
+                or list(Path("data").glob("nasdaq_screener_*.csv"))
+            )
             if not nasdaq_files:
-                raise FileNotFoundError("NASDAQ screener CSV file not found")
-            
-            # Read the CSV file
-            self.nasdaq_data = pd.read_csv(nasdaq_files[0])
-            
+                self.logger.warning(
+                    "NASDAQ screener CSV not found. Use a few default tickers; "
+                    "run 'python src/data/download_nasdaq.py' from stock_new to download."
+                )
+                self.status_var.set(
+                    "No NASDAQ screener file—using default tickers. "
+                    "Run download_nasdaq.py to get full list."
+                )
+                # Default tickers so the app is usable without the CSV
+                self.available_tickers = ["AAPL", "GOOG", "MSFT", "AMZN", "META"]
+                self.nasdaq_data = None
+                return
+
+            # Read the CSV file (use most recent if multiple)
+            latest = max(nasdaq_files, key=lambda p: p.stat().st_mtime)
+            self.nasdaq_data = pd.read_csv(latest)
+
             # Ensure Symbol column is string type
-            self.nasdaq_data['Symbol'] = self.nasdaq_data['Symbol'].astype(str)
-            
-            # Extract and sort symbols
-            self.available_tickers = sorted(self.nasdaq_data['Symbol'].unique().tolist(), key=str)
-            
-            self.logger.info(f"Successfully loaded {len(self.available_tickers)} NASDAQ tickers")
-            
+            if "Symbol" in self.nasdaq_data.columns:
+                self.nasdaq_data["Symbol"] = self.nasdaq_data["Symbol"].astype(str)
+                self.available_tickers = sorted(
+                    self.nasdaq_data["Symbol"].unique().tolist(), key=str
+                )
+            else:
+                self.available_tickers = []
+                self.logger.warning("NASDAQ CSV has no 'Symbol' column")
+
+            self.logger.info(f"Loaded {len(self.available_tickers)} NASDAQ tickers from {latest.name}")
+            self.status_var.set(f"Loaded {len(self.available_tickers)} NASDAQ tickers")
+
         except Exception as e:
-            error_msg = f"Error loading NASDAQ data: {e}"
-            self.logger.error(error_msg)
-            self.status_var.set("Error loading NASDAQ data")
-            messagebox.showerror("Error", error_msg)
+            self.logger.error(f"Error loading NASDAQ data: {e}")
+            self.status_var.set("Error loading NASDAQ data—using default tickers")
+            self.available_tickers = ["AAPL", "GOOG", "MSFT", "AMZN", "META"]
+            self.nasdaq_data = None
 
     def _populate_ticker_list(self):
         """Populate the ticker listbox with loaded symbols."""
@@ -523,16 +543,24 @@ class StockGUI:
             self.status_var.set("Ready")
     
     def load_historical_data(self):
-        """Load historical data for selected ticker."""
-        ticker = self.selected_ticker.get()
+        """Load historical data for selected ticker and save to database."""
+        ticker = (self.selected_ticker.get() or "").strip()
         if not ticker:
             messagebox.showwarning("Warning", "Please select a ticker")
             return
-        
+        ticker = ticker.lstrip("* ")  # listbox may show "* AAPL" for tickers in DB
+
         try:
             self.status_var.set(f"Loading historical data for {ticker}...")
-            self.data_loader.collect_historical_data(ticker)
-            self.status_var.set("Historical data loaded")
+            self.root.update()
+            df = self.data_loader.collect_historical_data(ticker)
+            if df is not None and not df.empty:
+                self.db.save_ticker_data(ticker, df)
+                self.status_var.set(f"Loaded {len(df)} rows for {ticker}")
+                messagebox.showinfo("Done", f"Historical data saved for {ticker} ({len(df)} rows).")
+            else:
+                self.status_var.set("Ready")
+                messagebox.showwarning("No data", f"No historical data returned for {ticker}.")
         except Exception as e:
             self.logger.error(f"Error loading historical data: {str(e)}")
             messagebox.showerror("Error", f"Failed to load historical data: {str(e)}")
@@ -783,24 +811,30 @@ class StockGUI:
             
             # Run analysis
             predictions = self.ai_agent.analyze_stock(ticker)
-            
+
             if predictions is not None:
                 # Show results
                 plot_path = f"data/plots/{ticker}_prediction.png"
                 if os.path.exists(plot_path):
                     self._show_plot(plot_path)
-                
-                messagebox.showinfo("Analysis Complete", 
-                                  f"Analysis completed for {ticker}\n"
-                                  f"Predicted price movement: "
-                                  f"{'Up' if predictions[-1] > predictions[0] else 'Down'}")
-                                  
-            self.status_var.config(text="Ready")
+                messagebox.showinfo(
+                    "Analysis Complete",
+                    f"Analysis completed for {ticker}\n"
+                    f"Predicted price movement: "
+                    f"{'Up' if predictions[-1] > predictions[0] else 'Down'}"
+                )
+            else:
+                messagebox.showinfo(
+                    "No data",
+                    f"No price data for {ticker}. Select the ticker and click "
+                    "'Load Historical' to download data, then try Analyze again."
+                )
+            self.status_var.set("Ready")
             
         except Exception as e:
             self.logger.error(f"Error in analyze_stock: {e}")
             messagebox.showerror("Error", f"Analysis failed: {str(e)}")
-            self.status_var.config(text="Ready")
+            self.status_var.set("Ready")
 
     def _show_plot(self, plot_path):
         """Show a plot in a new window."""
@@ -811,4 +845,4 @@ class StockGUI:
         except Exception as e:
             self.logger.error(f"Error showing plot: {e}")
             messagebox.showerror("Error", f"Failed to show plot: {str(e)}")
-            self.status_var.config(text="Ready") 
+            self.status_var.set("Ready") 

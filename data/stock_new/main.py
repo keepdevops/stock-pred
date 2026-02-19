@@ -175,17 +175,10 @@ class StockMarketAnalyzer:
         try:
             # Database setup
             db_config = self.config_manager.data_processing.database
-            self.db = DatabaseConnector(
-                db_path=db_config.path,
-                logger=logging.getLogger("Database")
-            )
+            self.db = DatabaseConnector(config={"path": db_config.path})
             
             # Initialize other components
-            self.data_loader = DataLoader(
-                db_connector=self.db,
-                config=self.config_manager.data_collection,
-                logger=logging.getLogger("DataLoader")
-            )
+            self.data_loader = DataLoader(config=self.config_manager.data_collection)
             
             self.ai_agent = StockAIAgent(
                 db_connector=self.db,

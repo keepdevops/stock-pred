@@ -1,14 +1,21 @@
+"""
+Launch the Stock Market Analyzer from stock_new.
+Run from this directory or from stock_new (python stock_market_analyzer/main.py).
+"""
 import sys
-import logging
+import os
 from pathlib import Path
-import tkinter as tk
-from tkinter import messagebox
 
-from stock_market_analyzer.config.config_manager import ConfigurationManager
-from stock_market_analyzer.modules.gui import StockGUI
-from stock_market_analyzer.modules.database import DatabaseConnector
-from stock_market_analyzer.modules.data_loader import DataLoader
-from stock_market_analyzer.modules.stock_ai_agent import StockAIAgent
-from stock_market_analyzer.modules.trading.real_trading_agent import RealTradingAgent
+# Ensure stock_new is on the path and is the current working directory
+_here = Path(__file__).resolve().parent
+_stock_new = _here.parent
+_stock_new_str = str(_stock_new)
+if _stock_new_str not in sys.path:
+    sys.path.insert(0, _stock_new_str)
+os.chdir(_stock_new_str)
 
-# Rest of the code remains the same 
+# Run the real app
+from main import main
+
+if __name__ == "__main__":
+    main()

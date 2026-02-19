@@ -1,30 +1,40 @@
 import sys
-import logging
+import os
 from pathlib import Path
+
+# Add project root (stock_new) to path first so "src" and local modules are found
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+# When run from src/, add src so sibling imports (e.g. data_collection_module) work
+_src = Path(__file__).resolve().parent
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
+# Run with project root as cwd so logs/ and data/ paths are correct
+os.chdir(_root)
+
+import logging
 import tkinter as tk
 from tkinter import messagebox
 import polars as pl
 import json
+from datetime import datetime, timedelta
+
 from src.stock_market_analyzer import StockMarketAnalyzer
 from src.database.database_connector import DatabaseConnector
 from src.database.nasdaq_database import NasdaqDatabase
-from .config.config_manager import ConfigManager
+from src.config.config_manager import ConfigManager
 from src.modules.gui import StockGUI
-from .data.data_loader import DataLoader
+from src.data.data_loader import DataLoader
 from src.modules.stock_ai_agent import StockAIAgent
 from src.modules.trading.real_trading_agent import RealTradingAgent
+from src.database.database_manager import DatabaseManager
 from data_collection_module import DataCollector
 from data_cleaning_module import DataCleaner
 from database_conversion_module import DatabaseConverter
 from ticker_mixing_module import TickerMixer
 from gui_module import DataCollectorGUI
 from normalization_module import TickerNormalizer
-import os
-from datetime import datetime, timedelta
-from src.database.database_manager import DatabaseManager
-
-# Adjust Python path to include src directory
-sys.path.append(str(Path(__file__).parent.parent))
 
 def setup_logging():
     """Setup logging configuration"""

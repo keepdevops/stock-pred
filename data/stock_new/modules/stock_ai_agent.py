@@ -96,6 +96,15 @@ class StockAIAgent:
             self.logger.error(f"Error training model: {str(e)}")
             raise
     
+    def analyze_stock(self, ticker: str, prediction_steps: int = 5) -> Optional[np.ndarray]:
+        """Run analysis for a ticker and return predicted price values (for GUI)."""
+        try:
+            result = self.make_prediction(ticker, prediction_steps=prediction_steps)
+            return result["values"] if result else None
+        except Exception as e:
+            self.logger.error(f"Error in analyze_stock for {ticker}: {e}")
+            return None
+
     def make_prediction(
         self,
         ticker: str,
